@@ -1,0 +1,117 @@
+(ns eita
+  (:require
+   [jank.compiler :as jc]
+   [jank.nrepl-server.server :as server]
+   [jank.export :as je]))
+
+(comment
+
+  (def pow clojure.core-native/pow)
+  (jc/native-source '(clojure.core-native/pow 3 2))
+
+  ;; PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH" jank --module-path src run-main eita
+
+  (server/start-server {:port 5557})
+
+  (ns-publics (symbol (namespace `server/start-server)))
+
+  (jank.compiler/native-source '(fn [x] (+ 4 x)))
+  (jank.compiler/native-cpp-source '(fn [x] (+ 4 x)))
+
+  (-main)
+
+  (sample-fn 4)
+
+  ())
+
+(defn my-apply [f x]
+  (f x))
+
+(jank.export/register
+ #'my-apply
+ "my_apply"
+ [:=> [:cat [:fn [:long] :long] :long] :long])
+
+(comment
+
+  (jc/native-cpp-source '
+   (cpp/raw "
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static long host_square(long x)
+{
+  return x * x;
+}
+
+typedef long (*my_apply_cb_fn)(long);
+typedef long (*my_apply_fn)(my_apply_cb_fn, long);
+
+void eita (void) {
+printf(\"Eita\\n\");
+void *handle = dlopen(\"/Users/pfeodrippe/dev/something/pitoco.dylib\", RTLD_LAZY);
+printf(\"Eita 2\\n\");
+//my_apply_fn my_apply = (my_apply_fn)dlsym(handle, \"my_apply\");
+}
+
+//eita();"))
+
+  (jc/native-cpp-source '(cpp/eita))
+
+  (cpp/raw "
+  if(my_apply == NULL)
+  {
+     printf(\"It's NULL OH NO\\n\");
+  } else {printf(\"Not NULL\\n\");}")
+
+  (cpp/raw "
+  long apply_result = my_apply(host_square, 3);
+  /*if(apply_result != host_square(3))
+  {
+    fprintf(stderr, \"Expected %ld, got %ld\\n\", host_square(3), apply_result);
+    dlclose(handle);
+    return 1;
+  }*/
+
+  printf(\"Callback test passed2\\n\");")
+
+  ())
+
+
+(cpp/raw "
+ inline int cpp_rawinline_hello() {
+  return 20;
+}
+")
+
+#_(cpp/raw "
+ idfnlinde int cpp_rawinline_hello() {
+  return 10;
+}
+")
+
+(defn -main [& args]
+  (println :ARGS args)
+  (println (cpp/cpp_rawinline_hello))
+  #_(printjln (cpp/cpp_rawinline_hello))
+  (let [srv (server/start-server {:port 5557})]
+    (read-line)
+    (server/stop-server srv)))
+
+#_(defn -main [& args]
+    (println (str "shared-lib-invoked/" (count args))))
+
+(defn sample-fn "demo doc"
+  ([x] x)
+  ([x y] (+ x y)))
+
+(def my-fn
+  "My function"
+  (fn* [x] (+ x 10)))
+
+(def ^{:arglists '([x] [y x])
+       :doc "My function"}
+  my-fn
+  (fn* [x] (+ x 10)))
