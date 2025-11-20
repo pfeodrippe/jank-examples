@@ -6,9 +6,6 @@
 
 (comment
 
-  (def pow clojure.core-native/pow)
-  (jc/native-source '(clojure.core-native/pow 3 2))
-
   ;; PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH" jank --module-path src run-main eita
 
   (server/start-server {:port 5557})
@@ -20,7 +17,35 @@
 
   (-main)
 
-  (sample-fn 4)
+  (sample-fn)
+
+  (cpp/raw "
+#include <iostream>
+#include <array> // For std::array
+
+int ttt(int x) {
+    std::array<int, 5> arr = {10, 20, 30, 40, 50};
+
+    for (auto it = arr.begin(); it != arr.end(); ++it) {
+        std::cout << *it << \" \"; // Dereference the iterator to get the element
+    }
+    std::cout << std::endl;
+    return x;
+}
+")
+
+  (cpp/ttt 4)
+
+  (cpp/raw "
+int my_ad(int x, int y) {
+    return (x + y);
+}
+")
+
+  (cpp/my_add 5 9)
+
+  ()
+
 
   ())
 
@@ -32,53 +57,48 @@
  "my_apply"
  [:=> [:cat [:fn [:long] :long] :long] :long])
 
+#_(defn multiplier []
+  (fn [_ arr num-of-samples]
+    (doseq []
+      (* x 0.2))))
+
+#_ (jc/native-aot-entrypoint-source
+    ' (jank.export/register
+       #'multiplier
+       "my_multiplier"
+       [:=> [:cat] [:fn [::void :vector :int] :long]]))
+
 (comment
 
-  (jc/native-cpp-source '
-   (cpp/raw "
+  (cpp/raw "
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static long host_square(long x)
+typedef long (*my_apply_cb_fn)(long);
+typedef long (*my_apply_fn)(my_apply_cb_fn, long);
+
+static long host_square2(long x)
 {
   return x * x;
 }
 
-typedef long (*my_apply_cb_fn)(long);
-typedef long (*my_apply_fn)(my_apply_cb_fn, long);
-
-void eita (void) {
-printf(\"Eita\\n\");
-void *handle = dlopen(\"/Users/pfeodrippe/dev/something/pitoco.dylib\", RTLD_LAZY);
-printf(\"Eita 2\\n\");
-//my_apply_fn my_apply = (my_apply_fn)dlsym(handle, \"my_apply\");
+int ddd (void) {
+my_apply_fn my_apply = (my_apply_fn)dlsym(NULL, \"my_apply\");
+if(my_apply == NULL)
+  {
+   return 1;
+  }
+return 0;
 }
+")
 
-//eita();"))
+  (cpp/my_inc2)
 
-  (jc/native-cpp-source '(cpp/eita))
-
-  (cpp/raw "
-  if(my_apply == NULL)
-  {
-     printf(\"It's NULL OH NO\\n\");
-  } else {printf(\"Not NULL\\n\");}")
-
-  (cpp/raw "
-  long apply_result = my_apply(host_square, 3);
-  /*if(apply_result != host_square(3))
-  {
-    fprintf(stderr, \"Expected %ld, got %ld\\n\", host_square(3), apply_result);
-    dlclose(handle);
-    return 1;
-  }*/
-
-  printf(\"Callback test passed2\\n\");")
+  (cpp/raw "func_ptr3(host_square2, 5);")
 
   ())
-
 
 (cpp/raw "
  inline int cpp_rawinline_hello() {
