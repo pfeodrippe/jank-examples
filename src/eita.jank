@@ -17,8 +17,6 @@
 
   (-main)
 
-  (sample-fn)
-
   (cpp/raw "
 #include <iostream>
 #include <array> // For std::array
@@ -34,18 +32,13 @@ int ttt(int x) {
 }
 ")
 
-  (cpp/ttt 4)
-
   (cpp/raw "
 int my_ad(int x, int y) {
     return (x + y);
 }
 ")
 
-  (cpp/my_add 5 9)
-
-  ()
-
+  (cpp/my_ad 5 9)
 
   ())
 
@@ -57,16 +50,34 @@ int my_ad(int x, int y) {
  "my_apply"
  [:=> [:cat [:fn [:long] :long] :long] :long])
 
-#_(defn multiplier []
-  (fn [_ arr num-of-samples]
-    (doseq []
-      (* x 0.2))))
+(cpp/raw "
+static void eita5(float* arr, int num_of_samples) {
+    for (int i = 0; i < num_of_samples; i++) {
+       arr[i] = arr [i] * 0.1;
+    }
+}
+")
 
-#_ (jc/native-aot-entrypoint-source
-    ' (jank.export/register
-       #'multiplier
-       "my_multiplier"
-       [:=> [:cat] [:fn [::void :vector :int] :long]]))
+(defn aaa
+  [arr num-of-samples]
+  (println :NN num-of-samples)
+  #_(cpp/eita5 (cpp/unbox cpp/float* arr) num-of-samples))
+
+(defn multiplier []
+  (fn [_ arr num-of-samples]
+    (aaa arr num-of-samples)
+    nil))
+
+(jank.export/register
+ #'multiplier
+ "my_multiplier"
+ [:=> [:cat] [:fn [::void ::void :int] :void]])
+
+#_(jc/native-aot-entrypoint-source
+ ' (jank.export/register
+    #'multiplier
+    "my_multiplier"
+    [:=> [:cat] [:fn [::void :vector :int] :void]]))
 
 (comment
 
@@ -114,11 +125,13 @@ return 0;
 
 (defn -main [& args]
   (println :ARGS args)
-  (println (cpp/cpp_rawinline_hello))
+  #_(println (cpp/cpp_rawinline_hello))
   #_(printjln (cpp/cpp_rawinline_hello))
-  (let [srv (server/start-server {:port 5557})]
-    (read-line)
-    (server/stop-server srv)))
+  (if (= (first args) "start-server")
+    (let [srv (server/start-server {:port 5557})]
+      (read-line)
+      (server/stop-server srv))
+    (println :INIT)))
 
 #_(defn -main [& args]
     (println (str "shared-lib-invoked/" (count args))))
@@ -135,3 +148,60 @@ return 0;
        :doc "My function"}
   my-fn
   (fn* [x] (+ x 10)))
+
+;; Structs.
+(comment
+
+  (cpp/raw "namespace eita::cpp::constructor::complex::pass_argument
+          {
+            struct foo
+            {
+              foo(int const v)
+               : a{ v }, b{ v }
+              { }
+
+              int a{}, b{7};
+            };
+          }")
+
+  (cpp/jank.runtime.get_global_cpp_functions)
+  (cpp/jank.runtime.get_global_cpp_types)
+
+  (let* [arg (cpp/int. 6)
+         f (cpp/eita.cpp.constructor.complex.pass_argument.foo. arg)]
+
+    [(cpp/.-a f)
+     (cpp/.-b f)])
+
+  (cpp/raw "namespace test
+          {
+            struct Point
+            {
+              Point() : x{0}, y{0} {}
+              Point(int x_val) : x{x_val}, y{0} {}
+              Point(int x_val, int y_val) : x{x_val}, y{y_val} {}
+
+              int x;
+              int y;
+            };
+          }")
+  (let [a (cpp/test.Point. (cpp/int. 4)
+                           (cpp/int. 56))]
+    [(cpp/.-x a)
+     (cpp/.-y a)])
+
+  "
+cpp/test.Point
+[int x int y]
+  test::Point C++ struct
+"
+
+  "
+cpp/test.Point
+[]
+[int x]
+[int x int y]
+  test::Point C++ struct
+"
+
+  ())
