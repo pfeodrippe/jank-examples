@@ -2,9 +2,13 @@
   (:require
    [jank.compiler :as jc]
    [jank.nrepl-server.server :as server]
-   [jank.export :as je]))
+   [jank.export :as je]
+   ["clojure/string_native.hpp" :as str-native :refer [starts_with]]))
 
 (comment
+
+  (str-native/reverse "abc")
+  (starts_with "Sabor" "S")
 
   ;; PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH" jank --module-path src run-main eita
 
@@ -31,14 +35,6 @@ int ttt(int x) {
     return x;
 }
 ")
-
-  (cpp/raw "
-int my_ad(int x, int y) {
-    return (x + y);
-}
-")
-
-  (cpp/my_ad 5 9)
 
   ())
 
@@ -169,7 +165,6 @@ return 0;
 
   (let* [arg (cpp/int. 6)
          f (cpp/eita.cpp.constructor.complex.pass_argument.foo. arg)]
-
     [(cpp/.-a f)
      (cpp/.-b f)])
 
@@ -185,23 +180,18 @@ return 0;
               int y;
             };
           }")
-  (let [a (cpp/test.Point. (cpp/int. 4)
-                           (cpp/int. 56))]
+
+  (let [a (cpp/test.Point.  (cpp/int. 4)
+                            (cpp/int. 56))]
     [(cpp/.-x a)
      (cpp/.-y a)])
 
-  "
-cpp/test.Point
-[int x int y]
-  test::Point C++ struct
-"
+  (cpp/raw "
+int my_add(int x, int y) {
+    return (x + y);
+}
+")
 
-  "
-cpp/test.Point
-[]
-[int x]
-[int x int y]
-  test::Point C++ struct
-"
+  (cpp/my_add 4 5)
 
   ())
