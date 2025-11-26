@@ -1,4 +1,4 @@
-(ns eita
+(ns my-example
   (:require
    [jank.compiler :as jc]
    [jank.nrepl-server.server :as server]
@@ -7,7 +7,7 @@
 
 (comment
 
-  (str-native/reverse "abc")
+  (str-native/reverse "abcf ")
   (starts_with "Sabor" "S")
 
   ;; PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH" jank --module-path src run-main eita
@@ -163,6 +163,8 @@ return 0;
   (cpp/jank.runtime.get_global_cpp_functions)
   (cpp/jank.runtime.get_global_cpp_types)
 
+  (str-native/replace_first)
+
   (let* [arg (cpp/int. 6)
          f (cpp/eita.cpp.constructor.complex.pass_argument.foo. arg)]
     [(cpp/.-a f)
@@ -191,7 +193,12 @@ int my_add(int x, int y) {
     return (x + y);
 }
 ")
+  (cpp/raw "
+int my_add2() {
+    return 5;
+}
+")
 
-  (cpp/my_add 4 5)
+  (cpp/my_add 4 2)
 
   ())
