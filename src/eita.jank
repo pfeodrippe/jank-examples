@@ -1,0 +1,74 @@
+(ns eita
+  (:require
+   [clojure.set :as set]
+   [clojure.string :as str]))
+
+;; Test basic set operations from clojure.set
+(def s1 #{1 2 3 4 30})
+(def s2 #{3 4 5 6})
+(def intersection (set/intersection s1 s2))
+(def union (set/union s1 s2))
+(def difference (set/difference s1 s2))
+
+(println "Set 1:" s1)
+(println "Set 2:" s2)
+(println "Intersection:" intersection)
+(println "Union:" union)
+(println "Difference:" difference)
+
+;; Test basic core functions
+(def numbers [1 2 3 (+ 44 49) 5])
+(def doubled (map #(* (/ 5.5 2) %) numbers))
+(def filtered (filter even? numbers))
+
+(defn aaa [coll]
+  (filter even? coll))
+
+(println "Numbers:" numbers)
+(println "Doubled:" (vec doubled))
+(println "Even numbers:" (vec filtered))
+(println "Even numbers (fn):" (aaa numbers))
+(println "String" [{:reverse (str/reverse "abc")
+                    :split-lines (str/split-lines "a\nb\nc")
+                    :starts-with (str/starts-with? "ABC" "A")
+                    :index-of (str/index-of "ABCDE" "D")}])
+(println "WASM build test completed successfully!")
+
+(defn ^:export ggg
+  "Example exported function for WASM - adds 46 to input"
+  [v]
+  (println :FROM_CLJ_..._I_MEAN_JANK_IN_WASM!!
+
+           (set/union #{999} (set (mapv #(* 3 %) [1 5 v]))))
+  (+ 33 v))
+
+(defn ^:export heavy-stress
+  [n]
+  (println "Starting heavy GC stress with" n "rounds...")
+
+  ;; Repeatedly create and discard large collections
+  (dotimes [round n]
+
+    ;; Create chain of maps pointing to vectors
+    (loop [i 0
+           data nil]
+      (when (< i 10000)
+        (recur (inc i)
+               {:idx i
+                :vec (vec (repeat 10 i))
+                :prev data})))
+
+    ;; Create lots of strings via str concatenation
+    (reduce str (map str (range 1000)))
+
+    ;; Nested map/filter chains create intermediate lazy seqs
+    (->> (range 10000)
+         (map #(* % %))
+         (filter even?)
+         (map #(vector % %))
+         (into {}))
+
+    (when (zero? (mod round 10))
+      (println "Round" round "complete")))
+
+  (println "Heavy GC stress complete!"))
