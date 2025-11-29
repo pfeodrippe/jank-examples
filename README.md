@@ -10,25 +10,28 @@ export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH"
 
 ```shell
 cd vendor/flecs/distr
+# Object file (recommended - no dynamic library needed!)
+clang -c -fPIC -o flecs.o flecs.c
+
+# Or dynamic library (alternative)
 clang -shared -fPIC -o libflecs.dylib flecs.c
 ```
 
 ## Run Examples
 
-### Flecs C API (minimal wrapper)
+### Static Object File (RECOMMENDED - no -l flag needed!)
 
-Uses `FLECS_NO_CPP` with thin jank wrappers calling C functions directly.
+Loads flecs.o directly into the JIT via `jit_prc.load_object()`. No dynamic library required!
 
 ```shell
 jank -I./vendor/flecs/distr \
-     -l/Users/pfeodrippe/dev/something/vendor/flecs/distr/libflecs.dylib \
      --module-path src \
-     run-main my-flecs -main
+     run-main my-flecs-static -main
 ```
 
-### Flecs C++ API (full power with components & systems)
+### Dynamic Library (alternative)
 
-Uses the full C++ API with templates, type-safe components, and lambda systems.
+Uses `-l` to load the dylib via dlopen.
 
 ```shell
 jank -I./vendor/flecs/distr \
@@ -58,9 +61,10 @@ Done!
 
 ## Files
 
-- `src/my_flecs.jank` - C API example (minimal boilerplate)
-- `src/my_flecs_cpp.jank` - C++ API example (components, systems, lambdas)
-- `vendor/flecs/distr/` - Flecs source and compiled library
+- `src/my_flecs_static.jank` - **RECOMMENDED**: Loads .o file directly into JIT (no dylib!)
+- `src/my_flecs.jank` - C API example with dylib (minimal boilerplate)
+- `src/my_flecs_cpp.jank` - C++ API example with dylib (components, systems, lambdas)
+- `vendor/flecs/distr/` - Flecs source and compiled files
 
 ## Others
 

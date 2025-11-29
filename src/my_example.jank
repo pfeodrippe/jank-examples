@@ -14,7 +14,7 @@
 #_(cpp/raw "#include <flecs.c>")
 #_(cpp/raw "#include <flecs.h>")
 
-(def w (cpp/box (cpp/ecs_init)))
+#_(def w (cpp/box (cpp/ecs_init)))
 
 (comment
 
@@ -27,7 +27,12 @@
 
 
   (str-native/reverse "abcf ")
+  ;; is equivalent to
+  (cpp/clojure.string_native.reverse "abcf ")
+
   (starts_with "Sabor" "S")
+  ;; is equivalent to
+  (cpp/clojure.string_native.starts_with "Sabor" "S")
 
   (server/start-server {:port 5557})
 
@@ -181,10 +186,9 @@ return 0;
             };
           }")
 
-  (cpp/jank.runtime.get_global_cpp_functio)
-  (cpp/jank.runtime.get_global_cpp_types)
+  (cpp/jank.runtime.get_global_cpp_functions)
 
-  (str-native/)
+  (cpp/jank.runtime.get_global_cpp_types)
 
   (let* [arg (cpp/int. 6)
          f (cpp/eita.cpp.constructor.complex.pass_argument.foo. arg)]

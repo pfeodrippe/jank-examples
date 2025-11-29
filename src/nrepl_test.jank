@@ -1,0 +1,13 @@
+(ns nrepl-test
+  (:require [jank.nrepl-server.server :as server]))
+
+;; This file tests evaluating cpp/raw with header includes in nREPL context
+
+(defn -main [& args]
+  (println "Starting nREPL test server...")
+  (let [srv (server/start-server {:port 5559})]
+    (println "Server started on port 5559")
+    (println "Waiting for connection... (press enter to stop)")
+    (read-line)
+    (server/stop-server srv)
+    (println "Server stopped")))
