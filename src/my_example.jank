@@ -4,14 +4,15 @@
    [jank.nrepl-server.server :as server]
    [jank.export :as je]
    ["clojure/string_native.hpp" :as str-native :refer [starts_with]]
-   ["flecs.h" :as flecs]))
+   #_["flecs.h" :as flecs]))
 
 ;; PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH" jank --module-path src run-main eita
 ;; PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH" jank -Ivendor/flecs/distr -lvendor/flecs/distr/libflecs.dylib --module-path src run-main my-example start-server
 ;; PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:$PATH" llbd jank -I./vendor/flecs/distr --module-path src run-main my-example start-server
 
-(cpp/raw "#define FLECS_IMPLEMENTATION")
-(cpp/raw "#include <flecs.h>")
+#_(cpp/raw "#define FLECS_IMPLEMENTATION")
+#_(cpp/raw "#include <flecs.c>")
+#_(cpp/raw "#include <flecs.h>")
 
 (def w (cpp/box (cpp/ecs_init)))
 

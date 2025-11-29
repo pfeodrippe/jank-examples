@@ -2,4 +2,5 @@
   :plugins [[org.jank-lang/lein-jank "0.0.1-SNAPSHOT"]]
   :main my-example
 
-  :source-paths ["src"])
+  :source-paths ["src"
+                 "vendor"])

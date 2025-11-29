@@ -1,0 +1,48 @@
+(ns my-flecs)
+
+;; Include flecs header + minimal helper
+(cpp/raw "
+#define FLECS_NO_CPP
+#include \"flecs.h\"
+#include <jank/runtime/obj/opaque_box.hpp>
+
+// Get world pointer from opaque box
+inline ecs_world_t* get_world(jank::runtime::object_ref box) {
+  auto opaque = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(box);
+  return static_cast<ecs_world_t*>(opaque->data.data);
+}
+")
+
+;; ============================================================
+;; Flecs API - thin wrappers calling C directly
+;; ============================================================
+
+(defn create-world []
+  (cpp/box (cpp/ecs_init)))
+
+(defn destroy-world! [world]
+  (cpp/ecs_fini (cpp/get_world world)))
+
+(defn create-entity [world]
+  (cpp/ecs_new (cpp/get_world world)))
+
+(defn progress! [world dt]
+  (cpp/ecs_progress (cpp/get_world world) dt))
+
+;; ============================================================
+;; Main
+;; ============================================================
+
+(defn -main [& args]
+  (let [world (create-world)]
+    (println "Flecs world created!")
+    (println "World:" world)
+
+    (let [entity (create-entity world)]
+      (println "Entity created:" entity))
+
+    (progress! world 0.016)
+    (println "World progressed!")
+
+    (destroy-world! world)
+    (println "Flecs world destroyed!")))
