@@ -1,0 +1,149 @@
+(ns my-flecs-cpp)
+
+;; Use Flecs C++ API - Full power with components and systems!
+(cpp/raw "
+#include \"flecs.h\"
+#include <jank/runtime/obj/opaque_box.hpp>
+
+// ============================================================
+// Components - C++ structs become ECS components!
+// ============================================================
+struct Position {
+  float x, y;
+};
+
+struct Velocity {
+  float x, y;
+};
+
+// ============================================================
+// World wrapper
+// ============================================================
+inline flecs::world* get_world(jank::runtime::object_ref box) {
+  auto opaque = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(box);
+  return static_cast<flecs::world*>(opaque->data.data);
+}
+
+inline jank::runtime::object_ref create_world_cpp() {
+  auto* world = new flecs::world();
+  return jank::runtime::make_box<jank::runtime::obj::opaque_box>(
+    static_cast<void*>(world), \"flecs::world\");
+}
+
+inline void destroy_world_cpp(jank::runtime::object_ref world_box) {
+  delete get_world(world_box);
+}
+
+// ============================================================
+// Entity with components - the C++ way!
+// ============================================================
+inline uint64_t flecs_create_entity_with_position(jank::runtime::object_ref world_box,
+                                                   float x, float y) {
+  auto* world = get_world(world_box);
+  return world->entity()
+    .set<Position>({x, y})  // Template magic!
+    .id();
+}
+
+inline uint64_t flecs_create_moving_entity(jank::runtime::object_ref world_box,
+                                            float px, float py, float vx, float vy) {
+  auto* world = get_world(world_box);
+  return world->entity()
+    .set<Position>({px, py})
+    .set<Velocity>({vx, vy})
+    .id();
+}
+
+// Get component data - get<T>() returns const ref
+inline float get_position_x(jank::runtime::object_ref world_box, uint64_t entity) {
+  auto* world = get_world(world_box);
+  auto e = world->entity(entity);
+  if (e.has<Position>()) {
+    return e.get<Position>().x;
+  }
+  return 0.0f;
+}
+
+inline float get_position_y(jank::runtime::object_ref world_box, uint64_t entity) {
+  auto* world = get_world(world_box);
+  auto e = world->entity(entity);
+  if (e.has<Position>()) {
+    return e.get<Position>().y;
+  }
+  return 0.0f;
+}
+
+// ============================================================
+// System - define behavior in C++!
+// ============================================================
+inline void register_move_system(jank::runtime::object_ref world_box) {
+  auto* world = get_world(world_box);
+
+  // This is the C++ magic - type-safe query with lambda!
+  world->system<Position, const Velocity>(\"Move\")
+    .each([](Position& p, const Velocity& v) {
+      p.x += v.x;
+      p.y += v.y;
+    });
+}
+
+inline bool progress_world_cpp(jank::runtime::object_ref world_box, float dt) {
+  return get_world(world_box)->progress(dt);
+}
+")
+
+;; ============================================================
+;; Jank API
+;; ============================================================
+
+(defn create-world []
+  (cpp/create_world_cpp))
+
+(defn destroy-world! [world]
+  (cpp/destroy_world_cpp world))
+
+(defn create-entity-with-position [world x y]
+  (cpp/flecs_create_entity_with_position world x y))
+
+(defn create-moving-entity [world px py vx vy]
+  (cpp/flecs_create_moving_entity world px py vx vy))
+
+(defn get-position [world entity]
+  {:x (cpp/get_position_x world entity)
+   :y (cpp/get_position_y world entity)})
+
+(defn register-move-system! [world]
+  (cpp/register_move_system world))
+
+(defn progress! [world dt]
+  (cpp/progress_world_cpp world dt))
+
+;; ============================================================
+;; Main - demonstrate C++ ECS power!
+;; ============================================================
+
+(defn -main [& args]
+  (let [world (create-world)]
+    (println "=== Flecs C++ ECS Demo ===")
+
+    ;; Create entity with position component
+    (let [static-entity (create-entity-with-position world 10.0 20.0)]
+      (println "Static entity:" static-entity)
+      (println "  Position:" (get-position world static-entity)))
+
+    ;; Create moving entity with position + velocity
+    (let [moving-entity (create-moving-entity world 0.0 0.0 1.0 2.0)]
+      (println "\nMoving entity:" moving-entity)
+      (println "  Initial position:" (get-position world moving-entity))
+
+      ;; Register the move system - C++ lambda!
+      (register-move-system! world)
+
+      ;; Run a few frames
+      (println "\nRunning simulation...")
+      (dotimes [_ 5]
+        (progress! world 1.0)
+        (println "  Position:" (get-position world moving-entity))))
+
+    (destroy-world! world)
+    (println "\nDone!")))
