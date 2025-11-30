@@ -1,15 +1,11 @@
-(ns my-flecs-static
+(ns my-flecs-static-and-wasm
   (:require
    ["flecs.h" :as flecs]
    ["flecs.h" :as fw :scope "flecs.world"]))
 
 ;; Now flecs symbols should be available!
 (cpp/raw "
-#include \"flecs.h\"
 #include <jank/runtime/obj/opaque_box.hpp>
-
-struct Position { float x, y; };
-struct Velocity { float x, y; };
 
 inline flecs::world* get_world(jank::runtime::object_ref box) {
   auto opaque = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(box);
@@ -34,28 +30,6 @@ inline bool flecs_progress(jank::runtime::object_ref world_box, float dt) {
   return get_world(world_box)->progress(dt);
 }")
 
-(comment
-
-  (native-header-functions 'flecs)
-
-  (flecs/world.get)
-
-  (cpp/box (cpp/& (cpp/Position. (cpp/float. 4.0) (cpp/float. 2.0))))
-
-  (jank.compiler/native-source
-   ' (cpp/box (cpp/& (flecs/world.))))
-
-  (let [w (flecs/world)]
-    (flecs/world.defer_begin w)
-    (flecs/world.defer_end w))
-
-  (let [w (flecs/world)]
-    (fw/defer_begin w)
-    (fw/defer_end w))
-
-  (cpp/flecs.world.get )
-
-  ())
 
 (defn create-world [] (cpp/flecs_create_world))
 (defn destroy-world! [world] (cpp/flecs_destroy_world world))
@@ -63,8 +37,13 @@ inline bool flecs_progress(jank::runtime::object_ref world_box, float dt) {
 (defn progress! [world dt] (cpp/flecs_progress world dt))
 
 (defn -main [& args]
-  #_(println :ALIAS_COMPLETIONS (native-header-functions 'flecs))
-  #_(println :WORLD_MEMBERS (native-header-functions 'flecs "world."))
+  (println "Starting Flecs demo..."
+           [(let [w (flecs/world)]
+              (flecs/world.defer_begin w)
+              (flecs/world.defer_end w))
+            (let [w (flecs/world)]
+              (fw/defer_begin w)
+              (fw/defer_end w))])
   (let [world (create-world)]
     (println "Flecs world created (via static object file)!")
     (println "World:" world)
@@ -74,3 +53,6 @@ inline bool flecs_progress(jank::runtime::object_ref world_box, float dt) {
     (println "World progressed!")
     (destroy-world! world)
     (println "Done!")))
+
+;; Call -main when loaded
+(-main)

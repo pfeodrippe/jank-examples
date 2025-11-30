@@ -60,8 +60,6 @@ inline int progress_wrapper(jank::runtime::object_ref world_box, float dt) {
 (defn create-entity [world] (cpp/create_entity_wrapper world))
 (defn progress! [world dt] (cpp/progress_wrapper world (float dt)))
 
-;; Main function that will be called at WASM runtime
-;; NOTE: ^:export requires exactly 1 numeric parameter for WASM export wrapper
 (defn ^:export run-flecs [n]
   (println "=== Flecs WASM Demo ===" n)
   (cpp/jank_flecs_hello)
@@ -75,9 +73,3 @@ inline int progress_wrapper(jank::runtime::object_ref world_box, float dt) {
     (destroy-world! world))
   (println "=== Done ===")
   n)
-
-;; Note: Don't call -main at load time because the native Flecs
-;; library has issues during AOT compilation.
-;; In WASM, the user can call (-main) interactively or export it.
-(println "Flecs WASM module loaded successfully!")
-(println "Call (run-flecs 1) to run the demo.")
