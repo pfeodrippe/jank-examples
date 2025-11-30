@@ -1,0 +1,83 @@
+(ns my-flecs-wasm)
+
+;; Flecs WASM demo using the jank_flecs wrapper functions
+
+;; Load the native wrapper and Flecs library for JIT compilation (native only)
+(cpp/raw "
+#include <jank/runtime/context.hpp>
+
+#ifndef JANK_TARGET_WASM
+inline void load_flecs_native_libs() {
+  jank::runtime::__rt_ctx->jit_prc.load_object(\"/Users/pfeodrippe/dev/something/vendor/flecs/distr/flecs.o\");
+  jank::runtime::__rt_ctx->jit_prc.load_object(\"/Users/pfeodrippe/dev/something/vendor/flecs/distr/flecs_jank_wrapper_native.o\");
+}
+#else
+inline void load_flecs_native_libs() {}
+#endif
+")
+
+(cpp/load_flecs_native_libs)
+
+;; Declare wrapper functions
+(cpp/raw "
+#include <cstdint>
+#include <jank/runtime/obj/opaque_box.hpp>
+
+extern \"C\" {
+  void* jank_flecs_create_world();
+  void jank_flecs_destroy_world(void* world);
+  uint64_t jank_flecs_create_entity(void* world);
+  int jank_flecs_progress(void* world, float delta_time);
+  void jank_flecs_hello();
+}
+
+inline jank::runtime::object_ref create_world_wrapper() {
+  void* world = jank_flecs_create_world();
+  return jank::runtime::make_box<jank::runtime::obj::opaque_box>(world, \"flecs::world\");
+}
+
+inline void* get_world_ptr(jank::runtime::object_ref box) {
+  auto opaque = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(box);
+  return opaque->data.data;
+}
+
+inline void destroy_world_wrapper(jank::runtime::object_ref world_box) {
+  jank_flecs_destroy_world(get_world_ptr(world_box));
+}
+
+inline uint64_t create_entity_wrapper(jank::runtime::object_ref world_box) {
+  return jank_flecs_create_entity(get_world_ptr(world_box));
+}
+
+inline int progress_wrapper(jank::runtime::object_ref world_box, float dt) {
+  return jank_flecs_progress(get_world_ptr(world_box), dt);
+}
+")
+
+;; Jank functions
+(defn create-world [] (cpp/create_world_wrapper))
+(defn destroy-world! [world] (cpp/destroy_world_wrapper world))
+(defn create-entity [world] (cpp/create_entity_wrapper world))
+(defn progress! [world dt] (cpp/progress_wrapper world (float dt)))
+
+;; Main function that will be called at WASM runtime
+;; NOTE: ^:export requires exactly 1 numeric parameter for WASM export wrapper
+(defn ^:export run-flecs [n]
+  (println "=== Flecs WASM Demo ===" n)
+  (cpp/jank_flecs_hello)
+  (let [world (create-world)]
+    (println "World created:" world)
+    (let [e1 (create-entity world)
+          e2 (create-entity world)]
+      (println "Entities:" e1 e2))
+    (progress! world 0.016)
+    (println "Progressed!")
+    (destroy-world! world))
+  (println "=== Done ===")
+  n)
+
+;; Note: Don't call -main at load time because the native Flecs
+;; library has issues during AOT compilation.
+;; In WASM, the user can call (-main) interactively or export it.
+(println "Flecs WASM module loaded successfully!")
+(println "Call (run-flecs 1) to run the demo.")
