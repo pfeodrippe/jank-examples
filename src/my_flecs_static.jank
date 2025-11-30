@@ -5,7 +5,6 @@
 
 ;; Now flecs symbols should be available!
 (cpp/raw "
-#include \"flecs.h\"
 #include <jank/runtime/obj/opaque_box.hpp>
 
 struct Position { float x, y; };
@@ -44,6 +43,8 @@ inline bool flecs_progress(jank::runtime::object_ref world_box, float dt) {
 
   (jank.compiler/native-source
    ' (cpp/box (cpp/& (flecs/world.))))
+  (println (jank.compiler/native-aot-source-formatted
+            ' (cpp/box (cpp/& (flecs/world.)))))
 
   (let [w (flecs/world)]
     (flecs/world.defer_begin w)
@@ -53,7 +54,9 @@ inline bool flecs_progress(jank::runtime::object_ref world_box, float dt) {
     (fw/defer_begin w)
     (fw/defer_end w))
 
-  (cpp/flecs.world.get )
+  (flecs/world.dim)
+
+  (fw/alert)
 
   ())
 
@@ -74,3 +77,5 @@ inline bool flecs_progress(jank::runtime::object_ref world_box, float dt) {
     (println "World progressed!")
     (destroy-world! world)
     (println "Done!")))
+
+#?(:wasm (-main))
