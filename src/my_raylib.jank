@@ -1,6 +1,8 @@
 (ns my-raylib
-  #_(:require
-   ["raylib.h" :as raylib]))
+  (:require
+   [jank.nrepl-server.server :as server]
+   ;; Empty scope is for globals.
+   ["raylib.h" :as rl :scope ""]))
 
 ;; Simple raylib demo - draws shapes on screen
 ;; Uses pre-compiled raylib wrapper loaded as a dynamic library
@@ -53,33 +55,40 @@ extern \"C\" {
 
 (println :LOADING...)
 
+(defn draw
+  []
+  ;; Begin drawing
+  (begin-drawing!)
+
+  (clear! 245 245 245 255) ;; RAYWHITE
+
+  ;; Draw some shapes
+  (draw-rect! 100 100 200 150 230 41 55 255) ;; RED rectangle
+  (draw-circle! (rl/GetMouseX) (rl/GetMouseY) 80.0 0 228 48 255) ;; GREEN circle
+  (draw-rect! 350 350 120 180 0 121 241 255) ;; BLUE rectangle
+  (draw-circle! 200 450 60.0 253 249 0 255)  ;; YELLOW circle
+
+  ;; Draw text
+  (draw-text! "Hello from jank + raylib!!!" 250 50 30 0 0 0 255)
+  (draw-text! "Press ESC to exit" 300 550 20 0 0 0 255)
+
+  (rl/DrawFPS 600 200)
+
+  ;; End drawing
+  (end-drawing!))
+
 (defn -main [& args]
-  (println "Starting raylib demo...")
+  (println "Starting raylib ddemo...")
 
   ;; Initialize window
   (init-window! 800 600 "jank + raylib demo")
   (set-fps! 60)
 
+  #?(:jank (server/start-server {:port 5557}))
+
   ;; Main game loop
-  (loop []
-    (when-not (should-close?)
-      ;; Begin drawing
-      (begin-drawing!)
-      (clear! 245 245 245 255) ;; RAYWHITE
-
-      ;; Draw some shapes
-      (draw-rect! 100 100 200 150 230 41 55 255) ;; RED rectangle
-      (draw-circle! 500 200 80.0 0 228 48 255)   ;; GREEN circle
-      (draw-rect! 350 350 120 180 0 121 241 255) ;; BLUE rectangle
-      (draw-circle! 200 450 60.0 253 249 0 255)  ;; YELLOW circle
-
-      ;; Draw text
-      (draw-text! "SSHello from jank + raylib!!!" 250 50 30 0 0 0 255)
-      (draw-text! "Press ESC to exit" 300 550 20 0 0 0 255)
-
-      ;; End drawing
-      (end-drawing!)
-      (recur)))
+  (while (not (should-close?))
+    (draw))
 
   ;; Close window
   (close-window!)
