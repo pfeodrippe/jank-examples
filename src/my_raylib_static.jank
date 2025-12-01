@@ -1,0 +1,85 @@
+(ns my-raylib-static)
+
+;; Simple raylib demo using static linking via pre-compiled wrapper
+;; The wrapper (libraylib_jank.dylib) contains raylib + macOS frameworks
+
+(cpp/raw "
+// Extern declarations for raylib wrapper functions
+// These are defined in libraylib_jank.dylib which links raylib with macOS frameworks
+extern \"C\" {
+  void raylib_init_window(int w, int h, const char* title);
+  void raylib_close_window();
+  void raylib_set_fps(int fps);
+  bool raylib_should_close();
+  void raylib_begin_drawing();
+  void raylib_end_drawing();
+  void raylib_clear(int r, int g, int b, int a);
+  void raylib_draw_rect(int x, int y, int w, int h, int r, int g, int b, int a);
+  void raylib_draw_circle(int x, int y, float radius, int r, int g, int b, int a);
+  void raylib_draw_text(const char* text, int x, int y, int size, int r, int g, int b, int a);
+}
+")
+
+(defn init-window! [w h title]
+  (cpp/raylib_init_window w h title))
+
+(defn close-window! []
+  (cpp/raylib_close_window))
+
+(defn set-fps! [fps]
+  (cpp/raylib_set_fps fps))
+
+(defn should-close? []
+  (cpp/raylib_should_close))
+
+(defn begin-drawing! []
+  (cpp/raylib_begin_drawing))
+
+(defn end-drawing! []
+  (cpp/raylib_end_drawing))
+
+(defn clear! [r g b a]
+  (cpp/raylib_clear r g b a))
+
+(defn draw-rect! [x y w h r g b a]
+  (cpp/raylib_draw_rect x y w h r g b a))
+
+(defn draw-circle! [x y radius r g b a]
+  (cpp/raylib_draw_circle x y radius r g b a))
+
+(defn draw-text! [text x y size r g b a]
+  (cpp/raylib_draw_text text x y size r g b a))
+
+(defn -main [& args]
+  (println "Starting raylib demo (static)...")
+
+  ;; Initialize window
+  (init-window! 800 600 "jank + raylib (static)")
+  (set-fps! 60)
+
+  ;; Main game loop
+  (loop []
+    (when-not (should-close?)
+      ;; Begin drawing
+      (begin-drawing!)
+      (clear! 245 245 245 255) ;; RAYWHITE
+
+      ;; Draw some shapes
+      (draw-rect! 100 100 200 150 230 41 55 255)    ;; RED rectangle
+      (draw-circle! 500 200 80.0 0 228 48 255)      ;; GREEN circle
+      (draw-rect! 350 350 120 180 0 121 241 255)    ;; BLUE rectangle
+      (draw-circle! 200 450 60.0 253 249 0 255)     ;; YELLOW circle
+
+      ;; Draw text
+      (draw-text! "Hello from jank + raylib (STATIC)!" 220 50 30 0 0 0 255)
+      (draw-text! "Press ESC to exit" 300 550 20 0 0 0 255)
+
+      ;; End drawing
+      (end-drawing!)
+      (recur)))
+
+  ;; Close window
+  (close-window!)
+  (println "Done!"))
+
+(-main)
