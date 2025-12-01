@@ -143,8 +143,11 @@ export CXX=$PWD/build/llvm-install/usr/local/bin/clang++
 - `vendor/raylib/distr/libraylib_jank.dylib` - Dynamic library (for JIT)
 - `vendor/raylib/distr/libraylib_jank.a` - Static library (for AOT)
 - `vendor/raylib/distr/libraylib.a` - Original raylib static library
-- `vendor/raylib/distr/raylib_jank_wrapper.o` - Wrapper object file
+- `vendor/raylib/distr/libraylib.web.a` - WASM static library (for Emscripten)
+- `vendor/raylib/distr/raylib_jank_wrapper.o` - Native wrapper object file
+- `vendor/raylib/distr/raylib_jank_wrapper_wasm.o` - WASM wrapper object file
 - `vendor/raylib/distr/raylib.h` - Raylib header
+- `my_raylib_canvas.html` - HTML template for WASM canvas rendering (in project root)
 
 ## Dynamic Version (Still Works)
 ```bash
@@ -155,3 +158,83 @@ jank -L/Users/pfeodrippe/dev/something/vendor/raylib/distr \
   --module-path src \
   run-main my-raylib
 ```
+
+## WASM Support - SUCCESS
+
+Raylib also works in WebAssembly! The build generates `.js`, `.wasm`, and `.html` files that run in browsers.
+
+### WASM Build Command
+**IMPORTANT**: Use `RELEASE=1` to avoid "local count too large" WebAssembly error!
+
+```bash
+export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
+export DYLD_LIBRARY_PATH="/Users/pfeodrippe/dev/something/vendor/raylib/distr:$DYLD_LIBRARY_PATH"
+
+cd /Users/pfeodrippe/dev/jank/compiler+runtime
+
+# Fast build (~7s) with ASYNCIFY_ONLY optimization
+RELEASE=1 ./bin/emscripten-bundle --skip-build \
+    -L /Users/pfeodrippe/dev/something/vendor/raylib/distr \
+    --native-lib raylib_jank \
+    --lib /Users/pfeodrippe/dev/something/vendor/raylib/distr/libraylib.web.a \
+    --lib /Users/pfeodrippe/dev/something/vendor/raylib/distr/raylib_jank_wrapper_wasm.o \
+    -I /Users/pfeodrippe/dev/something/vendor/raylib/distr \
+    --em-flag "-sUSE_GLFW=3" \
+    --em-flag "-sASYNCIFY" \
+    --em-flag "-sASYNCIFY_ONLY=[]" \
+    --em-flag "-sFORCE_FILESYSTEM=1" \
+    /Users/pfeodrippe/dev/something/src/my_raylib.jank
+```
+
+The `-sASYNCIFY_ONLY=[]` limits async instrumentation, reducing link time from minutes to ~7 seconds.
+
+### Key WASM Options
+- `--native-lib raylib_jank` - Load dylib for JIT symbol resolution during AOT compilation
+- `--lib libraylib.web.a` - WASM static library for Emscripten linking
+- `--lib raylib_jank_wrapper_wasm.o` - WASM wrapper object file
+- `--em-flag "-sUSE_GLFW=3"` - Use Emscripten's GLFW implementation
+- `--em-flag "-sASYNCIFY"` - Enable async support for raylib's main loop
+- `--em-flag "-sFORCE_FILESYSTEM=1"` - Enable filesystem access
+
+### Generated Files
+- `build-wasm/my_raylib.js` - ES module loader
+- `build-wasm/my_raylib.wasm` - WebAssembly binary
+- `build-wasm/my_raylib.html` - Browser test page (basic)
+
+### Run in Browser
+**Note**: The `--run` flag runs with Node.js which has no graphics context.
+For actual raylib rendering, you must use a browser:
+
+```bash
+# Copy generated WASM files to something folder root
+cp /Users/pfeodrippe/dev/jank/compiler+runtime/build-wasm/my_raylib.js \
+   /Users/pfeodrippe/dev/jank/compiler+runtime/build-wasm/my_raylib.wasm \
+   /Users/pfeodrippe/dev/something/
+
+# Start local server from something folder
+cd /Users/pfeodrippe/dev/something
+python3 -m http.server 8888
+# Open http://localhost:8888/my_raylib_canvas.html
+```
+
+### Note: -main Entry Point
+Do NOT add `(-main)` at the end of your jank source file!
+The WASM entry file now automatically calls `-main` after loading the module.
+This prevents the raylib window from opening during compilation while still
+running the application in the browser.
+
+### WASM Wrapper
+Create `raylib_jank_wrapper_wasm.o` by compiling the wrapper with emcc:
+```bash
+cd vendor/raylib/distr
+emcc -c raylib_jank_wrapper.cpp -o raylib_jank_wrapper_wasm.o \
+  -I. -DPLATFORM_WEB -std=c++20
+```
+
+### emscripten-bundle Modifications
+Added to `/Users/pfeodrippe/dev/jank/compiler+runtime/bin/emscripten-bundle`:
+- `--native-lib LIB` - Load native dylib for JIT during AOT compilation
+- `-L DIR` - Add native library search directory
+- `--em-flag FLAG` - Add extra flags to em++ linker
+- Changed from `jank run` to `jank compile-module` to avoid evaluating top-level side effects
+- Entry file now automatically calls `-main` after module load (no need to add it to source)

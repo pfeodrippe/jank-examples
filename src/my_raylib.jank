@@ -49,6 +49,8 @@ extern \"C\" {
 (defn draw-text! [text x y size r g b a]
   (cpp/raylib_draw_text text x y size r g b a))
 
+(println :LOADING...)
+
 (defn -main [& args]
   (println "Starting raylib demo...")
 
@@ -64,13 +66,13 @@ extern \"C\" {
       (clear! 245 245 245 255) ;; RAYWHITE
 
       ;; Draw some shapes
-      (draw-rect! 100 100 200 150 230 41 55 255)    ;; RED rectangle
-      (draw-circle! 500 200 80.0 0 228 48 255)      ;; GREEN circle
-      (draw-rect! 350 350 120 180 0 121 241 255)    ;; BLUE rectangle
-      (draw-circle! 200 450 60.0 253 249 0 255)     ;; YELLOW circle
+      (draw-rect! 100 100 200 150 230 41 55 255) ;; RED rectangle
+      (draw-circle! 500 200 80.0 0 228 48 255)   ;; GREEN circle
+      (draw-rect! 350 350 120 180 0 121 241 255) ;; BLUE rectangle
+      (draw-circle! 200 450 60.0 253 249 0 255)  ;; YELLOW circle
 
       ;; Draw text
-      (draw-text! "Hello from jank + raylib!" 250 50 30 0 0 0 255)
+      (draw-text! "Hello from jank + raylib!!!" 250 50 30 0 0 0 255)
       (draw-text! "Press ESC to exit" 300 550 20 0 0 0 255)
 
       ;; End drawing
