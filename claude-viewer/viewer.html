@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Threads</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #0a0a0a;
+            color: #e5e5e5;
+            line-height: 1.6;
+        }
+
+        /* Layout */
+        .container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: #111;
+            border-right: 1px solid #222;
+            height: 100vh;
+            position: fixed;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #222;
+        }
+
+        .sidebar-header h1 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .projects-list {
+            padding: 12px;
+        }
+
+        .project {
+            margin-bottom: 4px;
+        }
+
+        .project-header {
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: 6px;
+            color: #999;
+        }
+
+        .project-header:hover {
+            background: #1a1a1a;
+            color: #fff;
+        }
+
+        .project-header .arrow {
+            font-size: 10px;
+            transition: transform 0.15s;
+        }
+
+        .project.open .arrow {
+            transform: rotate(90deg);
+        }
+
+        .sessions {
+            display: none;
+            padding-left: 20px;
+        }
+
+        .project.open .sessions {
+            display: block;
+        }
+
+        .session {
+            padding: 6px 12px;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .session:hover {
+            background: #1a1a1a;
+            color: #999;
+        }
+
+        .session.active {
+            background: #1a1a1a;
+            color: #fff;
+        }
+
+        .session-date {
+            font-size: 11px;
+            color: #555;
+        }
+
+        /* Main Content */
+        .main {
+            flex: 1;
+            margin-left: 280px;
+            min-height: 100vh;
+        }
+
+        .main-header {
+            padding: 16px 32px;
+            border-bottom: 1px solid #222;
+            background: #0a0a0a;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .main-header h2 {
+            font-size: 14px;
+            font-weight: 500;
+            color: #fff;
+        }
+
+        .thread-meta {
+            font-size: 12px;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        .messages {
+            max-width: 820px;
+            margin: 0 auto;
+            padding: 24px 32px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            color: #666;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        /* Message */
+        .message {
+            margin-bottom: 32px;
+        }
+
+        .message-row {
+            display: flex;
+            gap: 16px;
+        }
+
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .message.user .avatar {
+            background: #2563eb;
+            color: #fff;
+        }
+
+        .message.assistant .avatar {
+            background: #7c3aed;
+            color: #fff;
+        }
+
+        .message-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .message-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .message-author {
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .message-time {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .message-body {
+            font-size: 15px;
+            color: #d4d4d4;
+        }
+
+        .message-body p {
+            margin-bottom: 12px;
+        }
+
+        .message-body p:last-child {
+            margin-bottom: 0;
+        }
+
+        /* Text content */
+        .text-block {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Inline code */
+        code {
+            background: #1a1a1a;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', Monaco, Consolas, monospace;
+            font-size: 13px;
+            color: #e879f9;
+        }
+
+        /* Code blocks */
+        pre {
+            background: #111;
+            border: 1px solid #222;
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', Monaco, Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #d4d4d4;
+            margin: 12px 0;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+
+        /* Tool blocks */
+        .tool-block {
+            background: #111;
+            border: 1px solid #222;
+            border-radius: 8px;
+            margin: 12px 0;
+            overflow: hidden;
+        }
+
+        .tool-header {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            border-bottom: 1px solid #222;
+        }
+
+        .tool-header:hover {
+            background: #151515;
+        }
+
+        .tool-badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 3px 8px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .tool-block.tool .tool-badge {
+            background: #78350f;
+            color: #fbbf24;
+        }
+
+        .tool-block.result .tool-badge {
+            background: #14532d;
+            color: #4ade80;
+        }
+
+        .tool-block.thinking .tool-badge {
+            background: #1e3a8a;
+            color: #60a5fa;
+        }
+
+        .tool-preview {
+            flex: 1;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #666;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .tool-toggle {
+            color: #666;
+            font-size: 10px;
+            transition: transform 0.15s;
+        }
+
+        .tool-block.open .tool-toggle {
+            transform: rotate(90deg);
+        }
+
+        .tool-content {
+            display: none;
+            padding: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #999;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            background: #0a0a0a;
+        }
+
+        .tool-block.open .tool-content {
+            display: block;
+        }
+
+        .tool-block.open .tool-preview {
+            display: none;
+        }
+
+        /* File Edit */
+        .file-edit {
+            background: #0d1a0d;
+            border: 1px solid #166534;
+            border-radius: 8px;
+            margin: 12px 0;
+            overflow: hidden;
+        }
+
+        .file-edit-header {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(22, 101, 52, 0.2);
+            border-bottom: 1px solid #166534;
+        }
+
+        .file-edit-badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 3px 8px;
+            border-radius: 4px;
+            background: #14532d;
+            color: #4ade80;
+        }
+
+        .file-edit-path {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .file-edit-stats {
+            margin-left: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+
+        .file-edit-stats .add {
+            color: #4ade80;
+        }
+
+        .file-edit-stats .del {
+            color: #f87171;
+            margin-left: 8px;
+        }
+
+        .diff-content {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow: auto;
+        }
+
+        .diff-hunk {
+            background: rgba(96, 165, 250, 0.1);
+            color: #60a5fa;
+            padding: 4px 14px;
+            font-size: 11px;
+        }
+
+        .diff-line {
+            padding: 1px 14px;
+            white-space: pre;
+        }
+
+        .diff-line.add {
+            background: rgba(74, 222, 128, 0.1);
+            color: #4ade80;
+        }
+
+        .diff-line.del {
+            background: rgba(248, 113, 113, 0.1);
+            color: #f87171;
+        }
+
+        .diff-line.ctx {
+            color: #666;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #444;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>Claude Threads</h1>
+            </div>
+            <div class="projects-list" id="projects-list">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="main-header">
+                <h2 id="current-session">Select a thread</h2>
+                <div class="thread-meta" id="thread-meta"></div>
+            </div>
+            <div class="messages" id="messages">
+                <div class="empty-state">Select a thread from the sidebar</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadProjects() {
+            try {
+                const response = await fetch('/api/projects');
+                const projects = await response.json();
+                renderProjects(projects);
+            } catch (err) {
+                document.getElementById('projects-list').innerHTML = '<div class="loading">Error loading</div>';
+            }
+        }
+
+        function renderProjects(projects) {
+            const container = document.getElementById('projects-list');
+            container.innerHTML = projects.map((project, idx) => `
+                <div class="project ${idx === 0 ? 'open' : ''}" data-path="${project.path}">
+                    <div class="project-header" onclick="toggleProject(this)">
+                        <span class="arrow">▶</span>
+                        <span>${getShortName(project.name)}</span>
+                    </div>
+                    <div class="sessions">
+                        ${project.sessions.map(session => `
+                            <div class="session" onclick="loadSession('${project.path}', '${session.file}', '${session.date}', event)">
+                                <div>${session.file.replace('.jsonl', '').substring(0, 8)}...</div>
+                                <div class="session-date">${session.date}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function getShortName(name) {
+            const parts = name.split('/');
+            return parts.slice(-2).join('/');
+        }
+
+        function toggleProject(header) {
+            header.parentElement.classList.toggle('open');
+        }
+
+        async function loadSession(projectPath, sessionFile, sessionDate, event) {
+            document.querySelectorAll('.session').forEach(s => s.classList.remove('active'));
+            event.target.closest('.session').classList.add('active');
+
+            document.getElementById('messages').innerHTML = '<div class="loading">Loading...</div>';
+            document.getElementById('current-session').textContent = sessionFile.replace('.jsonl', '');
+            document.getElementById('thread-meta').textContent = sessionDate;
+
+            try {
+                const response = await fetch(`/api/session?project=${encodeURIComponent(projectPath)}&file=${encodeURIComponent(sessionFile)}`);
+                const messages = await response.json();
+                renderMessages(messages);
+            } catch (err) {
+                document.getElementById('messages').innerHTML = '<div class="loading">Error loading</div>';
+            }
+        }
+
+        function renderMessages(messages) {
+            const container = document.getElementById('messages');
+            const conversationMessages = messages.filter(m => (m.type === 'user' || m.type === 'assistant') && m.message);
+
+            if (conversationMessages.length === 0) {
+                container.innerHTML = '<div class="empty-state">No messages</div>';
+                return;
+            }
+
+            const grouped = [];
+            let current = null;
+
+            for (const msg of conversationMessages) {
+                const role = msg.message.role || msg.type;
+                if (msg.toolUseResult && msg.toolUseResult.structuredPatch) {
+                    grouped.push({ role: 'file-edit', messages: [msg] });
+                    current = null;
+                } else if (!current || current.role !== role) {
+                    current = { role, messages: [msg] };
+                    grouped.push(current);
+                } else {
+                    current.messages.push(msg);
+                }
+            }
+
+            container.innerHTML = grouped.map(group => {
+                if (group.role === 'file-edit') {
+                    return group.messages.map(msg => renderFileEdit(msg.toolUseResult)).join('');
+                }
+
+                const content = group.messages.map(msg => renderContent(msg.message.content, group.role)).filter(h => h).join('');
+                if (!content) return '';
+
+                const isUser = group.role === 'user';
+                return `
+                    <div class="message ${group.role}">
+                        <div class="message-row">
+                            <div class="avatar">${isUser ? 'U' : 'C'}</div>
+                            <div class="message-content">
+                                <div class="message-meta">
+                                    <span class="message-author">${isUser ? 'You' : 'Claude'}</span>
+                                </div>
+                                <div class="message-body">${content}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).filter(h => h).join('');
+
+            document.querySelectorAll('.tool-header').forEach(el => {
+                el.addEventListener('click', () => el.parentElement.classList.toggle('open'));
+            });
+        }
+
+        function renderContent(content, role) {
+            if (typeof content === 'string') {
+                const cleaned = cleanTags(content);
+                return cleaned ? `<div class="text-block">${formatText(cleaned)}</div>` : '';
+            }
+            if (Array.isArray(content)) {
+                const filtered = role === 'user' ? content.filter(b => b.type !== 'tool_result') : content;
+                return filtered.map(b => renderBlock(b)).join('');
+            }
+            return '';
+        }
+
+        function renderBlock(block) {
+            if (!block) return '';
+            switch (block.type) {
+                case 'text':
+                    const text = cleanTags(block.text || '');
+                    return text ? `<div class="text-block">${formatText(text)}</div>` : '';
+                case 'thinking':
+                    return renderTool('thinking', 'Thinking', block.thinking || '');
+                case 'tool_use':
+                    return renderTool('tool', block.name || 'Tool', formatParams(block.input));
+                case 'tool_result':
+                    return renderTool('result', 'Result', extractResult(block.content));
+                default:
+                    return block.text ? `<div class="text-block">${formatText(cleanTags(block.text))}</div>` : '';
+            }
+        }
+
+        function renderTool(type, label, content) {
+            const preview = (content || '').split('\n').slice(0, 2).join(' ').substring(0, 80);
+            return `
+                <div class="tool-block ${type}">
+                    <div class="tool-header">
+                        <span class="tool-badge">${esc(label)}</span>
+                        <span class="tool-preview">${esc(preview)}</span>
+                        <span class="tool-toggle">▶</span>
+                    </div>
+                    <div class="tool-content">${esc(content)}</div>
+                </div>
+            `;
+        }
+
+        function renderFileEdit(result) {
+            const path = result.filePath || 'Unknown';
+            const patches = result.structuredPatch || [];
+            let add = 0, del = 0;
+            patches.forEach(h => (h.lines || []).forEach(l => { if (l[0] === '+') add++; else if (l[0] === '-') del++; }));
+
+            let diff = '';
+            patches.forEach(h => {
+                diff += `<div class="diff-hunk">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</div>`;
+                (h.lines || []).forEach(l => {
+                    const cls = l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : 'ctx';
+                    diff += `<div class="diff-line ${cls}">${esc(l)}</div>`;
+                });
+            });
+
+            return `
+                <div class="file-edit">
+                    <div class="file-edit-header">
+                        <span class="file-edit-badge">Edit</span>
+                        <span class="file-edit-path">${esc(path)}</span>
+                        <span class="file-edit-stats"><span class="add">+${add}</span><span class="del">-${del}</span></span>
+                    </div>
+                    <div class="diff-content">${diff}</div>
+                </div>
+            `;
+        }
+
+        function cleanTags(text) {
+            if (!text) return '';
+            return text
+                .replace(/<command-name>[\s\S]*?<\/command-name>/g, '')
+                .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
+                .replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
+                .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
+                .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+                .replace(/Caveat: The messages below.*?explicitly asks you to\./g, '')
+                .trim();
+        }
+
+        function formatText(text) {
+            let html = esc(text);
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+                `<pre>${code.trim()}</pre>`);
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            return html;
+        }
+
+        function formatParams(input) {
+            if (!input) return '';
+            if (typeof input === 'string') return input;
+            return Object.entries(input).map(([k, v]) =>
+                `${k}: ${typeof v === 'string' ? v : JSON.stringify(v, null, 2)}`
+            ).join('\n\n');
+        }
+
+        function extractResult(content) {
+            if (typeof content === 'string') return content;
+            if (Array.isArray(content)) return content.map(i => i.text || JSON.stringify(i)).join('\n');
+            return content?.text || JSON.stringify(content, null, 2);
+        }
+
+        function esc(text) {
+            if (text == null) return '';
+            const div = document.createElement('div');
+            div.textContent = String(text);
+            return div.innerHTML;
+        }
+
+        loadProjects();
+    </script>
+</body>
+</html>

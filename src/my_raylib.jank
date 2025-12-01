@@ -1,4 +1,6 @@
-(ns my-raylib)
+(ns my-raylib
+  #_(:require
+   ["raylib.h" :as raylib]))
 
 ;; Simple raylib demo - draws shapes on screen
 ;; Uses pre-compiled raylib wrapper loaded as a dynamic library
@@ -72,7 +74,7 @@ extern \"C\" {
       (draw-circle! 200 450 60.0 253 249 0 255)  ;; YELLOW circle
 
       ;; Draw text
-      (draw-text! "Hello from jank + raylib!!!" 250 50 30 0 0 0 255)
+      (draw-text! "SSHello from jank + raylib!!!" 250 50 30 0 0 0 255)
       (draw-text! "Press ESC to exit" 300 550 20 0 0 0 255)
 
       ;; End drawing
