@@ -1,20 +1,25 @@
-(ns my-integrated-demo)
+(ns my-integrated-demo
+  (:require
+   ;; Raylib with global scope (C functions)
+   ["raylib.h" :as rl :scope ""]
+   ;; ImGui with ImGui:: scope
+   ["imgui.h" :as imgui :scope "ImGui"]))
 
-;; Integrated demo: Raylib + ImGui + JoltPhysics
-;; Pattern: cpp/raw for C++ bridging, jank for logic and state
+;; Integrated demo: Raylib + ImGui + JoltPhysics + Flecs
+;; Uses header requires for cleaner code
 
 ;; =============================================================================
-;; C++ bridging layer
+;; C++ bridging layer (minimal - only what can't be done via header requires)
 ;; =============================================================================
 
 (cpp/raw "
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
-#include <vector>
 #include <raylib.h>
 #include <rlgl.h>
 #include <imgui.h>
+#include <flecs.h>
 #include <jank/runtime/obj/opaque_box.hpp>
 #include <jank/runtime/obj/persistent_vector.hpp>
 
@@ -58,18 +63,37 @@ extern \"C\" {
     int jolt_world_get_num_active_bodies(void* w);
 }
 
+// Flecs wrapper extern declarations
+extern \"C\" {
+    void* jank_flecs_create_world();
+    void jank_flecs_destroy_world(void* w);
+    uint64_t jank_flecs_create_entity(void* w);
+    int jank_flecs_progress(void* w, float dt);
+}
+
 // =============================================================================
-// Global state (managed from jank)
+// Entity storage (ODR-safe vector + Flecs entity IDs)
 // =============================================================================
 
 struct Entity {
-    uint32_t id;
+    uint64_t flecs_id;  // Flecs entity ID
+    uint32_t jolt_id;   // Jolt body ID
     float radius;
     uint8_t r, g, b;
 };
 
-static void* g_world = nullptr;
 static std::vector<Entity>* g_entities_ptr = nullptr;
+
+inline std::vector<Entity>& get_entities() {
+    if (!g_entities_ptr) g_entities_ptr = new std::vector<Entity>();
+    return *g_entities_ptr;
+}
+
+// =============================================================================
+// Global state with heap-pointer pattern (ODR-safe)
+// =============================================================================
+
+static void* g_jolt_world = nullptr;
 static bool* g_paused_ptr = nullptr;
 static float* g_time_scale_ptr = nullptr;
 static int* g_spawn_count_ptr = nullptr;
@@ -77,15 +101,11 @@ static float* g_view_scale_ptr = nullptr;
 static float* g_view_offset_x_ptr = nullptr;
 static float* g_view_offset_y_ptr = nullptr;
 static unsigned int* g_font_tex_ptr = nullptr;
+static bool* g_reset_requested_ptr = nullptr;
 
 inline bool& get_paused() {
     if (!g_paused_ptr) g_paused_ptr = new bool(false);
     return *g_paused_ptr;
-}
-
-inline std::vector<Entity>& get_entities() {
-    if (!g_entities_ptr) g_entities_ptr = new std::vector<Entity>();
-    return *g_entities_ptr;
 }
 
 inline float& get_time_scale() {
@@ -118,19 +138,24 @@ inline unsigned int& get_font_tex() {
     return *g_font_tex_ptr;
 }
 
+inline bool& get_reset_requested() {
+    if (!g_reset_requested_ptr) g_reset_requested_ptr = new bool(false);
+    return *g_reset_requested_ptr;
+}
+
 // =============================================================================
 // Jolt wrapper functions
 // =============================================================================
 
 inline jank::runtime::object_ref jolt_create_world() {
-    g_world = jolt_world_create();
-    return jank::runtime::make_box<jank::runtime::obj::opaque_box>(g_world, \"JoltWorld\");
+    g_jolt_world = jolt_world_create();
+    return jank::runtime::make_box<jank::runtime::obj::opaque_box>(g_jolt_world, \"JoltWorld\");
 }
 
 inline void jolt_destroy_world(jank::runtime::object_ref w) {
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
     jolt_world_destroy(o->data.data);
-    g_world = nullptr;
+    g_jolt_world = nullptr;
 }
 
 inline int64_t jolt_create_sphere(jank::runtime::object_ref w, double x, double y, double z, double r) {
@@ -143,29 +168,14 @@ inline int64_t jolt_create_floor(jank::runtime::object_ref w) {
     return jolt_body_create_box(o->data.data, 0, -0.5f, 0, 50, 0.5f, 50, false, false);
 }
 
-inline jank::runtime::object_ref jolt_get_pos(jank::runtime::object_ref w, int64_t id) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    float x, y, z;
-    jolt_body_get_position(o->data.data, (uint32_t)id, &x, &y, &z);
-    return jank::runtime::make_box<jank::runtime::obj::persistent_vector>(
-        std::in_place,
-        jank::runtime::make_box((double)x),
-        jank::runtime::make_box((double)y),
-        jank::runtime::make_box((double)z));
-}
-
 inline void jolt_set_vel(jank::runtime::object_ref w, int64_t id, double vx, double vy, double vz) {
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
     jolt_body_set_velocity(o->data.data, (uint32_t)id, (float)vx, (float)vy, (float)vz);
 }
 
-static int g_step_count = 0;
 inline void jolt_step(jank::runtime::object_ref w, double dt) {
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
     jolt_world_step(o->data.data, (float)dt, 1);
-    if (++g_step_count % 60 == 0) {
-        printf(\"jolt_step: dt=%.4f, steps=%d\\n\", dt, g_step_count);
-    }
 }
 
 inline void jolt_optimize(jank::runtime::object_ref w) {
@@ -184,15 +194,50 @@ inline int64_t jolt_num_active(jank::runtime::object_ref w) {
 }
 
 // =============================================================================
-// Entity management
+// Flecs wrapper functions
 // =============================================================================
 
-inline void native_add_entity(int64_t id, double r, int64_t cr, int64_t cg, int64_t cb) {
-    get_entities().push_back({(uint32_t)id, (float)r, (uint8_t)cr, (uint8_t)cg, (uint8_t)cb});
+static ecs_world_t* g_flecs_world_c = nullptr;
+
+inline void flecs_init() {
+    if (!g_flecs_world_c) {
+        // Use ecs_mini() for minimal Flecs world (no addons)
+        g_flecs_world_c = ecs_mini();
+        printf(\"[flecs] ECS world created via ecs_mini()\\n\");
+    }
 }
 
-inline int64_t native_entity_count() { return (int64_t)get_entities().size(); }
-inline void native_clear_entities() { get_entities().clear(); }
+inline void flecs_shutdown() {
+    if (g_flecs_world_c) {
+        ecs_fini(g_flecs_world_c);
+        g_flecs_world_c = nullptr;
+    }
+}
+
+inline void flecs_add_entity(int64_t jolt_id, double radius, int64_t r, int64_t g, int64_t b) {
+    // Create Flecs entity via C API
+    uint64_t flecs_id = 0;
+    if (g_flecs_world_c) {
+        flecs_id = ecs_new(g_flecs_world_c);
+    }
+    // Store in vector for iteration (avoids JIT template issues with Flecs queries)
+    Entity e;
+    e.flecs_id = flecs_id;
+    e.jolt_id = (uint32_t)jolt_id;
+    e.radius = (float)radius;
+    e.r = (uint8_t)r;
+    e.g = (uint8_t)g;
+    e.b = (uint8_t)b;
+    get_entities().push_back(e);
+}
+
+inline int64_t flecs_entity_count() {
+    return (int64_t)get_entities().size();
+}
+
+inline void flecs_clear_entities() {
+    get_entities().clear();
+}
 
 // =============================================================================
 // View state accessors
@@ -285,38 +330,14 @@ inline void imgui_shutdown() {
     ImGui::DestroyContext();
 }
 
-inline void native_imgui_new_frame() { ImGui::NewFrame(); }
-inline void native_imgui_render() { ImGui::Render(); }
-
 // =============================================================================
-// Rendering functions (called from jank)
+// Rendering functions
 // =============================================================================
 
 inline void raylib_init() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
-    InitWindow(1280, 720, \"jank: Raylib + ImGui + JoltPhysics\");
+    InitWindow(1280, 720, \"jank: Raylib + ImGui + Jolt + Flecs\");
     SetTargetFPS(60);
-}
-
-inline void raylib_shutdown() {
-    CloseWindow();
-}
-
-inline bool raylib_should_close() {
-    return WindowShouldClose();
-}
-
-inline double raylib_get_dt() {
-    return GetFrameTime();
-}
-
-inline void begin_frame() {
-    BeginDrawing();
-    ClearBackground(RAYWHITE);
-}
-
-inline void end_frame() {
-    EndDrawing();
 }
 
 inline Vector2 physics_to_screen(float px, float pz) {
@@ -338,13 +359,13 @@ inline void draw_grid() {
     }
 }
 
-inline void draw_entities(void* world) {
-    if (!world) return;
-    auto& entities = get_entities();
-    if (entities.empty()) return;
-    for (const auto& e : entities) {
+inline void draw_entities(void* jolt_world) {
+    if (!jolt_world) return;
+
+    // Iterate over our vector (avoids JIT template issues with Flecs each<>)
+    for (const Entity& e : get_entities()) {
         float px, py, pz;
-        jolt_body_get_position(world, e.id, &px, &py, &pz);
+        jolt_body_get_position(jolt_world, e.jolt_id, &px, &py, &pz);
         Vector2 screen = physics_to_screen(px, pz);
         float sr = e.radius * get_view_scale();
         float h_factor = fminf(1.0f, fmaxf(0.0f, (py + 5.0f) / 50.0f));
@@ -368,42 +389,28 @@ inline void draw_entities(void* world) {
     }
 }
 
-inline void draw_title() {
-    DrawText(\"Raylib + ImGui + JoltPhysics\", 10, 10, 20, DARKGRAY);
-    DrawText(\"Top-Down 2D View (numbers show Y height)\", 10, 35, 16, GRAY);
-}
-
 inline bool handle_input_for_view() {
     if (imgui_wants_input()) return false;
-    // Pan with mouse drag
     if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
         Vector2 delta = GetMouseDelta();
         get_view_offset_x() += delta.x;
         get_view_offset_y() += delta.y;
     }
-    // Zoom with scroll
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
         float factor = (wheel > 0) ? 1.1f : 0.9f;
         get_view_scale() = fminf(50.0f, fmaxf(5.0f, get_view_scale() * factor));
     }
-    // Space to spawn
     return IsKeyPressed(KEY_SPACE);
 }
 
-static bool* g_reset_requested_ptr = nullptr;
-inline bool& get_reset_requested() {
-    if (!g_reset_requested_ptr) g_reset_requested_ptr = new bool(false);
-    return *g_reset_requested_ptr;
-}
-
-inline void draw_imgui_panel(void* world) {
+inline void draw_imgui_panel(void* jolt_world) {
     ImGui::Begin(\"Physics Debug\");
     ImGui::Text(\"FPS: %d\", GetFPS());
     ImGui::Separator();
-    ImGui::Text(\"Jolt Bodies: %d\", world ? jolt_world_get_num_bodies(world) : 0);
-    ImGui::Text(\"Active: %d\", world ? jolt_world_get_num_active_bodies(world) : 0);
-    ImGui::Text(\"Entities: %d\", (int)get_entities().size());
+    ImGui::Text(\"Jolt Bodies: %d\", jolt_world ? jolt_world_get_num_bodies(jolt_world) : 0);
+    ImGui::Text(\"Active: %d\", jolt_world ? jolt_world_get_num_active_bodies(jolt_world) : 0);
+    ImGui::Text(\"Flecs Entities: %d\", (int)flecs_entity_count());
     ImGui::Separator();
     ImGui::Checkbox(\"Paused\", &get_paused());
     ImGui::SliderFloat(\"Time Scale\", &get_time_scale(), 0.1f, 3.0f);
@@ -433,36 +440,17 @@ inline bool native_check_reset() {
     return val;
 }
 
-// Reset simulation - destroy world, create new one, clear entities
-static void** g_world_ptr = nullptr;
-inline void*& get_world_ref() {
-    if (!g_world_ptr) g_world_ptr = new void*(nullptr);
-    return *g_world_ptr;
-}
-
 inline jank::runtime::object_ref native_reset_simulation(jank::runtime::object_ref old_world) {
-    // Destroy old world
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(old_world);
     if (o->data.data) {
         jolt_world_destroy(o->data.data);
     }
-
-    // Clear entities
-    get_entities().clear();
-
-    // Create new world
+    flecs_clear_entities();
     void* new_world = jolt_world_create();
-    get_world_ref() = new_world;
-
-    // Create floor
+    g_jolt_world = new_world;
     jolt_body_create_box(new_world, 0, -0.5f, 0, 50, 0.5f, 50, false, false);
-
     return jank::runtime::make_box<jank::runtime::obj::opaque_box>(new_world, \"JoltWorld\");
 }
-
-// =============================================================================
-// Wrapper functions that take world as jank object
-// =============================================================================
 
 inline void native_draw_entities(jank::runtime::object_ref world_box) {
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(world_box);
@@ -483,7 +471,6 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
 (defn destroy-world! [w] (cpp/jolt_destroy_world w))
 (defn create-sphere [w x y z r] (cpp/jolt_create_sphere w x y z r))
 (defn create-floor [w] (cpp/jolt_create_floor w))
-(defn get-position [w id] (cpp/jolt_get_pos w id))
 (defn set-velocity! [w id vx vy vz] (cpp/jolt_set_vel w id vx vy vz))
 (defn step! [w dt] (cpp/jolt_step w dt))
 (defn optimize! [w] (cpp/jolt_optimize w))
@@ -491,12 +478,18 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
 (defn num-active [w] (cpp/jolt_num_active w))
 
 ;; =============================================================================
-;; Entity/State wrappers
+;; Flecs wrapper functions
 ;; =============================================================================
 
-(defn add-entity! [id r cr cg cb] (cpp/native_add_entity id r cr cg cb))
-(defn entity-count [] (cpp/native_entity_count))
-(defn clear-entities! [] (cpp/native_clear_entities))
+(defn flecs-init! [] (cpp/flecs_init))
+(defn flecs-shutdown! [] (cpp/flecs_shutdown))
+(defn add-entity! [id r cr cg cb] (cpp/flecs_add_entity id r cr cg cb))
+(defn entity-count [] (cpp/flecs_entity_count))
+(defn clear-entities! [] (cpp/flecs_clear_entities))
+
+;; =============================================================================
+;; State wrappers
+;; =============================================================================
 
 (defn paused? [] (cpp/native_get_paused))
 (defn set-paused! [v] (cpp/native_set_paused v))
@@ -510,26 +503,31 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
 (defn set-view-offset! [x y] (cpp/native_set_view_offset x y))
 
 ;; =============================================================================
-;; Raylib/ImGui wrappers
+;; Raylib/ImGui wrappers - using header requires where possible!
 ;; =============================================================================
 
 (defn raylib-init! [] (cpp/raylib_init))
-(defn raylib-shutdown! [] (cpp/raylib_shutdown))
-(defn raylib-should-close? [] (cpp/raylib_should_close))
-(defn get-dt [] (cpp/raylib_get_dt))
+(defn raylib-shutdown! [] (rl/CloseWindow))
+(defn raylib-should-close? [] (rl/WindowShouldClose))
+(defn get-dt [] (rl/GetFrameTime))
 
 (defn imgui-init! [] (cpp/imgui_init))
 (defn imgui-update! [] (cpp/imgui_update_input))
-(defn imgui-new-frame! [] (cpp/native_imgui_new_frame))
-(defn imgui-render! [] (cpp/native_imgui_render))
+;; Using header require instead of wrapper!
+(defn imgui-new-frame! [] (imgui/NewFrame))
+(defn imgui-render! [] (imgui/Render))
 (defn imgui-draw! [] (cpp/imgui_render_draw_data))
 (defn imgui-shutdown! [] (cpp/imgui_shutdown))
 
-(defn begin-frame! [] (cpp/begin_frame))
-(defn end-frame! [] (cpp/end_frame))
+(defn begin-frame! []
+  (rl/BeginDrawing)
+  (rl/ClearBackground (rl/RAYWHITE)))
+(defn end-frame! [] (rl/EndDrawing))
 (defn draw-grid! [] (cpp/draw_grid))
 (defn draw-entities! [world] (cpp/native_draw_entities world))
-(defn draw-title! [] (cpp/draw_title))
+(defn draw-title! []
+  (rl/DrawText "Raylib + ImGui + Jolt + Flecs" 10 10 20 (rl/DARKGRAY))
+  (rl/DrawText "Top-Down 2D View (numbers show Y height)" 10 35 16 (rl/GRAY)))
 (defn draw-imgui-panel! [world] (cpp/native_draw_imgui_panel world))
 (defn handle-input! [] (cpp/handle_input_for_view))
 (defn reset-requested? [] (cpp/native_check_reset))
@@ -551,7 +549,6 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
         cg (int (rand-range 50 255))
         cb (int (rand-range 50 255))
         id (create-sphere world x y z r)
-        ;; Random horizontal velocity
         vx (rand-range -10 10)
         vz (rand-range -10 10)]
     (set-velocity! world id vx 0.0 vz)
@@ -562,7 +559,6 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
     (spawn-ball! world)))
 
 (defn spawn-initial-balls! [world]
-  ;; Spawn 200 balls with random positions and velocities
   (dotimes [_ 200]
     (spawn-ball! world)))
 
@@ -571,12 +567,16 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
 ;; =============================================================================
 
 (defn -main [& args]
-  (println "Starting integrated demo: Raylib + ImGui + JoltPhysics")
-  (println "Using jank-style code with static linking!")
+  (println "Starting integrated demo: Raylib + ImGui + Jolt + Flecs")
+  (println "Using jank header requires + static linking!")
   (println "")
 
   ;; Initialize raylib
   (raylib-init!)
+
+  ;; Initialize Flecs ECS
+  (println "Initializing Flecs ECS...")
+  (flecs-init!)
 
   ;; Initialize Jolt
   (println "Creating physics world...")
@@ -597,6 +597,7 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
         (do
           (imgui-shutdown!)
           (destroy-world! world)
+          (flecs-shutdown!)
           (raylib-shutdown!)
           (println "Done!"))
         ;; Continue running
