@@ -1,137 +1,290 @@
 (ns my-imgui-static)
 
-;; ImGui demo using raylib + rlImGui
-;; Uses C++ API directly - no wrapper needed!
+;; ImGui demo using raylib + custom rlgl renderer
+;; Uses ImGui C++ API directly with raylib's OpenGL abstraction
 
 (cpp/raw "
 #include <cstdio>
+#include <cstring>
 
 // Raylib
 #include <raylib.h>
+#include <rlgl.h>
 
 // ImGui
 #include <imgui.h>
-#include <rlImGui.h>
 
+// =============================================================================
+// Custom ImGui renderer using raylib's rlgl
+// =============================================================================
+
+static unsigned int g_FontTexture = 0;
+
+// Create font texture
+static void ImGui_ImplRaylib_CreateFontsTexture()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    unsigned char* pixels;
+    int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+    // Upload texture to GPU
+    Image image = {
+        .data = pixels,
+        .width = width,
+        .height = height,
+        .mipmaps = 1,
+        .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+    };
+    Texture2D tex = LoadTextureFromImage(image);
+    g_FontTexture = tex.id;
+
+    // Store texture ID in ImGui
+    io.Fonts->SetTexID((ImTextureID)(intptr_t)g_FontTexture);
+}
+
+// Render ImGui draw data using rlgl
+static void ImGui_ImplRaylib_RenderDrawData(ImDrawData* draw_data)
+{
+    if (draw_data->CmdListsCount == 0)
+        return;
+
+    rlDrawRenderBatchActive();
+    rlDisableBackfaceCulling();
+
+    for (int n = 0; n < draw_data->CmdListsCount; n++)
+    {
+        const ImDrawList* cmd_list = draw_data->CmdLists[n];
+        const ImDrawVert* vtx_buffer = cmd_list->VtxBuffer.Data;
+        const ImDrawIdx* idx_buffer = cmd_list->IdxBuffer.Data;
+
+        for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++)
+        {
+            const ImDrawCmd* pcmd = &cmd_list->CmdBuffer[cmd_i];
+
+            if (pcmd->UserCallback)
+            {
+                pcmd->UserCallback(cmd_list, pcmd);
+            }
+            else
+            {
+                // Set scissor rectangle
+                ImVec2 pos = draw_data->DisplayPos;
+                ImVec4 clip = pcmd->ClipRect;
+                BeginScissorMode(
+                    (int)(clip.x - pos.x),
+                    (int)(clip.y - pos.y),
+                    (int)(clip.z - clip.x),
+                    (int)(clip.w - clip.y)
+                );
+
+                // Get texture
+                unsigned int texId = (unsigned int)(intptr_t)pcmd->GetTexID();
+
+                rlSetTexture(texId);
+                rlBegin(RL_TRIANGLES);
+
+                for (unsigned int i = 0; i < pcmd->ElemCount; i += 3)
+                {
+                    ImDrawIdx idx0 = idx_buffer[pcmd->IdxOffset + i + 0];
+                    ImDrawIdx idx1 = idx_buffer[pcmd->IdxOffset + i + 1];
+                    ImDrawIdx idx2 = idx_buffer[pcmd->IdxOffset + i + 2];
+
+                    const ImDrawVert* v0 = &vtx_buffer[idx0];
+                    const ImDrawVert* v1 = &vtx_buffer[idx1];
+                    const ImDrawVert* v2 = &vtx_buffer[idx2];
+
+                    // Vertex 0
+                    rlColor4ub(
+                        (v0->col >> 0) & 0xFF,
+                        (v0->col >> 8) & 0xFF,
+                        (v0->col >> 16) & 0xFF,
+                        (v0->col >> 24) & 0xFF
+                    );
+                    rlTexCoord2f(v0->uv.x, v0->uv.y);
+                    rlVertex2f(v0->pos.x, v0->pos.y);
+
+                    // Vertex 1
+                    rlColor4ub(
+                        (v1->col >> 0) & 0xFF,
+                        (v1->col >> 8) & 0xFF,
+                        (v1->col >> 16) & 0xFF,
+                        (v1->col >> 24) & 0xFF
+                    );
+                    rlTexCoord2f(v1->uv.x, v1->uv.y);
+                    rlVertex2f(v1->pos.x, v1->pos.y);
+
+                    // Vertex 2
+                    rlColor4ub(
+                        (v2->col >> 0) & 0xFF,
+                        (v2->col >> 8) & 0xFF,
+                        (v2->col >> 16) & 0xFF,
+                        (v2->col >> 24) & 0xFF
+                    );
+                    rlTexCoord2f(v2->uv.x, v2->uv.y);
+                    rlVertex2f(v2->pos.x, v2->pos.y);
+                }
+
+                rlEnd();
+                rlSetTexture(0);
+                EndScissorMode();
+            }
+        }
+    }
+
+    rlEnableBackfaceCulling();
+}
+
+// Process input
+static void ImGui_ImplRaylib_ProcessInput()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Mouse position
+    Vector2 mousePos = GetMousePosition();
+    io.AddMousePosEvent(mousePos.x, mousePos.y);
+
+    // Mouse buttons
+    io.AddMouseButtonEvent(0, IsMouseButtonDown(MOUSE_LEFT_BUTTON));
+    io.AddMouseButtonEvent(1, IsMouseButtonDown(MOUSE_RIGHT_BUTTON));
+    io.AddMouseButtonEvent(2, IsMouseButtonDown(MOUSE_MIDDLE_BUTTON));
+
+    // Mouse wheel
+    Vector2 wheel = GetMouseWheelMoveV();
+    io.AddMouseWheelEvent(wheel.x, wheel.y);
+
+    // Keyboard modifiers
+    io.AddKeyEvent(ImGuiMod_Ctrl, IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
+    io.AddKeyEvent(ImGuiMod_Shift, IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
+    io.AddKeyEvent(ImGuiMod_Alt, IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT));
+    io.AddKeyEvent(ImGuiMod_Super, IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER));
+
+    // Text input
+    int charPressed = GetCharPressed();
+    while (charPressed > 0)
+    {
+        io.AddInputCharacter(charPressed);
+        charPressed = GetCharPressed();
+    }
+}
+
+// =============================================================================
 // Demo state
+// =============================================================================
+
 static bool show_demo_window = true;
 static bool show_another_window = false;
 static float clear_color[3] = {0.45f, 0.55f, 0.60f};
 static float slider_value = 0.0f;
 static int counter = 0;
 
-inline void imgui_demo_frame()
-{
-    // Start ImGui frame
-    rlImGuiBegin();
-
-    // 1. Show the big demo window
-    if (show_demo_window)
-        ImGui::ShowDemoWindow(&show_demo_window);
-
-    // 2. Show a simple window
-    {
-        ImGui::Begin(\"Hello from jank!\");
-
-        ImGui::Text(\"This is ImGui running in jank with raylib!\");
-        ImGui::Checkbox(\"Demo Window\", &show_demo_window);
-        ImGui::Checkbox(\"Another Window\", &show_another_window);
-
-        ImGui::SliderFloat(\"slider\", &slider_value, 0.0f, 1.0f);
-        ImGui::ColorEdit3(\"clear color\", clear_color);
-
-        if (ImGui::Button(\"Button\"))
-            counter++;
-        ImGui::SameLine();
-        ImGui::Text(\"counter = %d\", counter);
-
-        ImGui::Text(\"Application average %.3f ms/frame (%.1f FPS)\",
-                    1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-
-        ImGui::End();
-    }
-
-    // 3. Show another simple window
-    if (show_another_window)
-    {
-        ImGui::Begin(\"Another Window\", &show_another_window);
-        ImGui::Text(\"Hello from another window!\");
-        if (ImGui::Button(\"Close Me\"))
-            show_another_window = false;
-        ImGui::End();
-    }
-
-    // End ImGui frame
-    rlImGuiEnd();
-}
-
 inline void run_imgui_demo()
 {
     // Initialize raylib
-    printf(\"Setting config flags...\\n\"); fflush(stdout);
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    printf(\"Initializing window...\\n\"); fflush(stdout);
     InitWindow(1280, 720, \"jank + ImGui + raylib\");
-    printf(\"Setting target FPS...\\n\"); fflush(stdout);
     SetTargetFPS(60);
-    printf(\"Target FPS set!\\n\"); fflush(stdout);
 
-    // Test basic raylib functions before calling rlImGui
-    printf(\"Testing IsWindowFocused...\\n\"); fflush(stdout);
-    bool focused = IsWindowFocused();
-    printf(\"IsWindowFocused: %d\\n\", focused); fflush(stdout);
-
-    printf(\"Testing GetWindowScaleDPI...\\n\"); fflush(stdout);
-    Vector2 scale = GetWindowScaleDPI();
-    printf(\"WindowScaleDPI: %f, %f\\n\", scale.x, scale.y); fflush(stdout);
-
-    // Test ImGui context creation directly (without rlImGui)
-    printf(\"Creating ImGui context directly...\\n\"); fflush(stdout);
+    // Create ImGui context
     ImGuiContext* ctx = ImGui::CreateContext();
-    printf(\"Context created: %p\\n\", (void*)ctx); fflush(stdout);
-
-    printf(\"Getting ImGuiIO...\\n\"); fflush(stdout);
     ImGuiIO& io = ImGui::GetIO();
-    printf(\"ImGuiIO obtained\\n\"); fflush(stdout);
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    printf(\"Setting dark colors...\\n\"); fflush(stdout);
+    // Setup style
     ImGui::StyleColorsDark();
-    printf(\"Colors set\\n\"); fflush(stdout);
 
-    printf(\"Adding default font...\\n\"); fflush(stdout);
-    io.Fonts->AddFontDefault();
-    printf(\"Font added\\n\"); fflush(stdout);
+    // Setup display size
+    io.DisplaySize = ImVec2((float)GetScreenWidth(), (float)GetScreenHeight());
 
-    printf(\"Building fonts...\\n\"); fflush(stdout);
-    unsigned char* pixels;
-    int width, height;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-    printf(\"Font texture: %dx%d\\n\", width, height); fflush(stdout);
+    // Create fonts texture
+    ImGui_ImplRaylib_CreateFontsTexture();
 
-    printf(\"ImGui setup complete - running simple loop...\\n\"); fflush(stdout);
+    printf(\"ImGui initialized with custom rlgl renderer!\\n\");
+    printf(\"Press ESC to exit\\n\");
 
-    // Simple loop without ImGui rendering (just test raylib works)
-    int frame = 0;
-    while (!WindowShouldClose() && frame < 60)
+    // Main loop
+    while (!WindowShouldClose())
     {
+        // Update display size
+        io.DisplaySize = ImVec2((float)GetScreenWidth(), (float)GetScreenHeight());
+        io.DeltaTime = GetFrameTime();
+
+        // Process input
+        ImGui_ImplRaylib_ProcessInput();
+
+        // Start ImGui frame
+        ImGui::NewFrame();
+
+        // 1. Show the big demo window
+        if (show_demo_window)
+            ImGui::ShowDemoWindow(&show_demo_window);
+
+        // 2. Show a simple window
+        {
+            ImGui::Begin(\"Hello from jank!\");
+
+            ImGui::Text(\"This is ImGui running in jank with raylib!\");
+            ImGui::Text(\"Using custom rlgl renderer (no rlImGui)\");
+            ImGui::Checkbox(\"Demo Window\", &show_demo_window);
+            ImGui::Checkbox(\"Another Window\", &show_another_window);
+
+            ImGui::SliderFloat(\"slider\", &slider_value, 0.0f, 1.0f);
+            ImGui::ColorEdit3(\"clear color\", clear_color);
+
+            if (ImGui::Button(\"Button\"))
+                counter++;
+            ImGui::SameLine();
+            ImGui::Text(\"counter = %d\", counter);
+
+            ImGui::Text(\"Application average %.3f ms/frame (%.1f FPS)\",
+                        1000.0f / io.Framerate, io.Framerate);
+
+            ImGui::End();
+        }
+
+        // 3. Show another simple window
+        if (show_another_window)
+        {
+            ImGui::Begin(\"Another Window\", &show_another_window);
+            ImGui::Text(\"Hello from another window!\");
+            if (ImGui::Button(\"Close Me\"))
+                show_another_window = false;
+            ImGui::End();
+        }
+
+        // Render
+        ImGui::Render();
+
+        // Draw
         BeginDrawing();
-        ClearBackground({115, 140, 153, 255});
-        DrawText(\"ImGui context created successfully!\", 100, 100, 30, WHITE);
-        DrawText(\"Press ESC to exit\", 100, 150, 20, WHITE);
+        ClearBackground({
+            (unsigned char)(clear_color[0] * 255),
+            (unsigned char)(clear_color[1] * 255),
+            (unsigned char)(clear_color[2] * 255),
+            255
+        });
+
+        // Render ImGui
+        ImGui_ImplRaylib_RenderDrawData(ImGui::GetDrawData());
+
         EndDrawing();
-        frame++;
     }
 
     // Cleanup
+    if (g_FontTexture)
+    {
+        rlUnloadTexture(g_FontTexture);
+        g_FontTexture = 0;
+    }
     ImGui::DestroyContext(ctx);
     CloseWindow();
 
-    printf(\"Demo finished!\\n\"); fflush(stdout);
+    printf(\"Demo finished!\\n\");
 }
 ")
 
 (defn -main [& args]
-  (println "Starting ImGui Demo...")
+  (println "Starting ImGui Demo with custom rlgl renderer...")
   (cpp/run_imgui_demo)
   (println "Done!"))
 
