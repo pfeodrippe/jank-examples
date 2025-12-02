@@ -2,8 +2,12 @@
   (:require
    ;; Raylib with global scope (C functions)
    ["raylib.h" :as rl :scope ""]
+   ;; rlgl for low-level rendering
+   ["rlgl.h" :as rlgl :scope ""]
    ;; ImGui with ImGui:: scope
-   ["imgui.h" :as imgui :scope "ImGui"]))
+   ["imgui.h" :as imgui :scope "ImGui"]
+   ;; Flecs C API with global scope
+   ["flecs.h" :as fl :scope ""]))
 
 ;; Integrated demo: Raylib + ImGui + JoltPhysics + Flecs
 ;; Uses header requires for cleaner code
@@ -21,9 +25,11 @@
 #include <imgui.h>
 #include <flecs.h>
 #include <jank/runtime/obj/opaque_box.hpp>
-#include <jank/runtime/obj/persistent_vector.hpp>
 
-// TLS stub for JIT
+// =============================================================================
+// JIT stubs (required for JIT linking)
+// =============================================================================
+
 extern \"C\" {
     struct __emutls_control {
         size_t size; size_t align;
@@ -40,7 +46,6 @@ extern \"C\" {
     }
 }
 
-// Jolt AssertFailed stub
 namespace JPH {
     using AssertFailedFunction = bool(*)(const char*, const char*, const char*, unsigned int);
     AssertFailedFunction AssertFailed = [](const char* e, const char* m, const char* f, unsigned int l) -> bool {
@@ -49,7 +54,10 @@ namespace JPH {
     };
 }
 
-// Jolt wrapper extern declarations
+// =============================================================================
+// Jolt C API (extern - implemented in jolt_wrapper.cpp)
+// =============================================================================
+
 extern \"C\" {
     void* jolt_world_create();
     void jolt_world_destroy(void* w);
@@ -61,14 +69,6 @@ extern \"C\" {
     void jolt_world_optimize_broad_phase(void* w);
     int jolt_world_get_num_bodies(void* w);
     int jolt_world_get_num_active_bodies(void* w);
-}
-
-// Flecs wrapper extern declarations
-extern \"C\" {
-    void* jank_flecs_create_world();
-    void jank_flecs_destroy_world(void* w);
-    uint64_t jank_flecs_create_entity(void* w);
-    int jank_flecs_progress(void* w, float dt);
 }
 
 // =============================================================================
@@ -194,32 +194,22 @@ inline int64_t jolt_num_active(jank::runtime::object_ref w) {
 }
 
 // =============================================================================
-// Flecs wrapper functions
+// Flecs helpers - minimal wrappers for opaque_box handling
+// Uses fl/ecs_mini for init (called from jank), wrappers for opaque_box ops
 // =============================================================================
 
-static ecs_world_t* g_flecs_world_c = nullptr;
-
-inline void flecs_init() {
-    if (!g_flecs_world_c) {
-        // Use ecs_mini() for minimal Flecs world (no addons)
-        g_flecs_world_c = ecs_mini();
-        printf(\"[flecs] ECS world created via ecs_mini()\\n\");
-    }
+// Wrapper needed: ecs_fini needs raw pointer from opaque_box
+inline void flecs_fini_world(jank::runtime::object_ref flecs_world_box) {
+    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(flecs_world_box);
+    ecs_fini(static_cast<ecs_world_t*>(o->data.data));
 }
 
-inline void flecs_shutdown() {
-    if (g_flecs_world_c) {
-        ecs_fini(g_flecs_world_c);
-        g_flecs_world_c = nullptr;
-    }
-}
+inline void flecs_add_entity(jank::runtime::object_ref flecs_world_box, int64_t jolt_id, double radius, int64_t r, int64_t g, int64_t b) {
+    // Extract world from opaque_box and create entity
+    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(flecs_world_box);
+    ecs_world_t* world = static_cast<ecs_world_t*>(o->data.data);
+    uint64_t flecs_id = ecs_new(world);
 
-inline void flecs_add_entity(int64_t jolt_id, double radius, int64_t r, int64_t g, int64_t b) {
-    // Create Flecs entity via C API
-    uint64_t flecs_id = 0;
-    if (g_flecs_world_c) {
-        flecs_id = ecs_new(g_flecs_world_c);
-    }
     // Store in vector for iteration (avoids JIT template issues with Flecs queries)
     Entity e;
     e.flecs_id = flecs_id;
@@ -240,20 +230,28 @@ inline void flecs_clear_entities() {
 }
 
 // =============================================================================
-// View state accessors
+// View state accessors (minimal - only what jank can't do directly)
+// Note: These exist because jank can't mutate C++ references directly
 // =============================================================================
 
-inline void native_set_paused(bool v) { get_paused() = v; }
 inline bool native_get_paused() { return get_paused(); }
-inline void native_set_time_scale(double v) { get_time_scale() = (float)v; }
 inline double native_get_time_scale() { return get_time_scale(); }
-inline void native_set_spawn_count(int64_t v) { get_spawn_count() = (int)v; }
 inline int64_t native_get_spawn_count() { return get_spawn_count(); }
-inline void native_set_view_scale(double v) { get_view_scale() = (float)v; }
 inline double native_get_view_scale() { return get_view_scale(); }
-inline void native_set_view_offset(double x, double y) { get_view_offset_x() = (float)x; get_view_offset_y() = (float)y; }
 inline double native_get_view_offset_x() { return get_view_offset_x(); }
 inline double native_get_view_offset_y() { return get_view_offset_y(); }
+inline void native_set_view_offset(double x, double y) {
+    get_view_offset_x() = (float)x;
+    get_view_offset_y() = (float)y;
+}
+inline void native_add_view_offset(double dx, double dy) {
+    get_view_offset_x() += (float)dx;
+    get_view_offset_y() += (float)dy;
+}
+inline void native_scale_view(double factor) {
+    float s = get_view_scale() * (float)factor;
+    get_view_scale() = fminf(50.0f, fmaxf(5.0f, s));
+}
 
 // =============================================================================
 // ImGui renderer
@@ -331,14 +329,8 @@ inline void imgui_shutdown() {
 }
 
 // =============================================================================
-// Rendering functions
+// Rendering functions (only complex ones that need C++ loops)
 // =============================================================================
-
-inline void raylib_init() {
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
-    InitWindow(1280, 720, \"jank: Raylib + ImGui + Jolt + Flecs\");
-    SetTargetFPS(60);
-}
 
 inline Vector2 physics_to_screen(float px, float pz) {
     return {
@@ -347,6 +339,7 @@ inline Vector2 physics_to_screen(float px, float pz) {
     };
 }
 
+// Grid needs C++ loop for performance
 inline void draw_grid() {
     Color grid_color = Fade(LIGHTGRAY, 0.3f);
     for (int i = -50; i <= 50; i += 5) {
@@ -389,21 +382,7 @@ inline void draw_entities(void* jolt_world) {
     }
 }
 
-inline bool handle_input_for_view() {
-    if (imgui_wants_input()) return false;
-    if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-        Vector2 delta = GetMouseDelta();
-        get_view_offset_x() += delta.x;
-        get_view_offset_y() += delta.y;
-    }
-    float wheel = GetMouseWheelMove();
-    if (wheel != 0.0f) {
-        float factor = (wheel > 0) ? 1.1f : 0.9f;
-        get_view_scale() = fminf(50.0f, fmaxf(5.0f, get_view_scale() * factor));
-    }
-    return IsKeyPressed(KEY_SPACE);
-}
-
+// ImGui panel needs C++ for mutable reference parameters (Checkbox, Slider, etc.)
 inline void draw_imgui_panel(void* jolt_world) {
     ImGui::Begin(\"Physics Debug\");
     ImGui::Text(\"FPS: %d\", GetFPS());
@@ -478,58 +457,103 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
 (defn num-active [w] (cpp/jolt_num_active w))
 
 ;; =============================================================================
-;; Flecs wrapper functions
+;; Flecs - using header require directly!
 ;; =============================================================================
 
-(defn flecs-init! [] (cpp/flecs_init))
-(defn flecs-shutdown! [] (cpp/flecs_shutdown))
-(defn add-entity! [id r cr cg cb] (cpp/flecs_add_entity id r cr cg cb))
+(defn flecs-create-world []
+  "Create a Flecs world via C API and wrap in opaque_box."
+  (println "[flecs] ECS world created via fl/ecs_mini")
+  (cpp/box (fl/ecs_mini)))
+
+(defn flecs-destroy-world! [flecs-world]
+  "Destroy a Flecs world."
+  (cpp/flecs_fini_world flecs-world))
+
+(defn add-entity! [flecs-world jolt-id r cr cg cb]
+  "Add entity to Flecs world and entity storage."
+  (cpp/flecs_add_entity flecs-world jolt-id r cr cg cb))
+
 (defn entity-count [] (cpp/flecs_entity_count))
 (defn clear-entities! [] (cpp/flecs_clear_entities))
 
 ;; =============================================================================
-;; State wrappers
+;; State accessors (read-only from jank - ImGui panel handles mutation)
 ;; =============================================================================
 
 (defn paused? [] (cpp/native_get_paused))
-(defn set-paused! [v] (cpp/native_set_paused v))
 (defn time-scale [] (cpp/native_get_time_scale))
-(defn set-time-scale! [v] (cpp/native_set_time_scale v))
 (defn spawn-count [] (cpp/native_get_spawn_count))
-(defn set-spawn-count! [v] (cpp/native_set_spawn_count v))
 (defn view-scale [] (cpp/native_get_view_scale))
-(defn set-view-scale! [v] (cpp/native_set_view_scale v))
-(defn view-offset [] [(cpp/native_get_view_offset_x) (cpp/native_get_view_offset_y)])
-(defn set-view-offset! [x y] (cpp/native_set_view_offset x y))
+(defn view-offset-x [] (cpp/native_get_view_offset_x))
+(defn view-offset-y [] (cpp/native_get_view_offset_y))
 
 ;; =============================================================================
-;; Raylib/ImGui wrappers - using header requires where possible!
+;; Raylib - using header requires directly!
 ;; =============================================================================
 
-(defn raylib-init! [] (cpp/raylib_init))
+(defn raylib-init! []
+  ;; Direct raylib calls via header require - no cpp wrapper needed!
+  ;; Enum values accessible directly: rl/FLAG_WINDOW_RESIZABLE, rl/KEY_SPACE, etc.
+  (rl/SetConfigFlags (bit-or rl/FLAG_WINDOW_RESIZABLE rl/FLAG_MSAA_4X_HINT))
+  (rl/InitWindow 1280 720 "jank: Raylib + ImGui + Jolt + Flecs")
+  (rl/SetTargetFPS 60))
+
 (defn raylib-shutdown! [] (rl/CloseWindow))
 (defn raylib-should-close? [] (rl/WindowShouldClose))
 (defn get-dt [] (rl/GetFrameTime))
-
-(defn imgui-init! [] (cpp/imgui_init))
-(defn imgui-update! [] (cpp/imgui_update_input))
-;; Using header require instead of wrapper!
-(defn imgui-new-frame! [] (imgui/NewFrame))
-(defn imgui-render! [] (imgui/Render))
-(defn imgui-draw! [] (cpp/imgui_render_draw_data))
-(defn imgui-shutdown! [] (cpp/imgui_shutdown))
+(defn get-fps [] (rl/GetFPS))
 
 (defn begin-frame! []
   (rl/BeginDrawing)
   (rl/ClearBackground (rl/RAYWHITE)))
+
 (defn end-frame! [] (rl/EndDrawing))
-(defn draw-grid! [] (cpp/draw_grid))
-(defn draw-entities! [world] (cpp/native_draw_entities world))
+
 (defn draw-title! []
   (rl/DrawText "Raylib + ImGui + Jolt + Flecs" 10 10 20 (rl/DARKGRAY))
   (rl/DrawText "Top-Down 2D View (numbers show Y height)" 10 35 16 (rl/GRAY)))
+
+;; =============================================================================
+;; Input handling - pure jank with cpp/ prefix!
+;; Uses let* with _ binding for void returns
+;; =============================================================================
+
+(defn handle-input!
+  "Handle pan/zoom input. Returns true if space was pressed (spawn request)."
+  []
+  (if (cpp/imgui_wants_input)
+    false
+    (let* [mouse-down (rl/IsMouseButtonDown rl/MOUSE_BUTTON_LEFT)]
+      (when mouse-down
+        (let* [delta (rl/GetMouseDelta)
+               dx (cpp/.-x delta)
+               dy (cpp/.-y delta)
+               _ (cpp/native_add_view_offset dx dy)]
+          nil))
+      (let* [wheel (rl/GetMouseWheelMove)]
+        (when (not= wheel 0.0)
+          (let* [_ (cpp/native_scale_view (if (> wheel 0) 1.1 0.9))]
+            nil)))
+      (rl/IsKeyPressed rl/KEY_SPACE))))
+
+;; =============================================================================
+;; ImGui - complex rendering stays in cpp, simple calls use header requires
+;; =============================================================================
+
+(defn imgui-init! [] (cpp/imgui_init))
+(defn imgui-update! [] (cpp/imgui_update_input))
+(defn imgui-new-frame! [] (imgui/NewFrame))  ;; Direct header require!
+(defn imgui-render! [] (imgui/Render))       ;; Direct header require!
+(defn imgui-draw! [] (cpp/imgui_render_draw_data))
+(defn imgui-shutdown! [] (cpp/imgui_shutdown))
+
+;; =============================================================================
+;; Drawing - complex loops stay in cpp
+;; =============================================================================
+
+(defn draw-grid! [] (cpp/draw_grid))
+(defn draw-entities! [world] (cpp/native_draw_entities world))
 (defn draw-imgui-panel! [world] (cpp/native_draw_imgui_panel world))
-(defn handle-input! [] (cpp/handle_input_for_view))
 (defn reset-requested? [] (cpp/native_check_reset))
 (defn reset-simulation! [world] (cpp/native_reset_simulation world))
 
@@ -540,7 +564,7 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
 (defn rand-range [min max]
   (+ min (* (rand) (- max min))))
 
-(defn spawn-ball! [world]
+(defn spawn-ball! [jolt-world flecs-world]
   (let [x (rand-range -20 20)
         y (rand-range 15 40)
         z (rand-range -20 20)
@@ -548,19 +572,19 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
         cr (int (rand-range 50 255))
         cg (int (rand-range 50 255))
         cb (int (rand-range 50 255))
-        id (create-sphere world x y z r)
+        id (create-sphere jolt-world x y z r)
         vx (rand-range -10 10)
         vz (rand-range -10 10)]
-    (set-velocity! world id vx 0.0 vz)
-    (add-entity! id r cr cg cb)))
+    (set-velocity! jolt-world id vx 0.0 vz)
+    (add-entity! flecs-world id r cr cg cb)))
 
-(defn spawn-balls! [world n]
+(defn spawn-balls! [jolt-world flecs-world n]
   (dotimes [_ n]
-    (spawn-ball! world)))
+    (spawn-ball! jolt-world flecs-world)))
 
-(defn spawn-initial-balls! [world]
+(defn spawn-initial-balls! [jolt-world flecs-world]
   (dotimes [_ 200]
-    (spawn-ball! world)))
+    (spawn-ball! jolt-world flecs-world)))
 
 ;; =============================================================================
 ;; Main function
@@ -574,63 +598,63 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
   ;; Initialize raylib
   (raylib-init!)
 
-  ;; Initialize Flecs ECS
+  ;; Initialize Flecs ECS via header require!
   (println "Initializing Flecs ECS...")
-  (flecs-init!)
+  (let [flecs-world (flecs-create-world)]
 
-  ;; Initialize Jolt
-  (println "Creating physics world...")
-  (let [initial-world (create-world)]
-    (create-floor initial-world)
-    (spawn-initial-balls! initial-world)
-    (optimize! initial-world)
+    ;; Initialize Jolt
+    (println "Creating physics world...")
+    (let [initial-jolt-world (create-world)]
+      (create-floor initial-jolt-world)
+      (spawn-initial-balls! initial-jolt-world flecs-world)
+      (optimize! initial-jolt-world)
 
-    ;; Initialize ImGui
-    (imgui-init!)
+      ;; Initialize ImGui
+      (imgui-init!)
 
-    (println "Demo initialized! Press ESC to exit.")
+      (println "Demo initialized! Press ESC to exit.")
 
-    ;; Main loop with world as loop parameter (allows reset)
-    (loop [world initial-world]
-      (if (raylib-should-close?)
-        ;; Cleanup and exit
-        (do
-          (imgui-shutdown!)
-          (destroy-world! world)
-          (flecs-shutdown!)
-          (raylib-shutdown!)
-          (println "Done!"))
-        ;; Continue running
-        (let [dt (get-dt)]
+      ;; Main loop with jolt-world as loop parameter (allows reset)
+      (loop [jolt-world initial-jolt-world]
+        (if (raylib-should-close?)
+          ;; Cleanup and exit
+          (do
+            (imgui-shutdown!)
+            (destroy-world! jolt-world)
+            (flecs-destroy-world! flecs-world)
+            (raylib-shutdown!)
+            (println "Done!"))
+          ;; Continue running
+          (let [dt (get-dt)]
 
-          ;; Update ImGui
-          (imgui-update!)
-          (imgui-new-frame!)
+            ;; Update ImGui
+            (imgui-update!)
+            (imgui-new-frame!)
 
-          ;; Handle input
-          (when (handle-input!)
-            (spawn-balls! world (spawn-count)))
+            ;; Handle input
+            (when (handle-input!)
+              (spawn-balls! jolt-world flecs-world (spawn-count)))
 
-          ;; Physics step
-          (when-not (paused?)
-            (step! world (* dt (time-scale))))
+            ;; Physics step
+            (when-not (paused?)
+              (step! jolt-world (* dt (time-scale))))
 
-          ;; Draw ImGui UI
-          (draw-imgui-panel! world)
-          (imgui-render!)
+            ;; Draw ImGui UI
+            (draw-imgui-panel! jolt-world)
+            (imgui-render!)
 
-          ;; Render
-          (begin-frame!)
-          (draw-grid!)
-          (draw-entities! world)
-          (draw-title!)
-          (imgui-draw!)
-          (end-frame!)
+            ;; Render
+            (begin-frame!)
+            (draw-grid!)
+            (draw-entities! jolt-world)
+            (draw-title!)
+            (imgui-draw!)
+            (end-frame!)
 
-          ;; Check for reset and recur with possibly new world
-          (if (reset-requested?)
-            (let [new-world (reset-simulation! world)]
-              (spawn-initial-balls! new-world)
-              (optimize! new-world)
-              (recur new-world))
-            (recur world)))))))
+            ;; Check for reset and recur with possibly new jolt-world
+            (if (reset-requested?)
+              (let [new-jolt-world (reset-simulation! jolt-world)]
+                (spawn-initial-balls! new-jolt-world flecs-world)
+                (optimize! new-jolt-world)
+                (recur new-jolt-world))
+              (recur jolt-world))))))))
