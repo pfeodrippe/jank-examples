@@ -2,8 +2,6 @@
   (:require
    ;; Raylib with global scope (C functions)
    ["raylib.h" :as rl :scope ""]
-   ;; rlgl for low-level rendering
-   ["rlgl.h" :as rlgl :scope ""]
    ;; ImGui with ImGui:: scope
    ["imgui.h" :as imgui :scope "ImGui"]
    ;; Flecs C API with global scope

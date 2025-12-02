@@ -14,3 +14,35 @@ Rule 2 - **Use jank/cpp prefix, cpp/raw is LAST RESORT**
 - **ALWAYS use static linking** - Never use dynamic libraries (.dylib, .so)
 - Use object files (.o) or static libraries (.a) that can be loaded by the JIT
 - For jank integration, compile C/C++ code to object files that can be loaded directly
+
+## jank Compiler Fixes
+
+When you need to fix issues in the jank compiler itself (not WASM workarounds):
+
+**Location**: `/Users/pfeodrippe/dev/jank/compiler+runtime/`
+
+**Build Environment Setup** (required before building on macOS):
+```bash
+cd /Users/pfeodrippe/dev/jank/compiler+runtime
+export SDKROOT=$(xcrun --show-sdk-path)
+export CC=$PWD/build/llvm-install/usr/local/bin/clang
+export CXX=$PWD/build/llvm-install/usr/local/bin/clang++
+```
+
+**Build Commands**:
+```bash
+# Build
+./bin/compile
+
+# Run tests
+./bin/test
+```
+
+**Key Files**:
+- `src/cpp/jank/runtime/context.cpp` - WASM AOT code generation (includes, codegen)
+- `include/cpp/jank/runtime/` - Runtime headers
+- `AGENTS_CONTEXT.md` - C API exports for WASM (jank_set_meta, etc.)
+
+**When to fix in jank vs workaround**:
+- **Fix in jank**: Missing includes in generated code, missing C API exports, compiler bugs
+- **Workaround in demo**: Demo-specific logic, one-off cases that don't affect other users
