@@ -5,7 +5,8 @@
    ;; ImGui with ImGui:: scope
    ["imgui.h" :as imgui :scope "ImGui"]
    ;; Flecs C API with global scope
-   ["flecs.h" :as fl :scope ""]))
+   ["flecs.h" :as fl :scope ""]
+   [jank.nrepl-server.server :as server]))
 
 ;; Integrated demo: Raylib + ImGui + JoltPhysics + Flecs
 ;; Uses header requires for cleaner code
@@ -189,6 +190,15 @@ inline int64_t jolt_num_bodies(jank::runtime::object_ref w) {
 inline int64_t jolt_num_active(jank::runtime::object_ref w) {
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
     return jolt_world_get_num_active_bodies(o->data.data);
+}
+
+// =============================================================================
+// opaque_box helper - extracts void* from any opaque_box (minimal cpp/raw)
+// =============================================================================
+
+inline void* opaque_box_ptr(jank::runtime::object_ref box) {
+    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(box);
+    return o->data.data;
 }
 
 // =============================================================================
@@ -380,35 +390,79 @@ inline void draw_entities(void* jolt_world) {
     }
 }
 
-// ImGui panel needs C++ for mutable reference parameters (Checkbox, Slider, etc.)
-inline void draw_imgui_panel(void* jolt_world) {
-    ImGui::Begin(\"Physics Debug\");
+// =============================================================================
+// ImGui helpers - only for mutable references and formatted text
+// =============================================================================
+
+// Mutable reference widgets (can't do from jank directly)
+inline bool imgui_checkbox_paused() {
+    return ImGui::Checkbox(\"Paused\", &get_paused());
+}
+inline bool imgui_slider_time_scale() {
+    return ImGui::SliderFloat(\"Time Scale\", &get_time_scale(), 0.1f, 3.0f);
+}
+inline bool imgui_slider_spawn_count() {
+    return ImGui::SliderInt(\"Spawn Count\", &get_spawn_count(), 1, 20);
+}
+
+// Assignments (can't mutate C++ globals from jank directly)
+inline void imgui_set_reset_requested() {
+    get_reset_requested() = true;
+}
+inline void imgui_reset_view() {
+    get_view_offset_x() = 640.0f;
+    get_view_offset_y() = 500.0f;
+    get_view_scale() = 15.0f;
+}
+
+// Formatted text helpers (variadic functions are tricky from jank)
+inline void imgui_text_fps() {
     ImGui::Text(\"FPS: %d\", GetFPS());
-    ImGui::Separator();
-    ImGui::Text(\"Jolt Bodies: %d\", jolt_world ? jolt_world_get_num_bodies(jolt_world) : 0);
-    ImGui::Text(\"Active: %d\", jolt_world ? jolt_world_get_num_active_bodies(jolt_world) : 0);
+}
+inline void imgui_text_jolt_stats(void* w) {
+    ImGui::Text(\"Jolt Bodies: %d\", w ? jolt_world_get_num_bodies(w) : 0);
+    ImGui::Text(\"Active: %d\", w ? jolt_world_get_num_active_bodies(w) : 0);
+}
+inline void imgui_text_flecs_stats() {
     ImGui::Text(\"Flecs Entities: %d\", (int)flecs_entity_count());
-    ImGui::Separator();
-    ImGui::Checkbox(\"Paused\", &get_paused());
-    ImGui::SliderFloat(\"Time Scale\", &get_time_scale(), 0.1f, 3.0f);
-    ImGui::SliderInt(\"Spawn Count\", &get_spawn_count(), 1, 20);
-    ImGui::Separator();
-    if (ImGui::Button(\"Reset Simulation\")) {
-        get_reset_requested() = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button(\"Reset View\")) {
-        get_view_offset_x() = 640.0f;
-        get_view_offset_y() = 500.0f;
-        get_view_scale() = 15.0f;
-    }
+}
+inline void imgui_text_view_stats() {
     ImGui::Text(\"View: (%.0f, %.0f) scale: %.1f\", get_view_offset_x(), get_view_offset_y(), get_view_scale());
-    ImGui::Separator();
+}
+
+// Simple text helpers (variadic Text/BulletText can't be called from jank)
+inline void imgui_text_controls() {
     ImGui::Text(\"Controls:\");
+}
+inline void imgui_bullet_pan() {
     ImGui::BulletText(\"Drag to pan\");
+}
+inline void imgui_bullet_zoom() {
     ImGui::BulletText(\"Scroll to zoom\");
+}
+inline void imgui_bullet_spawn() {
     ImGui::BulletText(\"Space to spawn\");
+}
+
+// Additional helpers to avoid jank->imgui header issues
+inline void imgui_begin_physics_debug() {
+    ImGui::Begin(\"Physics Debug\");
+}
+inline void imgui_separator() {
+    ImGui::Separator();
+}
+inline void imgui_same_line() {
+    ImGui::SameLine();
+}
+inline bool imgui_button_reset_sim() {
+    return ImGui::Button(\"Reset Simulation\");
+}
+inline bool imgui_button_reset_view() {
+    return ImGui::Button(\"Reset View\");
+}
+inline jank::runtime::object_ref imgui_end() {
     ImGui::End();
+    return jank::runtime::jank_nil;
 }
 
 inline bool native_check_reset() {
@@ -433,12 +487,51 @@ inline void native_draw_entities(jank::runtime::object_ref world_box) {
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(world_box);
     draw_entities(o->data.data);
 }
-
-inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(world_box);
-    draw_imgui_panel(o->data.data);
-}
 ")
+
+;; ImGui::Text(\"FPS: %d\", GetFPS());
+#_ (require '[jank.compiler :as jc])
+#_ (jc/native-source (imgui/Text "FPS: %d" (rl/GetFPS)))
+
+(defn native-draw-imgui-panel
+  "Draw ImGui debug panel - jank controls the flow, cpp helpers for ImGui calls"
+  [w]
+  (let* [world-ptr (cpp/opaque_box_ptr w)]
+    ;; Begin panel
+    (cpp/imgui_begin_physics_debug)
+
+    ;; Stats section
+    (cpp/imgui_text_fps)
+    (cpp/imgui_separator)
+    (cpp/imgui_text_jolt_stats world-ptr)
+    (cpp/imgui_text_flecs_stats)
+    (cpp/imgui_separator)
+
+    ;; Controls (mutable refs need cpp helpers)
+    (cpp/imgui_checkbox_paused)
+    (cpp/imgui_slider_time_scale)
+    (cpp/imgui_slider_spawn_count)
+    (cpp/imgui_separator)
+
+    ;; Buttons - jank controls the logic!
+    (when (cpp/imgui_button_reset_sim)
+      (cpp/imgui_set_reset_requested))
+    (cpp/imgui_same_line)
+    (when (cpp/imgui_button_reset_view)
+      (cpp/imgui_reset_view))
+
+    ;; View info
+    (cpp/imgui_text_view_stats)
+    (cpp/imgui_separator)
+
+    ;; Help text
+    (cpp/imgui_text_controls)
+    (cpp/imgui_bullet_pan)
+    (cpp/imgui_bullet_zoom)
+    (cpp/imgui_bullet_spawn)
+
+    ;; End panel
+    (cpp/imgui_end)))
 
 ;; =============================================================================
 ;; Jolt wrapper functions
@@ -551,7 +644,7 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
 
 (defn draw-grid! [] (cpp/draw_grid))
 (defn draw-entities! [world] (cpp/native_draw_entities world))
-(defn draw-imgui-panel! [world] (cpp/native_draw_imgui_panel world))
+(defn draw-imgui-panel! [world] (native-draw-imgui-panel world))
 (defn reset-requested? [] (cpp/native_check_reset))
 (defn reset-simulation! [world] (cpp/native_reset_simulation world))
 
@@ -584,11 +677,50 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
   (dotimes [_ 200]
     (spawn-ball! jolt-world flecs-world)))
 
+(defn draw
+  [flecs-world jolt-world]
+  ;; Continue running
+  (let [dt (get-dt)]
+
+    ;; Update ImGui
+    (imgui-update!)
+    (imgui-new-frame!)
+
+    ;; Handle input
+    (when (handle-input!)
+      (spawn-balls! jolt-world flecs-world (spawn-count)))
+
+    ;; Physics step
+    (when-not (paused?)
+      (step! jolt-world (* dt (time-scale))))
+
+    ;; Draw ImGui UI
+    (draw-imgui-panel! jolt-world)
+    (imgui-render!)
+
+    ;; Render
+    (begin-frame!)
+    (draw-grid!)
+    (draw-entities! jolt-world)
+    (draw-title!)
+    (imgui-draw!)
+    (end-frame!)
+
+    ;; Check for reset and recur with possibly new jolt-world
+    (if (reset-requested?)
+      (let [new-jolt-world (reset-simulation! jolt-world)]
+        (spawn-initial-balls! new-jolt-world flecs-world)
+        (optimize! new-jolt-world)
+        new-jolt-world)
+      jolt-world)))
+
 ;; =============================================================================
 ;; Main function
 ;; =============================================================================
 
 (defn -main [& args]
+  #?(:jank (server/start-server {:port 5557}))
+
   (println "Starting integrated demo: Raylib + ImGui + Jolt + Flecs")
   (println "Using jank header requires + static linking!")
   (println "")
@@ -622,37 +754,4 @@ inline void native_draw_imgui_panel(jank::runtime::object_ref world_box) {
             (flecs-destroy-world! flecs-world)
             (raylib-shutdown!)
             (println "Done!"))
-          ;; Continue running
-          (let [dt (get-dt)]
-
-            ;; Update ImGui
-            (imgui-update!)
-            (imgui-new-frame!)
-
-            ;; Handle input
-            (when (handle-input!)
-              (spawn-balls! jolt-world flecs-world (spawn-count)))
-
-            ;; Physics step
-            (when-not (paused?)
-              (step! jolt-world (* dt (time-scale))))
-
-            ;; Draw ImGui UI
-            (draw-imgui-panel! jolt-world)
-            (imgui-render!)
-
-            ;; Render
-            (begin-frame!)
-            (draw-grid!)
-            (draw-entities! jolt-world)
-            (draw-title!)
-            (imgui-draw!)
-            (end-frame!)
-
-            ;; Check for reset and recur with possibly new jolt-world
-            (if (reset-requested?)
-              (let [new-jolt-world (reset-simulation! jolt-world)]
-                (spawn-initial-balls! new-jolt-world flecs-world)
-                (optimize! new-jolt-world)
-                (recur new-jolt-world))
-              (recur jolt-world))))))))
+          (recur (draw flecs-world jolt-world)))))))
