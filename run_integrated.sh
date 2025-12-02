@@ -3,6 +3,7 @@ set -e
 
 cd "$(dirname "$0")"
 
+export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
 export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
 
 # Build ImGui if needed
@@ -17,30 +18,37 @@ if [ ! -f "vendor/jolt_wrapper.o" ]; then
     bash build_jolt.sh
 fi
 
-# Collect object files
-OBJ_ARGS=""
+echo "Running integrated demo (Raylib + ImGui + Jolt) - Static Linking"
+echo ""
 
-# ImGui objects
+SOMETHING_DIR="/Users/pfeodrippe/dev/something"
+
+# Collect ImGui object files (using --obj like run_imgui.sh)
+OBJ_ARGS=""
 for f in vendor/imgui/build/*.o; do
     OBJ_ARGS="$OBJ_ARGS --obj $f"
 done
 
-# Jolt wrapper + Jolt objects
+# Collect Jolt object files (using --obj like run_jolt.sh)
 OBJ_ARGS="$OBJ_ARGS --obj vendor/jolt_wrapper.o"
 for f in vendor/JoltPhysics/distr/objs/*.o; do
     OBJ_ARGS="$OBJ_ARGS --obj $f"
 done
 
-# Raylib dylib (includes Cocoa frameworks)
-OBJ_ARGS="$OBJ_ARGS --lib vendor/raylib/distr/libraylib_jank.dylib"
-
-echo "Running integrated demo (Raylib + ImGui + Jolt)..."
-echo ""
-
-# Run with include paths for all libraries
-jank $OBJ_ARGS \
-    -I./vendor/imgui \
+# Use static raylib with --jit-lib and --link-lib (like user's example)
+jank \
+    -L"$SOMETHING_DIR/vendor/raylib/distr" \
+    --jit-lib raylib_jank \
+    -I./vendor/raylib/distr \
     -I./vendor/raylib/src \
+    -I./vendor/imgui \
     -I./vendor/JoltPhysics \
+    --link-lib "$SOMETHING_DIR/vendor/raylib/distr/libraylib_jank.a" \
+    $OBJ_ARGS \
+    --framework Cocoa \
+    --framework IOKit \
+    --framework OpenGL \
+    --framework CoreVideo \
+    --framework CoreFoundation \
     --module-path src \
     run-main my-integrated-demo -main
