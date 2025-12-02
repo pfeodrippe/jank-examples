@@ -1,0 +1,138 @@
+(ns my-imgui-static)
+
+;; ImGui demo using raylib + rlImGui
+;; Uses C++ API directly - no wrapper needed!
+
+(cpp/raw "
+#include <cstdio>
+
+// Raylib
+#include <raylib.h>
+
+// ImGui
+#include <imgui.h>
+#include <rlImGui.h>
+
+// Demo state
+static bool show_demo_window = true;
+static bool show_another_window = false;
+static float clear_color[3] = {0.45f, 0.55f, 0.60f};
+static float slider_value = 0.0f;
+static int counter = 0;
+
+inline void imgui_demo_frame()
+{
+    // Start ImGui frame
+    rlImGuiBegin();
+
+    // 1. Show the big demo window
+    if (show_demo_window)
+        ImGui::ShowDemoWindow(&show_demo_window);
+
+    // 2. Show a simple window
+    {
+        ImGui::Begin(\"Hello from jank!\");
+
+        ImGui::Text(\"This is ImGui running in jank with raylib!\");
+        ImGui::Checkbox(\"Demo Window\", &show_demo_window);
+        ImGui::Checkbox(\"Another Window\", &show_another_window);
+
+        ImGui::SliderFloat(\"slider\", &slider_value, 0.0f, 1.0f);
+        ImGui::ColorEdit3(\"clear color\", clear_color);
+
+        if (ImGui::Button(\"Button\"))
+            counter++;
+        ImGui::SameLine();
+        ImGui::Text(\"counter = %d\", counter);
+
+        ImGui::Text(\"Application average %.3f ms/frame (%.1f FPS)\",
+                    1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+
+        ImGui::End();
+    }
+
+    // 3. Show another simple window
+    if (show_another_window)
+    {
+        ImGui::Begin(\"Another Window\", &show_another_window);
+        ImGui::Text(\"Hello from another window!\");
+        if (ImGui::Button(\"Close Me\"))
+            show_another_window = false;
+        ImGui::End();
+    }
+
+    // End ImGui frame
+    rlImGuiEnd();
+}
+
+inline void run_imgui_demo()
+{
+    // Initialize raylib
+    printf(\"Setting config flags...\\n\"); fflush(stdout);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    printf(\"Initializing window...\\n\"); fflush(stdout);
+    InitWindow(1280, 720, \"jank + ImGui + raylib\");
+    printf(\"Setting target FPS...\\n\"); fflush(stdout);
+    SetTargetFPS(60);
+    printf(\"Target FPS set!\\n\"); fflush(stdout);
+
+    // Test basic raylib functions before calling rlImGui
+    printf(\"Testing IsWindowFocused...\\n\"); fflush(stdout);
+    bool focused = IsWindowFocused();
+    printf(\"IsWindowFocused: %d\\n\", focused); fflush(stdout);
+
+    printf(\"Testing GetWindowScaleDPI...\\n\"); fflush(stdout);
+    Vector2 scale = GetWindowScaleDPI();
+    printf(\"WindowScaleDPI: %f, %f\\n\", scale.x, scale.y); fflush(stdout);
+
+    // Test ImGui context creation directly (without rlImGui)
+    printf(\"Creating ImGui context directly...\\n\"); fflush(stdout);
+    ImGuiContext* ctx = ImGui::CreateContext();
+    printf(\"Context created: %p\\n\", (void*)ctx); fflush(stdout);
+
+    printf(\"Getting ImGuiIO...\\n\"); fflush(stdout);
+    ImGuiIO& io = ImGui::GetIO();
+    printf(\"ImGuiIO obtained\\n\"); fflush(stdout);
+
+    printf(\"Setting dark colors...\\n\"); fflush(stdout);
+    ImGui::StyleColorsDark();
+    printf(\"Colors set\\n\"); fflush(stdout);
+
+    printf(\"Adding default font...\\n\"); fflush(stdout);
+    io.Fonts->AddFontDefault();
+    printf(\"Font added\\n\"); fflush(stdout);
+
+    printf(\"Building fonts...\\n\"); fflush(stdout);
+    unsigned char* pixels;
+    int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    printf(\"Font texture: %dx%d\\n\", width, height); fflush(stdout);
+
+    printf(\"ImGui setup complete - running simple loop...\\n\"); fflush(stdout);
+
+    // Simple loop without ImGui rendering (just test raylib works)
+    int frame = 0;
+    while (!WindowShouldClose() && frame < 60)
+    {
+        BeginDrawing();
+        ClearBackground({115, 140, 153, 255});
+        DrawText(\"ImGui context created successfully!\", 100, 100, 30, WHITE);
+        DrawText(\"Press ESC to exit\", 100, 150, 20, WHITE);
+        EndDrawing();
+        frame++;
+    }
+
+    // Cleanup
+    ImGui::DestroyContext(ctx);
+    CloseWindow();
+
+    printf(\"Demo finished!\\n\"); fflush(stdout);
+}
+")
+
+(defn -main [& args]
+  (println "Starting ImGui Demo...")
+  (cpp/run_imgui_demo)
+  (println "Done!"))
+
+(-main)

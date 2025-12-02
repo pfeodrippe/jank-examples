@@ -2,6 +2,8 @@
 // This file is compiled alongside Jolt's object files, so vtables are consistent.
 // JIT code can safely call these functions without vtable mismatch issues.
 
+#include <cstdio>
+
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Core/Factory.h>
@@ -42,12 +44,13 @@ namespace JoltBroadPhaseLayers
 // World state structure
 struct JoltWorld
 {
-    TempAllocatorImpl* temp_allocator = nullptr;
+    TempAllocator* temp_allocator = nullptr;  // Use base class pointer
     JobSystemSingleThreaded* job_system = nullptr;
     BroadPhaseLayerInterfaceTable* broad_phase_layer_interface = nullptr;
     ObjectLayerPairFilterTable* object_vs_object_layer_filter = nullptr;
     ObjectVsBroadPhaseLayerFilterTable* object_vs_broadphase_filter = nullptr;
     PhysicsSystem* physics_system = nullptr;
+    bool owns_temp_allocator = false;
 };
 
 static bool g_jolt_initialized = false;
@@ -66,14 +69,20 @@ void jolt_global_init()
 {
     if (g_jolt_initialized) return;
 
+    printf("[jolt] Initializing Jolt...\n");
+
+    printf("[jolt] RegisterDefaultAllocator...\n");
     RegisterDefaultAllocator();
 
+    printf("[jolt] Creating Factory...\n");
     if (Factory::sInstance == nullptr) {
         Factory::sInstance = new Factory();
     }
 
+    printf("[jolt] RegisterTypes...\n");
     RegisterTypes();
     g_jolt_initialized = true;
+    printf("[jolt] Initialization complete!\n");
 }
 
 void jolt_global_cleanup()
@@ -92,17 +101,29 @@ void jolt_global_cleanup()
 
 void* jolt_world_create()
 {
+    printf("[jolt] Creating world...\n");
     jolt_global_init();
 
     auto* world = new JoltWorld();
 
-    // Temp allocator (10MB)
+    // Temp allocator - use TempAllocatorMalloc for WASM compatibility
+    printf("[jolt] Creating TempAllocatorMalloc...\n");
+#ifdef __EMSCRIPTEN__
+    // For WASM, use malloc-based allocator (simpler, no large preallocation)
+    world->temp_allocator = new TempAllocatorMalloc();
+    world->owns_temp_allocator = true;
+#else
+    // For native, use the faster impl with preallocated buffer
     world->temp_allocator = new TempAllocatorImpl(10 * 1024 * 1024);
+    world->owns_temp_allocator = true;
+#endif
 
     // Job system
+    printf("[jolt] Creating JobSystemSingleThreaded...\n");
     world->job_system = new JobSystemSingleThreaded(64);
 
     // Layer interfaces
+    printf("[jolt] Creating layer interfaces...\n");
     world->broad_phase_layer_interface = new BroadPhaseLayerInterfaceTable(JoltLayers::NUM_LAYERS, JoltBroadPhaseLayers::NUM_LAYERS);
     world->broad_phase_layer_interface->MapObjectToBroadPhaseLayer(JoltLayers::NON_MOVING, JoltBroadPhaseLayers::NON_MOVING);
     world->broad_phase_layer_interface->MapObjectToBroadPhaseLayer(JoltLayers::MOVING, JoltBroadPhaseLayers::MOVING);
@@ -120,12 +141,14 @@ void* jolt_world_create()
     );
 
     // Physics system
+    printf("[jolt] Creating PhysicsSystem...\n");
     const uint cMaxBodies = 1024;
     const uint cNumBodyMutexes = 0;
     const uint cMaxBodyPairs = 1024;
     const uint cMaxContactConstraints = 1024;
 
     world->physics_system = new PhysicsSystem();
+    printf("[jolt] Initializing PhysicsSystem...\n");
     world->physics_system->Init(
         cMaxBodies,
         cNumBodyMutexes,
@@ -137,8 +160,10 @@ void* jolt_world_create()
     );
 
     // Set gravity
+    printf("[jolt] Setting gravity...\n");
     world->physics_system->SetGravity(Vec3(0.0f, -9.81f, 0.0f));
 
+    printf("[jolt] World created successfully!\n");
     return static_cast<void*>(world);
 }
 

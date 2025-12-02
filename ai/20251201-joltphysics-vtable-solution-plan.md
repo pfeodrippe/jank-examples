@@ -138,6 +138,57 @@ clang++ -c -O2 -std=c++17 -DNDEBUG -I vendor/JoltPhysics vendor/jolt_wrapper.cpp
 ./run_jolt.sh
 ```
 
+## WASM Support
+
+The same precompiled wrapper approach works for WASM with emscripten!
+
+### WASM Build
+
+```bash
+# Build Jolt and wrapper for WASM
+./build_jolt_wasm.sh
+
+# Run the WASM demo
+./run_jolt_wasm.sh
+```
+
+### Critical: JPH_VERSION_ID Matching
+
+Jolt uses `JPH_VERSION_ID` to verify library/caller compatibility. This ID includes feature bits that **MUST match** between:
+- The Jolt library (cmake build)
+- The wrapper (em++ compilation)
+
+Key flags that affect version ID:
+- `JPH_DISABLE_CUSTOM_ALLOCATOR`
+- `JPH_OBJECT_LAYER_BITS=32`
+- `JPH_DOUBLE_PRECISION`
+- `JPH_CROSS_PLATFORM_DETERMINISTIC`
+- etc.
+
+If they don't match, `RegisterTypes()` will abort.
+
+### WASM Output (SUCCESS!)
+
+```
+Creating physics world...
+[jolt] Creating world...
+[jolt] Initializing Jolt...
+[jolt] RegisterDefaultAllocator...
+[jolt] Creating Factory...
+[jolt] RegisterTypes...
+[jolt] Initialization complete!
+...
+Step 0: pos=[0.000000 9.997277 0.000000] vel=[0.000000 -0.163364 0.000000]
+Step 50: pos=[0.000000 6.439298 0.000000] vel=[0.000000 -8.160315 0.000000]
+Final position: [0.000000 5.098089 0.000000]
+```
+
+### Files for WASM
+
+- `build_jolt_wasm.sh` - Builds Jolt and wrapper for WASM
+- `run_jolt_wasm.sh` - Runs the WASM demo via emscripten-bundle
+- `vendor/jolt_wasm.o` - Combined WASM object file (wrapper + Jolt)
+
 ## What's Next
 
 1. Add more shape types (capsule, mesh, heightfield)

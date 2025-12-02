@@ -2,3 +2,6 @@
 *.out
 target
 pom.xml
+
+*.a
+*.o
