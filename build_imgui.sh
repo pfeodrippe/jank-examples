@@ -3,49 +3,75 @@ set -e
 
 cd "$(dirname "$0")"
 
-echo "=== Building ImGui + rlImGui ==="
+BUILD_WASM=${BUILD_WASM:-0}
+
+if [ "$BUILD_WASM" = "1" ]; then
+    echo "=== Building ImGui for WASM ==="
+    CXX="em++"
+    OUTPUT_DIR="vendor/imgui/build-wasm"
+    EXTRA_FLAGS=""
+else
+    echo "=== Building ImGui (native) ==="
+    CXX="clang++"
+    OUTPUT_DIR="vendor/imgui/build"
+    EXTRA_FLAGS="-fPIC"
+fi
 
 # Create output directory
-mkdir -p vendor/imgui/build
+mkdir -p "$OUTPUT_DIR"
 
 # Compile ImGui core files
 echo "Compiling ImGui core..."
-clang++ -c -O2 -std=c++17 -DNDEBUG \
+$CXX -c -O2 -std=c++17 -DNDEBUG $EXTRA_FLAGS \
     -I vendor/imgui \
     vendor/imgui/imgui.cpp \
-    -o vendor/imgui/build/imgui.o
+    -o "$OUTPUT_DIR/imgui.o"
 
-clang++ -c -O2 -std=c++17 -DNDEBUG \
+$CXX -c -O2 -std=c++17 -DNDEBUG $EXTRA_FLAGS \
     -I vendor/imgui \
     vendor/imgui/imgui_draw.cpp \
-    -o vendor/imgui/build/imgui_draw.o
+    -o "$OUTPUT_DIR/imgui_draw.o"
 
-clang++ -c -O2 -std=c++17 -DNDEBUG \
+$CXX -c -O2 -std=c++17 -DNDEBUG $EXTRA_FLAGS \
     -I vendor/imgui \
     vendor/imgui/imgui_tables.cpp \
-    -o vendor/imgui/build/imgui_tables.o
+    -o "$OUTPUT_DIR/imgui_tables.o"
 
-clang++ -c -O2 -std=c++17 -DNDEBUG \
+$CXX -c -O2 -std=c++17 -DNDEBUG $EXTRA_FLAGS \
     -I vendor/imgui \
     vendor/imgui/imgui_widgets.cpp \
-    -o vendor/imgui/build/imgui_widgets.o
+    -o "$OUTPUT_DIR/imgui_widgets.o"
 
-clang++ -c -O2 -std=c++17 -DNDEBUG \
+$CXX -c -O2 -std=c++17 -DNDEBUG $EXTRA_FLAGS \
     -I vendor/imgui \
     vendor/imgui/imgui_demo.cpp \
-    -o vendor/imgui/build/imgui_demo.o
+    -o "$OUTPUT_DIR/imgui_demo.o"
 
-# Compile rlImGui (raylib integration)
-echo "Compiling rlImGui..."
-clang++ -c -O2 -std=c++17 -DNDEBUG \
-    -DNO_FONT_AWESOME \
-    -I vendor/imgui \
-    -I vendor/raylib/src \
-    vendor/rlImGui/rlImGui.cpp \
-    -o vendor/imgui/build/rlImGui.o
+if [ "$BUILD_WASM" != "1" ]; then
+    # Compile rlImGui (raylib integration) - native only
+    echo "Compiling rlImGui..."
+    $CXX -c -O2 -std=c++17 -DNDEBUG -fPIC \
+        -DNO_FONT_AWESOME \
+        -I vendor/imgui \
+        -I vendor/raylib/src \
+        vendor/rlImGui/rlImGui.cpp \
+        -o "$OUTPUT_DIR/rlImGui.o"
+
+    # Create dylib for JIT compilation
+    echo "Creating dylib..."
+    $CXX -shared -o "$OUTPUT_DIR/libimgui.dylib" \
+        "$OUTPUT_DIR/imgui.o" \
+        "$OUTPUT_DIR/imgui_draw.o" \
+        "$OUTPUT_DIR/imgui_tables.o" \
+        "$OUTPUT_DIR/imgui_widgets.o" \
+        "$OUTPUT_DIR/imgui_demo.o"
+fi
 
 echo ""
 echo "=== Build complete ==="
 echo ""
-echo "Object files created in vendor/imgui/build/"
-ls -la vendor/imgui/build/*.o
+echo "Object files created in $OUTPUT_DIR/"
+ls -la "$OUTPUT_DIR"/*.o
+if [ "$BUILD_WASM" != "1" ]; then
+    ls -la "$OUTPUT_DIR"/*.dylib
+fi
