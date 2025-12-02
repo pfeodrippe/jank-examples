@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jank: Raylib + ImGui + Jolt + Flecs WASM</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1e1e1e;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: #d4d4d4;
+        }
+        h1 {
+            color: #4fc3f7;
+            margin-bottom: 20px;
+        }
+        #canvas-container {
+            border: 2px solid #4fc3f7;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            background: #000;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #2d2d2d;
+            border-radius: 5px;
+        }
+        #output {
+            margin-top: 10px;
+            padding: 10px;
+            background: #0d0d0d;
+            border-radius: 5px;
+            max-width: 800px;
+            max-height: 150px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+        .controls {
+            margin-top: 10px;
+            color: #888;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Jank: Raylib + ImGui + Jolt + Flecs WASM</h1>
+    <div id="canvas-container">
+        <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1" width="1280" height="720"></canvas>
+    </div>
+    <div class="controls">
+        Drag to pan | Scroll to zoom | Space to spawn balls | ImGui panel for controls
+    </div>
+    <div id="status">Status: Loading...</div>
+    <div id="output"></div>
+
+    <script>
+        // Set up Module BEFORE loading the ES6 module
+        // This is the pattern raylib expects
+        var Module = {
+            canvas: document.getElementById('canvas'),
+            print: function(text) {
+                console.log(text);
+                document.getElementById('output').textContent += text + '\n';
+            },
+            printErr: function(text) {
+                console.error(text);
+                document.getElementById('output').textContent += 'ERROR: ' + text + '\n';
+            },
+            setStatus: function(text) {
+                document.getElementById('status').textContent = 'Status: ' + text;
+            },
+            onRuntimeInitialized: function() {
+                console.log('Runtime initialized!');
+                document.getElementById('status').textContent = 'Status: Runtime ready!';
+            }
+        };
+
+        // Make Module globally available
+        window.Module = Module;
+    </script>
+
+    <script type="module">
+        const statusDiv = document.getElementById('status');
+        const outputDiv = document.getElementById('output');
+
+        function log(text) {
+            console.log(text);
+            outputDiv.textContent += text + '\n';
+            outputDiv.scrollTop = outputDiv.scrollHeight;
+        }
+
+        statusDiv.textContent = 'Status: Loading WASM module...';
+        log('Loading Jank Integrated Demo (Raylib + ImGui + Jolt + Flecs)...');
+
+        // Import the ES6 module
+        import('./my_integrated_demo.js')
+            .then(ModuleFactory => {
+                statusDiv.textContent = 'Status: Initializing...';
+                log('Module loaded, initializing with canvas...');
+
+                const initFn = ModuleFactory.default || ModuleFactory;
+
+                // Pass the global Module config to the factory
+                return initFn(window.Module);
+            })
+            .then(instance => {
+                statusDiv.textContent = 'Status: Running Integrated Demo...';
+                log('Module initialized!');
+                log('Canvas: ' + (instance.canvas ? 'connected' : 'NOT connected'));
+
+                // Check what's available
+                log('_main exists: ' + (typeof instance._main === 'function'));
+                log('Checking WebGL context...');
+
+                const gl = instance.canvas.getContext('webgl2') || instance.canvas.getContext('webgl');
+                log('WebGL context: ' + (gl ? 'OK' : 'FAILED'));
+
+                // main() should run automatically during initialization with ASYNCIFY
+                if (instance._main && typeof instance._main === 'function') {
+                    log('main() is available (should have been called during init)');
+                }
+            })
+            .catch(err => {
+                statusDiv.textContent = 'Status: Error!';
+                log('ERROR: ' + err.message);
+                log('Stack: ' + err.stack);
+                console.error('Full error:', err);
+            });
+    </script>
+</body>
+</html>
