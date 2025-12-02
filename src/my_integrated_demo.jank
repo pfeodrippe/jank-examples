@@ -1,0 +1,479 @@
+(ns my-integrated-demo)
+
+;; Integrated demo: Raylib 2D + ImGui UI + JoltPhysics + Simple ECS
+;;
+;; Architecture:
+;; - Simple vector-based entity storage (avoiding Flecs C++ template issues)
+;; - JoltPhysics simulates 3D physics (viewed from top-down 2D)
+;; - Raylib renders the scene in 2D
+;; - ImGui provides debug UI
+
+(cpp/raw "
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <vector>
+
+// =============================================================================
+// Raylib
+// =============================================================================
+#include <raylib.h>
+#include <rlgl.h>
+
+// =============================================================================
+// ImGui
+// =============================================================================
+#include <imgui.h>
+
+// =============================================================================
+// JoltPhysics wrapper (precompiled)
+// =============================================================================
+extern \"C\" {
+    void* jolt_world_create();
+    void jolt_world_destroy(void* world_ptr);
+    uint32_t jolt_body_create_sphere(void* world_ptr, float x, float y, float z, float radius, bool is_dynamic, bool activate);
+    uint32_t jolt_body_create_box(void* world_ptr, float x, float y, float z, float half_x, float half_y, float half_z, bool is_dynamic, bool activate);
+    void jolt_body_set_velocity(void* world_ptr, uint32_t body_id, float vx, float vy, float vz);
+    void jolt_body_get_position(void* world_ptr, uint32_t body_id, float* out_x, float* out_y, float* out_z);
+    void jolt_body_get_velocity(void* world_ptr, uint32_t body_id, float* out_vx, float* out_vy, float* out_vz);
+    bool jolt_body_is_active(void* world_ptr, uint32_t body_id);
+    void jolt_body_destroy(void* world_ptr, uint32_t body_id);
+    void jolt_world_step(void* world_ptr, float delta_time, int collision_steps);
+    void jolt_world_optimize_broad_phase(void* world_ptr);
+    int jolt_world_get_num_bodies(void* world_ptr);
+    int jolt_world_get_num_active_bodies(void* world_ptr);
+}
+
+// Provide emulated TLS stub for JIT
+extern \"C\" {
+    struct __emutls_control {
+        size_t size;
+        size_t align;
+        union { size_t offset; void *ptr; } object;
+        void *templ;
+    };
+
+    void* __emutls_get_address(__emutls_control* control) {
+        if (!control->object.ptr) {
+            control->object.ptr = malloc(control->size);
+            if (control->templ) {
+                memcpy(control->object.ptr, control->templ, control->size);
+            } else {
+                memset(control->object.ptr, 0, control->size);
+            }
+        }
+        return control->object.ptr;
+    }
+}
+
+// Jolt AssertFailed stub
+namespace JPH {
+    using AssertFailedFunction = bool(*)(const char*, const char*, const char*, unsigned int);
+    AssertFailedFunction AssertFailed = [](const char* expr, const char* msg, const char* file, unsigned int line) -> bool {
+        printf(\"[JOLT ASSERT] %s:%u: (%s) %s\\n\", file, line, expr, msg ? msg : \"\");
+        return false;
+    };
+}
+
+// =============================================================================
+// Simple ECS using vectors (avoiding C++ template issues with JIT)
+// =============================================================================
+
+struct Entity {
+    uint32_t body_id;
+    float radius;
+    Color color;
+    bool active;
+};
+
+static std::vector<Entity> g_Entities;
+
+// =============================================================================
+// Custom ImGui renderer using raylib's rlgl
+// =============================================================================
+
+static unsigned int g_FontTexture = 0;
+
+static void ImGui_ImplRaylib_CreateFontsTexture()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    unsigned char* pixels;
+    int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+    Image image = {
+        .data = pixels,
+        .width = width,
+        .height = height,
+        .mipmaps = 1,
+        .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+    };
+    Texture2D tex = LoadTextureFromImage(image);
+    g_FontTexture = tex.id;
+    io.Fonts->SetTexID((ImTextureID)(intptr_t)g_FontTexture);
+}
+
+static void ImGui_ImplRaylib_RenderDrawData(ImDrawData* draw_data)
+{
+    if (draw_data->CmdListsCount == 0)
+        return;
+
+    rlDrawRenderBatchActive();
+    rlDisableBackfaceCulling();
+
+    for (int n = 0; n < draw_data->CmdListsCount; n++)
+    {
+        const ImDrawList* cmd_list = draw_data->CmdLists[n];
+        const ImDrawVert* vtx_buffer = cmd_list->VtxBuffer.Data;
+        const ImDrawIdx* idx_buffer = cmd_list->IdxBuffer.Data;
+
+        for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++)
+        {
+            const ImDrawCmd* pcmd = &cmd_list->CmdBuffer[cmd_i];
+
+            if (pcmd->UserCallback)
+            {
+                pcmd->UserCallback(cmd_list, pcmd);
+            }
+            else
+            {
+                ImVec2 pos = draw_data->DisplayPos;
+                ImVec4 clip = pcmd->ClipRect;
+                BeginScissorMode(
+                    (int)(clip.x - pos.x),
+                    (int)(clip.y - pos.y),
+                    (int)(clip.z - clip.x),
+                    (int)(clip.w - clip.y)
+                );
+
+                unsigned int texId = (unsigned int)(intptr_t)pcmd->GetTexID();
+
+                rlSetTexture(texId);
+                rlBegin(RL_TRIANGLES);
+
+                for (unsigned int i = 0; i < pcmd->ElemCount; i += 3)
+                {
+                    ImDrawIdx idx0 = idx_buffer[pcmd->IdxOffset + i + 0];
+                    ImDrawIdx idx1 = idx_buffer[pcmd->IdxOffset + i + 1];
+                    ImDrawIdx idx2 = idx_buffer[pcmd->IdxOffset + i + 2];
+
+                    const ImDrawVert* v0 = &vtx_buffer[idx0];
+                    const ImDrawVert* v1 = &vtx_buffer[idx1];
+                    const ImDrawVert* v2 = &vtx_buffer[idx2];
+
+                    rlColor4ub((v0->col >> 0) & 0xFF, (v0->col >> 8) & 0xFF, (v0->col >> 16) & 0xFF, (v0->col >> 24) & 0xFF);
+                    rlTexCoord2f(v0->uv.x, v0->uv.y);
+                    rlVertex2f(v0->pos.x, v0->pos.y);
+
+                    rlColor4ub((v1->col >> 0) & 0xFF, (v1->col >> 8) & 0xFF, (v1->col >> 16) & 0xFF, (v1->col >> 24) & 0xFF);
+                    rlTexCoord2f(v1->uv.x, v1->uv.y);
+                    rlVertex2f(v1->pos.x, v1->pos.y);
+
+                    rlColor4ub((v2->col >> 0) & 0xFF, (v2->col >> 8) & 0xFF, (v2->col >> 16) & 0xFF, (v2->col >> 24) & 0xFF);
+                    rlTexCoord2f(v2->uv.x, v2->uv.y);
+                    rlVertex2f(v2->pos.x, v2->pos.y);
+                }
+
+                rlEnd();
+                rlSetTexture(0);
+                EndScissorMode();
+            }
+        }
+    }
+
+    rlEnableBackfaceCulling();
+}
+
+static void ImGui_ImplRaylib_ProcessInput()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    Vector2 mousePos = GetMousePosition();
+    io.AddMousePosEvent(mousePos.x, mousePos.y);
+
+    io.AddMouseButtonEvent(0, IsMouseButtonDown(MOUSE_LEFT_BUTTON));
+    io.AddMouseButtonEvent(1, IsMouseButtonDown(MOUSE_RIGHT_BUTTON));
+    io.AddMouseButtonEvent(2, IsMouseButtonDown(MOUSE_MIDDLE_BUTTON));
+
+    Vector2 wheel = GetMouseWheelMoveV();
+    io.AddMouseWheelEvent(wheel.x, wheel.y);
+
+    io.AddKeyEvent(ImGuiMod_Ctrl, IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
+    io.AddKeyEvent(ImGuiMod_Shift, IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
+    io.AddKeyEvent(ImGuiMod_Alt, IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT));
+
+    int charPressed = GetCharPressed();
+    while (charPressed > 0)
+    {
+        io.AddInputCharacter(charPressed);
+        charPressed = GetCharPressed();
+    }
+}
+
+// =============================================================================
+// Global state
+// =============================================================================
+
+static void* g_JoltWorld = nullptr;
+static bool g_Paused = false;
+static float g_TimeScale = 1.0f;
+static int g_SpawnCount = 5;
+static float g_ViewScale = 15.0f;  // pixels per physics unit
+static Vector2 g_ViewOffset = {640.0f, 500.0f};  // center of view in screen coords
+
+// =============================================================================
+// Convert physics coords to screen coords (top-down view: X/Z -> screen X/Y)
+// =============================================================================
+
+static Vector2 physicsToScreen(float px, float py, float pz)
+{
+    return {
+        g_ViewOffset.x + px * g_ViewScale,
+        g_ViewOffset.y - pz * g_ViewScale  // flip Z for screen Y
+    };
+}
+
+// =============================================================================
+// Spawn a new physics ball
+// =============================================================================
+
+static void spawn_ball(float x, float y, float z, float radius, Color color)
+{
+    // Create Jolt physics body
+    uint32_t body_id = jolt_body_create_sphere(g_JoltWorld, x, y, z, radius, true, true);
+
+    // Add to entity list
+    Entity e;
+    e.body_id = body_id;
+    e.radius = radius;
+    e.color = color;
+    e.active = true;
+    g_Entities.push_back(e);
+}
+
+// =============================================================================
+// Main demo function
+// =============================================================================
+
+inline void run_integrated_demo()
+{
+    // Initialize raylib
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
+    InitWindow(1280, 720, \"jank: Raylib + ImGui + JoltPhysics (Top-Down 2D View)\");
+    SetTargetFPS(60);
+
+    // Initialize Jolt physics world
+    printf(\"Creating Jolt physics world...\\n\");
+    g_JoltWorld = jolt_world_create();
+
+    // Create floor (static box at y=0)
+    jolt_body_create_box(g_JoltWorld, 0.0f, -0.5f, 0.0f, 50.0f, 0.5f, 50.0f, false, false);
+
+    // Spawn initial balls at different heights
+    spawn_ball(0.0f, 15.0f, 0.0f, 1.0f, RED);
+    spawn_ball(5.0f, 18.0f, 3.0f, 0.8f, GREEN);
+    spawn_ball(-4.0f, 20.0f, -2.0f, 1.2f, BLUE);
+    spawn_ball(2.0f, 25.0f, 5.0f, 0.6f, YELLOW);
+    spawn_ball(-6.0f, 22.0f, -5.0f, 0.9f, PURPLE);
+
+    // Optimize broad phase after adding bodies
+    jolt_world_optimize_broad_phase(g_JoltWorld);
+
+    // Initialize ImGui
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::StyleColorsDark();
+    io.DisplaySize = ImVec2((float)GetScreenWidth(), (float)GetScreenHeight());
+    ImGui_ImplRaylib_CreateFontsTexture();
+
+    printf(\"Integrated demo initialized!\\n\");
+    printf(\"Press SPACE to spawn balls, drag to pan view\\n\");
+
+    // Main loop
+    while (!WindowShouldClose())
+    {
+        float dt = GetFrameTime();
+
+        // Update ImGui
+        io.DisplaySize = ImVec2((float)GetScreenWidth(), (float)GetScreenHeight());
+        io.DeltaTime = dt;
+        ImGui_ImplRaylib_ProcessInput();
+        ImGui::NewFrame();
+
+        // Input handling (only when ImGui doesn't want input)
+        if (!io.WantCaptureMouse && !io.WantCaptureKeyboard)
+        {
+            // Pan view with mouse drag
+            if (IsMouseButtonDown(MOUSE_LEFT_BUTTON))
+            {
+                Vector2 delta = GetMouseDelta();
+                g_ViewOffset.x += delta.x;
+                g_ViewOffset.y += delta.y;
+            }
+
+            // Zoom with scroll wheel
+            float wheel = GetMouseWheelMove();
+            if (wheel != 0)
+            {
+                g_ViewScale *= (wheel > 0) ? 1.1f : 0.9f;
+                if (g_ViewScale < 5.0f) g_ViewScale = 5.0f;
+                if (g_ViewScale > 50.0f) g_ViewScale = 50.0f;
+            }
+
+            // Spawn balls with space
+            if (IsKeyPressed(KEY_SPACE))
+            {
+                for (int i = 0; i < g_SpawnCount; i++)
+                {
+                    float x = (float)(GetRandomValue(-20, 20));
+                    float z = (float)(GetRandomValue(-20, 20));
+                    float y = (float)(GetRandomValue(15, 40));
+                    float r = (float)(GetRandomValue(5, 15)) / 10.0f;
+                    Color c = { (unsigned char)GetRandomValue(50, 255),
+                               (unsigned char)GetRandomValue(50, 255),
+                               (unsigned char)GetRandomValue(50, 255), 255 };
+                    spawn_ball(x, y, z, r, c);
+                }
+            }
+        }
+
+        // Physics step
+        if (!g_Paused)
+        {
+            jolt_world_step(g_JoltWorld, dt * g_TimeScale, 1);
+        }
+
+        // ImGui UI
+        ImGui::Begin(\"Physics Debug\");
+        ImGui::Text(\"FPS: %.1f\", io.Framerate);
+        ImGui::Separator();
+
+        ImGui::Text(\"Jolt Bodies: %d\", jolt_world_get_num_bodies(g_JoltWorld));
+        ImGui::Text(\"Active: %d\", jolt_world_get_num_active_bodies(g_JoltWorld));
+        ImGui::Text(\"Entities: %d\", (int)g_Entities.size());
+
+        ImGui::Separator();
+        ImGui::Checkbox(\"Paused\", &g_Paused);
+        ImGui::SliderFloat(\"Time Scale\", &g_TimeScale, 0.1f, 3.0f);
+        ImGui::SliderInt(\"Spawn Count\", &g_SpawnCount, 1, 20);
+        ImGui::SliderFloat(\"View Scale\", &g_ViewScale, 5.0f, 50.0f);
+
+        if (ImGui::Button(\"Spawn Balls (Space)\"))
+        {
+            for (int i = 0; i < g_SpawnCount; i++)
+            {
+                float x = (float)(GetRandomValue(-20, 20));
+                float z = (float)(GetRandomValue(-20, 20));
+                float y = (float)(GetRandomValue(15, 40));
+                float r = (float)(GetRandomValue(5, 15)) / 10.0f;
+                Color c = { (unsigned char)GetRandomValue(50, 255),
+                           (unsigned char)GetRandomValue(50, 255),
+                           (unsigned char)GetRandomValue(50, 255), 255 };
+                spawn_ball(x, y, z, r, c);
+            }
+        }
+
+        if (ImGui::Button(\"Reset View\"))
+        {
+            g_ViewOffset = {640.0f, 500.0f};
+            g_ViewScale = 15.0f;
+        }
+
+        ImGui::Separator();
+        ImGui::Text(\"View: (%.0f, %.0f) scale: %.1f\",
+                    g_ViewOffset.x, g_ViewOffset.y, g_ViewScale);
+        ImGui::Text(\"Controls:\");
+        ImGui::BulletText(\"Drag to pan\");
+        ImGui::BulletText(\"Scroll to zoom\");
+        ImGui::BulletText(\"Space to spawn\");
+
+        ImGui::End();
+
+        // Render ImGui
+        ImGui::Render();
+
+        // Begin drawing
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        // Draw ground reference (horizontal line at z=0)
+        DrawLine(0, (int)g_ViewOffset.y, GetScreenWidth(), (int)g_ViewOffset.y, LIGHTGRAY);
+
+        // Draw grid
+        for (int i = -50; i <= 50; i += 5)
+        {
+            Vector2 start = physicsToScreen((float)i, 0, -50);
+            Vector2 end = physicsToScreen((float)i, 0, 50);
+            DrawLineV(start, end, Fade(LIGHTGRAY, 0.3f));
+
+            start = physicsToScreen(-50, 0, (float)i);
+            end = physicsToScreen(50, 0, (float)i);
+            DrawLineV(start, end, Fade(LIGHTGRAY, 0.3f));
+        }
+
+        // Draw all entities
+        for (auto& e : g_Entities)
+        {
+            float px, py, pz;
+            jolt_body_get_position(g_JoltWorld, e.body_id, &px, &py, &pz);
+
+            // Convert to screen coords (top-down view)
+            Vector2 screenPos = physicsToScreen(px, py, pz);
+            float screenRadius = e.radius * g_ViewScale;
+
+            // Draw shadow (slightly offset based on height)
+            float shadowOffset = py * 0.5f;
+            DrawCircle((int)(screenPos.x + shadowOffset), (int)(screenPos.y + shadowOffset),
+                      screenRadius * 0.8f, Fade(BLACK, 0.2f));
+
+            // Draw ball - color intensity based on height (brighter = higher)
+            float heightFactor = (py + 5.0f) / 50.0f;  // normalize height
+            if (heightFactor < 0) heightFactor = 0;
+            if (heightFactor > 1) heightFactor = 1;
+            Color c = e.color;
+            c.r = (unsigned char)(c.r * (0.5f + 0.5f * heightFactor));
+            c.g = (unsigned char)(c.g * (0.5f + 0.5f * heightFactor));
+            c.b = (unsigned char)(c.b * (0.5f + 0.5f * heightFactor));
+
+            DrawCircle((int)screenPos.x, (int)screenPos.y, screenRadius, c);
+            DrawCircleLines((int)screenPos.x, (int)screenPos.y, screenRadius, BLACK);
+
+            // Draw height indicator text
+            char heightText[16];
+            snprintf(heightText, sizeof(heightText), \"%.1f\", py);
+            DrawText(heightText, (int)screenPos.x - 10, (int)screenPos.y - 5, 10, BLACK);
+        }
+
+        // Draw title and instructions
+        DrawText(\"Raylib + ImGui + JoltPhysics\", 10, 10, 20, DARKGRAY);
+        DrawText(\"Top-Down 2D View (numbers show Y height)\", 10, 35, 16, GRAY);
+
+        // Render ImGui on top
+        ImGui_ImplRaylib_RenderDrawData(ImGui::GetDrawData());
+
+        EndDrawing();
+    }
+
+    // Cleanup
+    if (g_FontTexture)
+    {
+        rlUnloadTexture(g_FontTexture);
+        g_FontTexture = 0;
+    }
+    ImGui::DestroyContext(ctx);
+
+    g_Entities.clear();
+    jolt_world_destroy(g_JoltWorld);
+
+    CloseWindow();
+    printf(\"Demo finished!\\n\");
+}
+")
+
+(defn -main [& args]
+  (println "Starting integrated demo: Flecs + Raylib + ImGui + Jolt...")
+  (cpp/run_integrated_demo)
+  (println "Done!"))
+
+(-main)
