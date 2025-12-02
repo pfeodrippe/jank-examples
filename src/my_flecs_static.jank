@@ -1,7 +1,29 @@
 (ns my-flecs-static
   (:require
    ["flecs.h" :as flecs]
+   ["flecs.h" :as fl :scope ""]
    ["flecs.h" :as fw :scope "flecs.world"]))
+
+(comment
+
+  (jank.compiler/native-source '
+
+   [(let [x 5
+          a (cpp/box (fl/ecs_mini))]
+      (fl/ecs_new_w_pair a 3 x))
+
+    (let [x 5
+          a (fl/ecs_mini)]
+      (fl/ecs_new_w_pair a 3 x))
+
+    (let [x 5
+          a (fl/ecs_mini)]
+      (fl/ecs_new_w_id a (fl/ecs_pair 3 x)))
+
+    (let [x 5]
+      (fl/ecs_new_w_pair (fl/ecs_mini) 3 x))])
+
+  ())
 
 ;; Now flecs symbols should be available!
 (cpp/raw "

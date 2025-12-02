@@ -60,7 +60,7 @@ extern \"C\" {
   ;; Begin drawing
   (begin-drawing!)
 
-  (clear! 245 245 245 255) ;; RAYWHITE
+  (rl/ClearBackground (rl/RAYWHITE))
 
   ;; Draw some shapes
   (draw-rect! 100 100 200 150 230 41 55 255) ;; RED rectangle
