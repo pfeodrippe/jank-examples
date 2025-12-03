@@ -93,7 +93,6 @@ inline std::vector<Entity>& get_entities() {
 // =============================================================================
 
 static void* g_jolt_world = nullptr;
-static bool* g_paused_ptr = nullptr;
 static float* g_time_scale_ptr = nullptr;
 static int* g_spawn_count_ptr = nullptr;
 static float* g_view_scale_ptr = nullptr;
@@ -101,11 +100,6 @@ static float* g_view_offset_x_ptr = nullptr;
 static float* g_view_offset_y_ptr = nullptr;
 static unsigned int* g_font_tex_ptr = nullptr;
 static bool* g_reset_requested_ptr = nullptr;
-
-inline bool& get_paused() {
-    if (!g_paused_ptr) g_paused_ptr = new bool(false);
-    return *g_paused_ptr;
-}
 
 inline float& get_time_scale() {
     if (!g_time_scale_ptr) g_time_scale_ptr = new float(1.0f);
@@ -238,16 +232,9 @@ inline void flecs_clear_entities() {
 }
 
 // =============================================================================
-// View state accessors (minimal - only what jank can't do directly)
-// Note: These exist because jank can't mutate C++ references directly
+// View state mutators (jank can't mutate C++ references directly)
 // =============================================================================
 
-inline bool native_get_paused() { return get_paused(); }
-inline double native_get_time_scale() { return get_time_scale(); }
-inline int64_t native_get_spawn_count() { return get_spawn_count(); }
-inline double native_get_view_scale() { return get_view_scale(); }
-inline double native_get_view_offset_x() { return get_view_offset_x(); }
-inline double native_get_view_offset_y() { return get_view_offset_y(); }
 inline void native_set_view_offset(double x, double y) {
     get_view_offset_x() = (float)x;
     get_view_offset_y() = (float)y;
@@ -391,21 +378,9 @@ inline void draw_entities(void* jolt_world) {
 }
 
 // =============================================================================
-// ImGui helpers - only for mutable references and formatted text
+// ImGui helpers - atom-based widgets and assignments
 // =============================================================================
 
-// Mutable reference widgets (can't do from jank directly)
-inline bool imgui_checkbox_paused() {
-    return ImGui::Checkbox(\"Paused\", &get_paused());
-}
-inline bool imgui_slider_time_scale() {
-    return ImGui::SliderFloat(\"Time Scale\", &get_time_scale(), 0.1f, 3.0f);
-}
-inline bool imgui_slider_spawn_count() {
-    return ImGui::SliderInt(\"Spawn Count\", &get_spawn_count(), 1, 20);
-}
-
-// Assignments (can't mutate C++ globals from jank directly)
 inline void imgui_set_reset_requested() {
     get_reset_requested() = true;
 }
@@ -413,56 +388,6 @@ inline void imgui_reset_view() {
     get_view_offset_x() = 640.0f;
     get_view_offset_y() = 500.0f;
     get_view_scale() = 15.0f;
-}
-
-// Formatted text helpers (variadic functions are tricky from jank)
-inline void imgui_text_fps() {
-    ImGui::Text(\"FPS: %d\", GetFPS());
-}
-inline void imgui_text_jolt_stats(void* w) {
-    ImGui::Text(\"Jolt Bodies: %d\", w ? jolt_world_get_num_bodies(w) : 0);
-    ImGui::Text(\"Active: %d\", w ? jolt_world_get_num_active_bodies(w) : 0);
-}
-inline void imgui_text_flecs_stats() {
-    ImGui::Text(\"Flecs Entities: %d\", (int)flecs_entity_count());
-}
-inline void imgui_text_view_stats() {
-    ImGui::Text(\"View: (%.0f, %.0f) scale: %.1f\", get_view_offset_x(), get_view_offset_y(), get_view_scale());
-}
-
-// Simple text helpers (variadic Text/BulletText can't be called from jank)
-inline void imgui_text_controls() {
-    ImGui::Text(\"Controls:\");
-}
-inline void imgui_bullet_pan() {
-    ImGui::BulletText(\"Drag to pan\");
-}
-inline void imgui_bullet_zoom() {
-    ImGui::BulletText(\"Scroll to zoom\");
-}
-inline void imgui_bullet_spawn() {
-    ImGui::BulletText(\"Space to spawn\");
-}
-
-// Additional helpers to avoid jank->imgui header issues
-inline void imgui_begin_physics_debug() {
-    ImGui::Begin(\"Physics Debug\");
-}
-inline void imgui_separator() {
-    ImGui::Separator();
-}
-inline void imgui_same_line() {
-    ImGui::SameLine();
-}
-inline bool imgui_button_reset_sim() {
-    return ImGui::Button(\"Reset Simulation\");
-}
-inline bool imgui_button_reset_view() {
-    return ImGui::Button(\"Reset View\");
-}
-inline jank::runtime::object_ref imgui_end() {
-    ImGui::End();
-    return jank::runtime::jank_nil;
 }
 
 inline bool native_check_reset() {
@@ -489,49 +414,54 @@ inline void native_draw_entities(jank::runtime::object_ref world_box) {
 }
 ")
 
-;; ImGui::Text(\"FPS: %d\", GetFPS());
-#_ (require '[jank.compiler :as jc])
-#_ (jc/native-source (imgui/Text "FPS: %d" (rl/GetFPS)))
+;; =============================================================================
+;; UI State (pure jank atoms)
+;; =============================================================================
+
+;; TODO This notation needs to improve!!
+(defonce is-paused (cpp/box (cpp/& (cpp/bool. false))))
 
 (defn native-draw-imgui-panel
-  "Draw ImGui debug panel - jank controls the flow, cpp helpers for ImGui calls"
+  "Draw ImGui debug panel - pure jank with minimal cpp helpers for mutable refs only"
   [w]
-  (let* [world-ptr (cpp/opaque_box_ptr w)]
-    ;; Begin panel
-    (cpp/imgui_begin_physics_debug)
+  ;; Begin panel
+  (imgui/Begin #cpp "Physics Debug")
 
-    ;; Stats section
-    (cpp/imgui_text_fps)
-    (cpp/imgui_separator)
-    (cpp/imgui_text_jolt_stats world-ptr)
-    (cpp/imgui_text_flecs_stats)
-    (cpp/imgui_separator)
+  ;; Stats section - all pure jank!
+  (imgui/Text #cpp "FPS: %d" (rl/GetFPS))
+  (imgui/Separator)
+  (imgui/Text #cpp "Jolt Bodies: %d" (cpp/jolt_num_bodies w))
+  (imgui/Text #cpp "Active: %d" (cpp/jolt_num_active w))
+  (imgui/Text #cpp "Flecs Entities: %d" (cpp/flecs_entity_count))
+  (imgui/Separator)
 
-    ;; Controls (mutable refs need cpp helpers)
-    (cpp/imgui_checkbox_paused)
-    (cpp/imgui_slider_time_scale)
-    (cpp/imgui_slider_spawn_count)
-    (cpp/imgui_separator)
+  (imgui/Checkbox "Paused" (cpp/unbox cpp/bool* is-paused))
+  (imgui/SliderFloat "Time Scale" (cpp/& (cpp/get_time_scale)) 0.1 3.0)
+  (imgui/SliderInt "Spawn Count" (cpp/& (cpp/get_spawn_count)) 1 20)
+  (imgui/Separator)
 
-    ;; Buttons - jank controls the logic!
-    (when (cpp/imgui_button_reset_sim)
-      (cpp/imgui_set_reset_requested))
-    (cpp/imgui_same_line)
-    (when (cpp/imgui_button_reset_view)
-      (cpp/imgui_reset_view))
+  ;; Buttons - pure jank!
+  (when (imgui/Button "Reset Simulation")
+    (cpp/imgui_set_reset_requested))
+  (imgui/SameLine)
+  (when (imgui/Button "Reset View")
+    (cpp/imgui_reset_view))
 
-    ;; View info
-    (cpp/imgui_text_view_stats)
-    (cpp/imgui_separator)
+  ;; View info - pure jank!
+  (imgui/Text #cpp "View: (%.0f, %.0f) scale: %.1f"
+              (cpp/get_view_offset_x)
+              (cpp/get_view_offset_y)
+              (cpp/get_view_scale))
+  (imgui/Separator)
 
-    ;; Help text
-    (cpp/imgui_text_controls)
-    (cpp/imgui_bullet_pan)
-    (cpp/imgui_bullet_zoom)
-    (cpp/imgui_bullet_spawn)
+  ;; Help text - pure jank!
+  (imgui/Text "Controls:")
+  (imgui/BulletText "Drag to pan")
+  (imgui/BulletText "Scroll to zoom")
+  (imgui/BulletText "Space to spawn")
 
-    ;; End panel
-    (cpp/imgui_end)))
+  ;; End panel
+  (imgui/End))
 
 ;; =============================================================================
 ;; Jolt wrapper functions
@@ -551,17 +481,16 @@ inline void native_draw_entities(jank::runtime::object_ref world_box) {
 ;; Flecs - using header require directly!
 ;; =============================================================================
 
-(defn flecs-create-world []
-  "Create a Flecs world via C API and wrap in opaque_box."
+(defn flecs-create-world "Create a Flecs world via C API and wrap in opaque_box." []
   (println "[flecs] ECS world created via fl/ecs_mini")
   (cpp/box (fl/ecs_mini)))
 
-(defn flecs-destroy-world! [flecs-world]
-  "Destroy a Flecs world."
+(defn flecs-destroy-world! "Destroy a Flecs world."
+  [flecs-world]
   (cpp/flecs_fini_world flecs-world))
 
-(defn add-entity! [flecs-world jolt-id r cr cg cb]
-  "Add entity to Flecs world and entity storage."
+(defn add-entity! "Add entity to Flecs world and entity storage."
+  [flecs-world jolt-id r cr cg cb]
   (cpp/flecs_add_entity flecs-world jolt-id r cr cg cb))
 
 (defn entity-count [] (cpp/flecs_entity_count))
@@ -571,12 +500,12 @@ inline void native_draw_entities(jank::runtime::object_ref world_box) {
 ;; State accessors (read-only from jank - ImGui panel handles mutation)
 ;; =============================================================================
 
-(defn paused? [] (cpp/native_get_paused))
-(defn time-scale [] (cpp/native_get_time_scale))
-(defn spawn-count [] (cpp/native_get_spawn_count))
-(defn view-scale [] (cpp/native_get_view_scale))
-(defn view-offset-x [] (cpp/native_get_view_offset_x))
-(defn view-offset-y [] (cpp/native_get_view_offset_y))
+(defn paused? [] (cpp/* (cpp/unbox cpp/bool* is-paused)))
+(defn time-scale [] (cpp/get_time_scale))
+(defn spawn-count [] (cpp/get_spawn_count))
+(defn view-scale [] (cpp/get_view_scale))
+(defn view-offset-x [] (cpp/get_view_offset_x))
+(defn view-offset-y [] (cpp/get_view_offset_y))
 
 ;; =============================================================================
 ;; Raylib - using header requires directly!

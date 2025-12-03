@@ -12,8 +12,9 @@ This guide documents how to use native (C/C++) resources in jank, how to minimiz
 4. [Common Wrapper Patterns](#common-wrapper-patterns)
 5. [What Works via Header Requires](#what-works-via-header-requires)
 6. [What Doesn't Work (Requires cpp/raw)](#what-doesnt-work-requires-cppraw)
-7. [Potential jank Improvements](#potential-jank-improvements)
-8. [Best Practices](#best-practices)
+7. [C-Style Variadic Functions (WORKS!)](#c-style-variadic-functions-works)
+8. [Potential jank Improvements](#potential-jank-improvements)
+9. [Best Practices](#best-practices)
 
 ---
 
@@ -144,6 +145,41 @@ Use `cpp/.method` (without dash) for method calls:
        &&i (cpp/& &i)]
   (cpp/* (cpp/* &&i)))  ;; **&&i
 ```
+
+### ⚠️ cpp/& with Mutable Reference Parameters
+
+`cpp/&` works for some ImGui widgets but not all:
+
+```clojure
+;; WORKS: Checkbox with cpp/&
+(imgui/Checkbox "Paused" (cpp/& (cpp/get_paused)))
+
+;; DOES NOT WORK: Sliders cause JIT segfault
+(imgui/SliderFloat "Scale" (cpp/& (cpp/get_scale)) 0.1 3.0)  ;; JIT crash
+(imgui/SliderInt "Count" (cpp/& (cpp/get_count)) 1 20)       ;; JIT crash
+```
+
+**Workaround for Sliders:** Use C++ helper functions:
+
+```cpp
+// In cpp/raw block
+inline bool imgui_slider_scale() {
+    return ImGui::SliderFloat(\"Scale\", &get_scale(), 0.1f, 3.0f);
+}
+```
+
+```clojure
+(cpp/imgui_slider_scale)  ;; Use helper instead of cpp/&
+```
+
+**When cpp/& works:**
+- `ImGui::Checkbox` with `bool*` parameter
+- Taking address of local cpp variables: `(cpp/& (cpp/int. 5))`
+- Pointer-to-pointer operations
+
+**When cpp/& does NOT work:**
+- `ImGui::SliderFloat`, `ImGui::SliderInt` (cause JIT segfault)
+- Possibly other slider/drag widgets that take `float*` or `int*`
 
 ### Dynamic Memory: new/delete
 
@@ -547,11 +583,55 @@ rl/MOUSE_BUTTON_LEFT   ; Mouse button (0)
 | **C++ Templates** | JIT can't resolve instantiated symbols | Use C API or precompiled wrappers |
 | **Lambdas/Closures** | Not wrapped in jank yet | Write C++ callback wrappers |
 | **Static Member Access** | Blocked by Clang bug (LLVM #146956) | Wrapper function |
-| **Variadic Functions** | Incomplete metadata | Fixed arity wrapper |
 | **Complex Pointer Math** | Can't express in jank | cpp/raw block |
 | **Output Parameters** | Can't pass pointers from jank | Wrapper that returns struct/vector |
 | **Callbacks** | Can't pass jank fn to C | C++ wrapper with trampoline |
 | **Global State** | ODR violations | Heap-pointer pattern |
+| **cpp/& with SliderFloat/Int** | JIT segfault (Checkbox works) | C++ wrapper functions |
+
+**Note:** C-style variadic functions (like `printf`, `ImGui::Text`) **DO work** - see next section.
+
+---
+
+## C-Style Variadic Functions (WORKS!)
+
+C variadic functions using `...` (like `printf`, `snprintf`, `ImGui::Text`) work directly in jank. The codegen passes all arguments through to the C function call.
+
+### Using #cpp Reader Macro (Recommended)
+
+The `#cpp` reader macro provides the cleanest syntax for C++ string literals:
+
+```clojure
+;; ImGui::Text with format specifiers - clean and simple!
+(imgui/Text #cpp "FPS: %d" (rl/GetFPS))
+
+;; Multiple format arguments
+(imgui/Text #cpp "%d + %d = %d" 1 2 3)
+
+;; String format
+(imgui/Text #cpp "Hello, %s!" #cpp "world")
+
+;; printf works too
+(cpp/printf #cpp "Value: %d\n" 42)
+```
+
+### Using cpp/value (Verbose Alternative)
+
+```clojure
+;; More explicit but verbose
+(let* [fps (cpp/int (rl/GetFPS))]
+  (cpp/ImGui.Text (cpp/value "\"FPS: %d\"") fps))
+
+(cpp/printf (cpp/value "\"%d + %d = %d\\n\"") (cpp/int 1) (cpp/int 2) (cpp/int 3))
+```
+
+### Key Points
+
+1. **No wrappers needed** - Call C variadic functions directly via header requires
+2. **Use `#cpp` for string literals** - Cleaner than `cpp/value` with escaped quotes
+3. **All arguments passed through** - jank doesn't need to know the function is variadic
+
+---
 
 ### Example: Output Parameters
 
@@ -732,6 +812,7 @@ inline void flecs_init() { ... }
 - Call C++ namespaced functions
 - Use enum values and constants
 - Get simple return values (int, float, bool)
+- **Call C variadic functions** like `printf`, `ImGui::Text` with `#cpp` literals
 
 ### What REQUIRES cpp/raw:
 - Opaque pointer handling (opaque_box)
