@@ -418,8 +418,8 @@ inline void native_draw_entities(jank::runtime::object_ref world_box) {
 ;; UI State (pure jank atoms)
 ;; =============================================================================
 
-;; TODO This notation needs to improve!!
-(defonce is-paused (cpp/box (cpp/& (cpp/bool. false))))
+;; cpp/new allocates on GC heap - persists across REPL evals!
+(defonce is-paused (cpp/box (cpp/new cpp/bool false)))
 
 (defn native-draw-imgui-panel
   "Draw ImGui debug panel - pure jank with minimal cpp helpers for mutable refs only"

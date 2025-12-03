@@ -8,6 +8,7 @@ This guide documents how to use native (C/C++) resources in jank, how to minimiz
 
 1. [Header Requires - The Clean Way](#header-requires---the-clean-way)
 2. [The cpp/ Prefix - Direct C++ Access](#the-cpp-prefix---direct-c-access)
+   - [REPL-Persistent Mutable Primitives with cpp/new](#repl-persistent-mutable-primitives-with-cppnew)
 3. [Why Wrappers Are Still Needed](#why-wrappers-are-still-needed)
 4. [Common Wrapper Patterns](#common-wrapper-patterns)
 5. [What Works via Header Requires](#what-works-via-header-requires)
@@ -194,6 +195,64 @@ inline bool imgui_slider_scale() {
        _ (cpp/delete ptr)]
   :success)
 ```
+
+### REPL-Persistent Mutable Primitives with cpp/new
+
+When you need mutable C++ primitives that **persist across REPL evaluations** (e.g., for ImGui widgets), use `cpp/new` instead of `cpp/bool.` or other stack-allocating constructors.
+
+#### The Problem: Stack Allocation
+
+```clojure
+;; BAD: cpp/bool. creates stack-allocated temporary
+(defonce is-paused (cpp/box (cpp/& (cpp/bool. false))))
+;; ⚠️ Value is LOST when any REPL eval happens!
+;; The stack is freed when the eval scope ends → dangling pointer
+```
+
+#### The Solution: GC Heap Allocation
+
+```clojure
+;; GOOD: cpp/new allocates on GC heap - persists across REPL evals!
+(def is-paused (cpp/box (cpp/new cpp/bool false)))
+
+;; Pass to ImGui Checkbox (needs raw pointer via unbox)
+(imgui/Checkbox "Paused" (cpp/unbox cpp/bool* is-paused))
+
+;; Read the current value (unbox + dereference)
+(defn paused? [] (cpp/* (cpp/unbox cpp/bool* is-paused)))
+```
+
+#### Memory Allocation Comparison
+
+| Construct | Allocation | Persistence | Use Case |
+|-----------|------------|-------------|----------|
+| `cpp/bool.` | Stack | Temporary - freed at scope end | Local temporaries in let* |
+| `cpp/new cpp/bool` | GC heap (Boehm GC) | Persists until unreachable | Global mutable state |
+| `cpp/box` | Wraps pointer in jank object | Required to store in vars | Storing any C++ pointer |
+
+#### Pattern for ImGui Mutable Widgets
+
+```clojure
+;; Define mutable float (at load time)
+(def my-float (cpp/box (cpp/new cpp/float 1.0)))
+
+;; Pass to ImGui widget
+(imgui/SliderFloat "Value" (cpp/unbox cpp/float* my-float) 0.0 10.0)
+
+;; Read current value
+(cpp/* (cpp/unbox cpp/float* my-float))
+
+;; Define mutable int
+(def spawn-count (cpp/box (cpp/new cpp/int 10)))
+(imgui/SliderInt "Count" (cpp/unbox cpp/int* spawn-count) 1 100)
+```
+
+#### Why This Works
+
+`cpp/new` allocates via `GC_malloc` (Boehm garbage collector):
+- Memory survives REPL evaluations
+- Automatically freed when pointer becomes unreachable
+- Can be wrapped in `cpp/box` for storage in jank vars
 
 ### Void Return Handling
 
