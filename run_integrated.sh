@@ -55,6 +55,7 @@ JANK_ARGS=(
     -I./vendor/imgui
     -I./vendor/JoltPhysics
     -I./vendor/flecs/distr
+    -I./vendor
     --link-lib "$SOMETHING_DIR/vendor/raylib/distr/libraylib_jank.a"
     $OBJ_ARGS
     --framework Cocoa

@@ -1,0 +1,99 @@
+(ns vybe.util
+  (:require
+   [clojure.string :as str]))
+
+(defn ->cpp-type
+  "Converts a Malli-like type specification to a C++ type string.
+
+  Examples:
+    :i32                -> \"int\"
+    :i64                -> \"long\"
+    :f32                -> \"float\"
+    :f64                -> \"double\"
+    :bool               -> \"bool\"
+    :void               -> \"void\"
+    :char               -> \"char\"
+    \"MyType\"          -> \"MyType\"
+    [:* :i32]           -> \"int*\"
+    [:const :char]      -> \"char const\"
+    [:* [:const :char]] -> \"char const*\"
+    [:ref :i32]         -> \"int&\"
+    [:vector :i32]      -> \"std::vector<int>\"
+    [:map :string :i32] -> \"std::map<std::string, int>\""
+  [spec]
+  (cond
+    (string? spec) spec
+
+    (keyword? spec)
+    (case spec
+      :i8     "int8_t"
+      :i16    "int16_t"
+      :i32    "int"
+      :i64    "long"
+      :u8     "uint8_t"
+      :u16    "uint16_t"
+      :u32    "unsigned int"
+      :u64    "unsigned long"
+      :f32    "float"
+      :f64    "double"
+      (:bool :boolean)   "bool"
+      :void   "void"
+      :char   "char"
+      :size_t "size_t"
+      :string "std::string"
+      :cstr   "char const*"
+      (name spec))
+
+    (vector? spec)
+    (let [op (first spec)]
+      (case op
+        :*      (str (->cpp-type (second spec)) "*")
+        :&      (str (->cpp-type (second spec)) "&")
+        :ref    (str (->cpp-type (second spec)) "&")
+        :const  (str (->cpp-type (second spec)) " const")
+        :vector (str "std::vector<" (->cpp-type (second spec)) ">")
+        :array  (str "std::array<" (->cpp-type (second spec)) ", " (nth spec 2) ">")
+        :map    (str "std::map<" (->cpp-type (second spec)) ", " (->cpp-type (nth spec 2)) ">")
+        :pair   (str "std::pair<" (->cpp-type (second spec)) ", " (->cpp-type (nth spec 2)) ">")
+        :optional (str "std::optional<" (->cpp-type (second spec)) ">")
+        :unique_ptr (str "std::unique_ptr<" (->cpp-type (second spec)) ">")
+        :shared_ptr (str "std::shared_ptr<" (->cpp-type (second spec)) ">")
+        ;; Template instantiation: [:template "MyClass" :i32 :f64]
+        :template (str (second spec) "<" (str/join ", " (map ->cpp-type (drop 2 spec))) ">")
+        ;; Function pointer: [:fn [:i32 :i32] :i32] -> int(*)(int, int)
+        :fn (let [args (second spec)
+                  ret (nth spec 2)]
+              (str (->cpp-type ret) "(*)(" (str/join ", " (map ->cpp-type args)) ")"))
+        ;; Default: treat first element as template name
+        (str (->cpp-type op) "<" (str/join ", " (map ->cpp-type (rest spec))) ">")))
+
+    :else (str spec)))
+
+(defn- infer-cpp-type
+  "Infers C++ type string from a literal value at macro-expansion time."
+  [v]
+  (cond
+    (boolean? v) "bool"
+    (int? v)     "long"
+    (float? v)   "double"
+    :else        nil))
+
+;; v->p: Create a pointer to a value.
+;; Allocates a C++ value and returns a boxed pointer to it.
+;; Type is inferred from the literal, or can be provided explicitly.
+;; Example: (defonce is-paused (v->p false))  ; creates bool*
+;; Example: (defonce counter (v->p 0 "int"))  ; explicit int*
+(defmacro v->p
+  [v & [type-str]]
+  (let [cpp-type (or type-str (infer-cpp-type v))]
+    (when-not cpp-type
+      (throw (ex-info "v->p: Cannot infer type, please provide it explicitly" {:value v})))
+    `(cpp/box (cpp/new (cpp/type ~cpp-type) ~v))))
+
+;; p->v: Dereference a pointer to get the value.
+;; Type is automatically inferred by the compiler from the var's init expression.
+;; Example: (defonce is-paused (v->p false))
+;;          (p->v is-paused)  ; returns the bool value
+(defmacro p->v
+  [p]
+  `(cpp/* (cpp/unbox ~p)))

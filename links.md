@@ -1,0 +1,5 @@
+- http://localhost:8765/
+- http://localhost:8080/build-wasm/my_raylib.html
+- http://localhost:8888/my_imgui_static.html
+- http://localhost:8888/my_raylib_canvas.html
+- http://localhost:8888/my_integrated_demo_canvas.html
