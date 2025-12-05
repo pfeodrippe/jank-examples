@@ -8,6 +8,7 @@ This guide documents how to use native (C/C++) resources in jank, how to minimiz
 
 1. [Header Requires - The Clean Way](#header-requires---the-clean-way)
 2. [The cpp/ Prefix - Direct C++ Access](#the-cpp-prefix---direct-c-access)
+   - [Container Access with cpp/.at](#container-access-with-cppat)
    - [REPL-Persistent Mutable Primitives with cpp/new](#repl-persistent-mutable-primitives-with-cppnew)
 3. [Why Wrappers Are Still Needed](#why-wrappers-are-still-needed)
 4. [Common Wrapper Patterns](#common-wrapper-patterns)
@@ -127,6 +128,46 @@ Use `cpp/.method` (without dash) for method calls:
 (cpp/.open file path)
 (cpp/.read file buffer size)
 (cpp/.close file)
+```
+
+### Container Access with cpp/.at
+
+Use `cpp/.at` for array/vector element access (the `[]` operator equivalent):
+
+```clojure
+;; Access vector element by index
+(let [entity (cpp/.at (cpp/get_entities) (cpp/size_t. idx))]
+  (cpp/.-jolt_id entity)   ;; Access fields
+  (cpp/.-radius entity))
+
+;; Full example: iterate over vector and access struct fields
+(dotimes [i (entity-count)]
+  (let [entity (cpp/.at (cpp/get_entities) (cpp/size_t. i))
+        jolt-id (cpp/.-jolt_id entity)
+        radius (cpp/.-radius entity)
+        r (cpp/.-r entity)]
+    ;; Use the values...
+    ))
+```
+
+**Key points:**
+- Use `(cpp/size_t. idx)` to convert jank integer to C++ `size_t` (required by std::vector)
+- Returns a reference to the element, allowing field access with `cpp/.-field`
+- More efficient than wrapper functions since it avoids C++ call overhead
+- Works with any container that has `.at()` method (std::vector, std::array, etc.)
+
+**This pattern replaces C++ accessor helpers:**
+```cpp
+// OLD: C++ helper functions needed for each field
+inline int64_t entity_jolt_id(int64_t idx) {
+    return get_entities()[idx].jolt_id;
+}
+inline double entity_radius(int64_t idx) {
+    return get_entities()[idx].radius;
+}
+
+// NEW: Direct access from jank - no wrappers needed!
+// (cpp/.-jolt_id (cpp/.at (cpp/get_entities) (cpp/size_t. idx)))
 ```
 
 ### Pointer Operations

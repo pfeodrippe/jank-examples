@@ -208,28 +208,6 @@ inline void flecs_clear_entities() {
     get_entities().clear();
 }
 
-// Entity accessors for jank iteration (returns individual fields by index)
-inline int64_t entity_jolt_id(int64_t idx) {
-    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
-    return get_entities()[idx].jolt_id;
-}
-inline double entity_radius(int64_t idx) {
-    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0.0;
-    return get_entities()[idx].radius;
-}
-inline int64_t entity_r(int64_t idx) {
-    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
-    return get_entities()[idx].r;
-}
-inline int64_t entity_g(int64_t idx) {
-    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
-    return get_entities()[idx].g;
-}
-inline int64_t entity_b(int64_t idx) {
-    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
-    return get_entities()[idx].b;
-}
-
 // Get entity position from Jolt - returns Vector3-like struct
 // Uses out parameters converted to a simple struct for jank access
 struct EntityPos { float x, y, z; };
@@ -539,15 +517,17 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   [(cpp/entity_pos_x) (cpp/entity_pos_y) (cpp/entity_pos_z)])
 
 (defn get-entity-color
-  "Get entity color. Returns [r g b]."
+  "Get entity color. Returns [r g b]. Using .at() for direct vector access!"
   [idx]
-  [(cpp/entity_r idx) (cpp/entity_g idx) (cpp/entity_b idx)])
+  (let [entity (cpp/.at (cpp/get_entities) (cpp/size_t. idx))]
+    [(cpp/.-r entity) (cpp/.-g entity) (cpp/.-b entity)]))
 
 (defn draw-entity!
-  "Draw a single entity at index idx. Pure jank using raylib header requires."
+  "Draw a single entity at index idx. Pure jank using cpp/.at for direct vector access!"
   [jolt-world idx]
-  (let [jolt-id (cpp/entity_jolt_id idx)
-        radius (cpp/entity_radius idx)
+  (let [entity (cpp/.at (cpp/get_entities) (cpp/size_t. idx))
+        jolt-id (cpp/.-jolt_id entity)
+        radius (cpp/.-radius entity)
         [er eg eb] (get-entity-color idx)
         [px py pz] (get-entity-position jolt-world jolt-id)
         [screen-x screen-y] (physics-to-screen px pz)
