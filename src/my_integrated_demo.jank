@@ -209,23 +209,6 @@ inline void flecs_clear_entities() {
 }
 
 // =============================================================================
-// View state mutators (jank can't mutate C++ references directly)
-// =============================================================================
-
-inline void native_set_view_offset(double x, double y) {
-    get_view_offset_x() = (float)x;
-    get_view_offset_y() = (float)y;
-}
-inline void native_add_view_offset(double dx, double dy) {
-    get_view_offset_x() += (float)dx;
-    get_view_offset_y() += (float)dy;
-}
-inline void native_scale_view(double factor) {
-    float s = get_view_scale() * (float)factor;
-    get_view_scale() = fminf(50.0f, fmaxf(5.0f, s));
-}
-
-// =============================================================================
 // ImGui renderer
 // =============================================================================
 
@@ -450,6 +433,34 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   (rl/DrawText "Top-Down 2D View (numbers show Y height)" 10 35 16 (rl/GRAY)))
 
 ;; =============================================================================
+;; View manipulation helpers
+;; =============================================================================
+
+(defn scale-view!
+  "Scale view by factor, clamped between 5.0 and 50.0. Pure jank."
+  [factor]
+  (let* [s (* (cpp/get_view_scale) factor)
+         clamped (min 50.0 (max 5.0 s))]
+    (cpp/= (cpp/get_view_scale) (cpp/float. clamped))
+    nil))
+
+(defn add-view-offset!
+  "Add to view offset. Pure jank using cpp/= with read-modify-write."
+  [dx dy]
+  (let* [new-x (+ (cpp/get_view_offset_x) dx)
+         new-y (+ (cpp/get_view_offset_y) dy)]
+    (cpp/= (cpp/get_view_offset_x) (cpp/float. new-x))
+    (cpp/= (cpp/get_view_offset_y) (cpp/float. new-y))
+    nil))
+
+(defn set-view-offset!
+  "Set view offset directly. Pure jank using cpp/=."
+  [x y]
+  (cpp/= (cpp/get_view_offset_x) (cpp/float. x))
+  (cpp/= (cpp/get_view_offset_y) (cpp/float. y))
+  nil)
+
+;; =============================================================================
 ;; Input handling - pure jank with cpp/ prefix!
 ;; Uses let* with _ binding for void returns
 ;; =============================================================================
@@ -463,13 +474,11 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
       (when mouse-down
         (let* [delta (rl/GetMouseDelta)
                dx (cpp/.-x delta)
-               dy (cpp/.-y delta)
-               _ (cpp/native_add_view_offset dx dy)]
-          nil))
+               dy (cpp/.-y delta)]
+          (add-view-offset! dx dy)))
       (let* [wheel (rl/GetMouseWheelMove)]
         (when (not= wheel 0.0)
-          (let* [_ (cpp/native_scale_view (if (> wheel 0) 1.1 0.9))]
-            nil)))
+          (scale-view! (if (> wheel 0) 1.1 0.9))))
       (rl/IsKeyPressed rl/KEY_SPACE))))
 
 ;; =============================================================================
