@@ -208,6 +208,53 @@ inline void flecs_clear_entities() {
     get_entities().clear();
 }
 
+// Entity accessors for jank iteration (returns individual fields by index)
+inline int64_t entity_jolt_id(int64_t idx) {
+    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
+    return get_entities()[idx].jolt_id;
+}
+inline double entity_radius(int64_t idx) {
+    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0.0;
+    return get_entities()[idx].radius;
+}
+inline int64_t entity_r(int64_t idx) {
+    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
+    return get_entities()[idx].r;
+}
+inline int64_t entity_g(int64_t idx) {
+    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
+    return get_entities()[idx].g;
+}
+inline int64_t entity_b(int64_t idx) {
+    if (idx < 0 || idx >= (int64_t)get_entities().size()) return 0;
+    return get_entities()[idx].b;
+}
+
+// Get entity position from Jolt - returns Vector3-like struct
+// Uses out parameters converted to a simple struct for jank access
+struct EntityPos { float x, y, z; };
+static EntityPos* g_entity_pos_ptr = nullptr;
+inline EntityPos& get_entity_pos_result() {
+    if (!g_entity_pos_ptr) g_entity_pos_ptr = new EntityPos{0,0,0};
+    return *g_entity_pos_ptr;
+}
+inline void entity_get_position(jank::runtime::object_ref world_box, int64_t jolt_id) {
+    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(world_box);
+    EntityPos& pos = get_entity_pos_result();
+    jolt_body_get_position(o->data.data, (uint32_t)jolt_id, &pos.x, &pos.y, &pos.z);
+}
+inline float entity_pos_x() { return get_entity_pos_result().x; }
+inline float entity_pos_y() { return get_entity_pos_result().y; }
+inline float entity_pos_z() { return get_entity_pos_result().z; }
+
+// Draw height label helper - needed because jank can't easily do sprintf formatting
+inline void draw_height_label(int64_t x, int64_t y, int64_t height) {
+    char buf[16];
+    char fmt[] = { 37, 'd', 0 };  // 37 is ASCII for percent, avoids jank parser issues
+    snprintf(buf, sizeof(buf), fmt, (int)height);
+    DrawText(buf, (int)x - 10, (int)y - 5, 10, BLACK);
+}
+
 // =============================================================================
 // ImGui renderer
 // =============================================================================
@@ -307,35 +354,8 @@ inline void draw_grid() {
     }
 }
 
-inline void draw_entities(void* jolt_world) {
-    if (!jolt_world) return;
-
-    // Iterate over our vector (avoids JIT template issues with Flecs each<>)
-    for (const Entity& e : get_entities()) {
-        float px, py, pz;
-        jolt_body_get_position(jolt_world, e.jolt_id, &px, &py, &pz);
-        Vector2 screen = physics_to_screen(px, pz);
-        float sr = e.radius * get_view_scale();
-        float h_factor = fminf(1.0f, fmaxf(0.0f, (py + 5.0f) / 50.0f));
-        float brightness = 0.5f + 0.5f * h_factor;
-        Color col = {
-            (unsigned char)(e.r * brightness),
-            (unsigned char)(e.g * brightness),
-            (unsigned char)(e.b * brightness),
-            255
-        };
-        // Shadow
-        DrawCircle((int)(screen.x + py * 0.5f), (int)(screen.y + py * 0.5f),
-                   sr * 0.8f, Fade(BLACK, 0.2f));
-        // Ball
-        DrawCircle((int)screen.x, (int)screen.y, sr, col);
-        DrawCircleLines((int)screen.x, (int)screen.y, sr, BLACK);
-        // Height label
-        char buf[16];
-        snprintf(buf, sizeof(buf), \"%d\", (int)py);
-        DrawText(buf, (int)screen.x - 10, (int)screen.y - 5, 10, BLACK);
-    }
-}
+// draw_entities - NOW IN PURE JANK as draw-entities! (see jank section below)
+// Uses entity accessor helpers + cpp/= for iteration
 ")
 
 #_(require '[jank.compiler :as jc])
@@ -501,16 +521,69 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   nil)
 
 ;; =============================================================================
-;; Drawing - complex loops stay in cpp
+;; Drawing - pure jank with raylib header requires!
 ;; =============================================================================
 
 (defn draw-grid! [] (cpp/draw_grid))
 
+(defn physics-to-screen
+  "Convert physics coords (x,z) to screen coords. Returns [screen-x screen-y]."
+  [px pz]
+  [(+ (cpp/get_view_offset_x) (* px (cpp/get_view_scale)))
+   (- (cpp/get_view_offset_y) (* pz (cpp/get_view_scale)))])
+
+(defn get-entity-position
+  "Get entity position from Jolt. Returns [x y z]."
+  [jolt-world jolt-id]
+  (cpp/entity_get_position jolt-world jolt-id)
+  [(cpp/entity_pos_x) (cpp/entity_pos_y) (cpp/entity_pos_z)])
+
+(defn get-entity-color
+  "Get entity color. Returns [r g b]."
+  [idx]
+  [(cpp/entity_r idx) (cpp/entity_g idx) (cpp/entity_b idx)])
+
+(defn draw-entity!
+  "Draw a single entity at index idx. Pure jank using raylib header requires."
+  [jolt-world idx]
+  (let [jolt-id (cpp/entity_jolt_id idx)
+        radius (cpp/entity_radius idx)
+        [er eg eb] (get-entity-color idx)
+        [px py pz] (get-entity-position jolt-world jolt-id)
+        [screen-x screen-y] (physics-to-screen px pz)
+        view-scale (cpp/get_view_scale)
+        sr (* radius view-scale)
+        ;; Brightness based on height
+        h-factor (min 1.0 (max 0.0 (/ (+ py 5.0) 50.0)))
+        brightness (+ 0.5 (* 0.5 h-factor))
+        ;; Color components with brightness
+        col-r (int (* er brightness))
+        col-g (int (* eg brightness))
+        col-b (int (* eb brightness))
+        ;; Shadow position
+        shadow-x (int (+ screen-x (* py 0.5)))
+        shadow-y (int (+ screen-y (* py 0.5)))
+        ;; Ball position
+        ball-x (int screen-x)
+        ball-y (int screen-y)]
+    ;; Draw shadow
+    (rl/DrawCircle shadow-x shadow-y (cpp/float. (* sr 0.8)) (rl/Fade (rl/BLACK) (cpp/float. 0.2)))
+    ;; Draw ball (inline Color creation to avoid boxing issues)
+    (rl/DrawCircle ball-x ball-y (cpp/float. sr)
+                   (rl/Color. (cpp/uint8_t. col-r) (cpp/uint8_t. col-g) (cpp/uint8_t. col-b) (cpp/uint8_t. 255)))
+    ;; Draw outline
+    (rl/DrawCircleLines ball-x ball-y (cpp/float. sr) (rl/BLACK))
+    ;; Height label
+    (cpp/draw_height_label ball-x ball-y (int py))
+    nil))
+
 (defn draw-entities!
+  "Draw all entities. Pure jank - iterates over entity storage."
   [world]
-  ;; auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(world_box);
-  ;; draw_entities(o->data.data);
-  (cpp/draw_entities (cpp/opaque_box_ptr world)))
+  (let [count (entity-count)]
+    (dotimes [i count]
+      (draw-entity! world i))
+    nil))
 
 (defmacro with-panel
   [title & body]
