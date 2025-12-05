@@ -353,27 +353,16 @@ inline void draw_entities(void* jolt_world) {
         DrawText(buf, (int)screen.x - 10, (int)screen.y - 5, 10, BLACK);
     }
 }
-
-// =============================================================================
-// ImGui helpers - atom-based widgets and assignments
-// =============================================================================
-
-inline void imgui_set_reset_requested() {
-    get_reset_requested() = true;
-}
-inline void imgui_reset_view() {
-    get_view_offset_x() = 640.0f;
-    get_view_offset_y() = 500.0f;
-    get_view_scale() = 15.0f;
-}
-
-inline bool native_check_reset() {
-    bool val = get_reset_requested();
-    get_reset_requested() = false;
-    return val;
-}
 ")
 
+#_(require '[jank.compiler :as jc])
+;; get_view_offset_x() = 640.0f;
+#_(jc/native-source '
+
+
+   (cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0)))
+
+#_(cpp/get_view_offset_x)
 
 (cpp/raw
  "// =============================================================================
@@ -391,13 +380,6 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; =============================================================================
 
 (defonce is-paused (u/v->p false))
-
-(defonce is-reset-requested (u/v->p false))
-
-(defmacro with-panel
-  [title &body])
-
-#_(require '[jank.compiler :as jc])
 
 ;; =============================================================================
 ;; Jolt wrapper functions
@@ -440,8 +422,6 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 (defn time-scale [] (cpp/get_time_scale))
 (defn spawn-count [] (cpp/get_spawn_count))
 (defn view-scale [] (cpp/get_view_scale))
-(defn view-offset-x [] (cpp/get_view_offset_x))
-(defn view-offset-y [] (cpp/get_view_offset_y))
 
 ;; =============================================================================
 ;; Raylib - using header requires directly!
@@ -503,6 +483,14 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 (defn imgui-draw! [] (cpp/imgui_render_draw_data))
 (defn imgui-shutdown! [] (cpp/imgui_shutdown))
 
+(defn imgui-reset-view!
+  "Reset view to default position and scale. Pure jank using cpp/= for assignment."
+  []
+  (cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0))
+  (cpp/= (cpp/get_view_offset_y) (cpp/float. 500.0))
+  (cpp/= (cpp/get_view_scale) (cpp/float. 15.0))
+  nil)
+
 ;; =============================================================================
 ;; Drawing - complex loops stay in cpp
 ;; =============================================================================
@@ -515,49 +503,54 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   ;; draw_entities(o->data.data);
   (cpp/draw_entities (cpp/opaque_box_ptr world)))
 
+(defmacro with-panel
+  [title & body]
+  `(try
+     (imgui/Begin ~title)
+     ~@body
+     (finally (imgui/End))))
+
+;; TODO FLECS
+(defonce *per-frame-state (atom {}))
+
 (defn draw-imgui-panel!
   [w]
+  ;; TODO FLECS
+  (reset! *per-frame-state {})
+
   (imgui/SetNextWindowPos (imgui-h/ImVec2 900.0 40.0))
 
-  ;; Begin panel
-  (imgui/Begin "Physics Debug")
+  (with-panel "Physics Debug"
 
-  ;; Stats section
-  (imgui/Text #cpp "FPS: %d" (rl/GetFPS))
-  (imgui/Separator)
-  (imgui/Text #cpp "Jolt Bodies: %d" (jolt/jolt_world_get_num_bodies (cpp/opaque_box_ptr w)))
-  (imgui/Text #cpp "Active: %d" (cpp/jolt_num_active w))
-  (imgui/Text #cpp "Flecs Entities: %d" (cpp/flecs_entity_count))
-  (imgui/Separator)
+    ;; Stats section
+    (imgui/Text #cpp "FPS: %d" (rl/GetFPS))
+    (imgui/Separator)
+    (imgui/Text #cpp "Jolt Bodies: %d" (jolt/jolt_world_get_num_bodies (cpp/opaque_box_ptr w)))
+    (imgui/Text #cpp "Active: %d" (cpp/jolt_num_active w))
+    (imgui/Text #cpp "Flecs Entities: %d" (cpp/flecs_entity_count))
+    (imgui/Separator)
 
-  (imgui/Checkbox "Paused" (cpp/unbox is-paused))
-  (imgui/SliderFloat "Time Scale" (cpp/& (cpp/get_time_scale)) 0.1 3.0)
-  (imgui/SliderInt "Spawn Count" (cpp/& (cpp/get_spawn_count)) 1 20)
-  (imgui/Separator)
+    (imgui/Checkbox "Paused" (cpp/unbox is-paused))
+    (imgui/SliderFloat "Time Scale" (cpp/& (cpp/get_time_scale)) 0.1 3.0)
+    (imgui/SliderInt "Spawn Count" (cpp/& (cpp/get_spawn_count)) 1 20)
+    (imgui/Separator)
 
-  (when (imgui/Button "Reset Simulation")
-    (cpp/imgui_set_reset_requested))
-  (imgui/SameLine)
-  (when (imgui/Button "Reset View")
-    (cpp/imgui_reset_view))
+    (when (imgui/Button "Reset Simulation") (swap! *per-frame-state assoc ::reset-simulation true))
+    (imgui/SameLine)
+    (when (imgui/Button "Reset View") (imgui-reset-view!))
 
-  ;; View info
-  (imgui/Text #cpp "View: (%.0f, %.0f) scale: %.1f"
-              (cpp/get_view_offset_x)
-              (cpp/get_view_offset_y)
-              (cpp/get_view_scale))
-  (imgui/Separator)
+    ;; View info
+    (imgui/Text #cpp "View: (%.0f, %.0f) scale: %.1f"
+                (cpp/get_view_offset_x)
+                (cpp/get_view_offset_y)
+                (cpp/get_view_scale))
+    (imgui/Separator)
 
-  ;; Help text
-  (imgui/Text "Controls:")
-  (imgui/BulletText "Drag to pan")
-  (imgui/BulletText "Scroll to zoom")
-  (imgui/BulletText "Space to spawn")
-
-  ;; End panel
-  (imgui/End))
-
-(defn reset-requested? [] (cpp/native_check_reset))
+    ;; Help text
+    (imgui/Text "Controls:")
+    (imgui/BulletText "Drag to pan")
+    (imgui/BulletText "Scroll to zoom")
+    (imgui/BulletText "Space to spawn")))
 
 (defn reset-simulation!
   "Reset the simulation - destroy old world, clear entities, create new world with floor.
@@ -627,7 +620,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
     (end-frame!)
 
     ;; Check for reset and recur with possibly new jolt-world
-    (if (reset-requested?)
+    (if (::reset-simulation @*per-frame-state)
       (let [new-jolt-world (reset-simulation! jolt-world)]
         (spawn-initial-balls! new-jolt-world flecs-world)
         (optimize! new-jolt-world)

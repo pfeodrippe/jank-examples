@@ -256,21 +256,26 @@ When you need mutable C++ primitives that **persist across REPL evaluations** (e
 
 ### Void Return Handling
 
-**Key pattern**: Bind void-returning calls to `_` in `let*`:
+For side-effect-only calls, you can often just call them sequentially in a function body:
 
 ```clojure
-;; CORRECT: Use _ to discard void returns
-(let* [_ (cpp/some_void_function arg1 arg2)
-       _ (cpp/++ counter)
-       _ (cpp/delete ptr)]
-  :success)
+;; SIMPLE: Just call sequentially for pure side effects
+(defn do-stuff! []
+  (cpp/some_void_function arg1 arg2)
+  (cpp/++ counter)
+  (cpp/delete ptr)
+  nil)
 
-;; Also works for side effects
-(let* [foo (cpp/jank.some.foo.)
-       _ (cpp/++ foo)
-       _ (assert (= 6 (cpp/.-a foo)))]
-  :success)
+;; WHEN let* IS NEEDED: When you need intermediate values
+(let* [foo (cpp/jank.some.foo.)   ;; Need foo for later
+       _ (cpp/++ foo)              ;; Side effect on foo
+       result (cpp/.-a foo)]       ;; Get value from foo
+  result)
 ```
+
+**When to use `let*` with `_`:**
+- When you need to capture an intermediate value and also call side-effect functions
+- When mixing value bindings with void-returning operations
 
 ### Opaque Box: Wrapping C++ Pointers
 
@@ -337,6 +342,32 @@ cpp/jank.cpp.enum_.pass_custom_size.foo.bar ;; enum value
          (cpp/!= bar spam))
   :success)
 ```
+
+### Assignment Operator
+
+Use `cpp/=` to assign values to C++ lvalues (references, dereferenced pointers):
+
+```clojure
+;; Assign to a reference returned by a function
+(cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0))  ;; get_view_offset_x() = 640.0f
+
+;; Multiple assignments in a function - just call them sequentially
+(defn reset-view! []
+  (cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0))
+  (cpp/= (cpp/get_view_offset_y) (cpp/float. 500.0))
+  (cpp/= (cpp/get_view_scale) (cpp/float. 15.0))
+  nil)
+
+;; Assign to a dereferenced pointer
+(let* [ptr (cpp/new cpp/int 0)]
+  (cpp/= (cpp/* ptr) (cpp/int. 42)))  ;; *ptr = 42
+```
+
+**Key points:**
+- First argument must be an lvalue (reference or dereferenced pointer)
+- Second argument is the value to assign
+- Returns the assigned value (C++ assignment semantics)
+- No need for `let*` with `_` binding - just call sequentially for side effects
 
 ### Increment/Decrement
 
