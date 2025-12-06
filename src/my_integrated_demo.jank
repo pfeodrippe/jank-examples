@@ -13,7 +13,7 @@
    ["jolt_c.h" :as jolt :scope ""]
    [jank.nrepl-server.server :as server]
    [clojure.string :as str]
-   [vybe.util :as u]))
+   [vybe.util :as u :refer [->*]]))
 
 ;; Integrated demo: Raylib + ImGui + JoltPhysics + Flecs
 ;; Uses header requires for cleaner code
@@ -280,7 +280,6 @@ inline void imgui_render_draw_data() {
 // =============================================================================
 ")
 
-#_(require '[jank.compiler :as jc])
 ;; get_view_offset_x() = 640.0f;
 #_(jc/native-source '
 
@@ -437,7 +436,101 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 
 (defn imgui-render! [] (imgui/Render))       ;; Direct header require!
 
-(defn imgui-draw! [] (cpp/imgui_render_draw_data))
+;; imgui-draw! defined after imgui-render-draw-data! below (function order matters)
+
+;; =============================================================================
+;; ImGui draw - uses C++ helper for nested loops (native types can't be captured in closures)
+;; =============================================================================
+
+(comment
+
+  (binding [*allow-native-return* true]
+    cpp/g_entities_ptr)
+
+  (cpp/raw "std::vector<int> V {1,2,3}")
+
+  (binding [*allow-native-return* true]
+    cpp/V)
+
+   (cpp/raw "namespace my_ns {
+    inline std::vector<int>& V() {
+      static std::vector<int> v{1,2,3};
+      return v;
+    }
+  }")
+
+  (binding [*allow-native-return* true]
+    (cpp/my_ns.V))
+
+  ())
+
+#_(require '[jank.compiler :as jc])
+
+(comment
+
+  (let* [n 5
+         m 10
+         x 3.14
+         y 2.0
+         ;; Integer arithmetic
+         _ (assert (= 15 (cpp/+ n m)))
+         ;; Real arithmetic
+         _ (assert (< 5.0 (cpp/+ x y)))
+         ;; Mixed with explicit cpp/ type
+         _ (assert (= 8 (cpp/+ n (cpp/int. 3))))]
+    ss)
+
+  (let [n 5
+        m 10]
+    ;; n and m should now be C++ ints that can be used with cpp/ operators directly
+    (assert (= 15 (cpp/+ n m)))
+    (assert (= 5 (cpp/- m n))))
+
+  (let [dd (imgui/GetDrawData)]
+    (dotimes [n (cpp/.-CmdListsCount dd)]
+      (cpp/aget (cpp/.-CmdLists dd) n)))
+
+  ())
+
+(defn render-draw-data
+  []
+  (let [dd (imgui/GetDrawData)]
+    (when (and (not (cpp/! dd))
+               (not= (->* dd * .-CmdListsCount) 0))
+      (rlgl/rlDrawRenderBatchActive)
+      (rlgl/rlDisableBackfaceCulling)
+
+      (dotimes [n (->* dd * .-CmdListsCount)]
+        (let [cl (->* dd * .-CmdLists (aget n))
+              vb (->* cl * .-VtxBuffer .-Data)
+              ib (->* cl * .-IdxBuffer .-Data)]
+          (dotimes [i (->* cl * .-CmdBuffer .-Size)]
+            (let [pc (->* cl * .-CmdBuffer (aget i) &)]
+              (if (cpp/! (->* pc * .-UserCallback))
+                (let [p (->* dd * .-DisplayPos)
+                      cr (->* pc * .-ClipRect)]
+                  (rl/BeginScissorMode (- (->* cr .-x) (->* p .-x))
+                                       (- (->* cr .-y) (->* p .-y))
+                                       (- (->* cr .-z) (->* cr .-x))
+                                       (- (->* cr .-w) (->* cr .-y)))
+                  (rlgl/rlSetTexture (->* pc * .GetTexID))
+                  (rlgl/rlBegin rlgl/RL_TRIANGLES)
+
+
+
+                  (rlgl/rlEnd)
+                  (rlgl/rlSetTexture 0)
+                  (rl/EndScissorMode)
+                  nil)
+                ((->* pc * .-UserCallback) cl pc))))))
+
+      (rlgl/rlEnableBackfaceCulling))))
+
+(defn imgui-draw!
+  "Draw ImGui. Pure jank implementation using loop* to avoid closure capture issues.
+   Uses render-draw-data which handles the nested loops with native types."
+  []
+  (cpp/imgui_render_draw_data))
 
 (defn imgui-wants-input?
   "Check if ImGui wants mouse/keyboard input. Pure jank via header require."

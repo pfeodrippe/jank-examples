@@ -97,3 +97,17 @@
 (defmacro p->v
   [p]
   `(cpp/* (cpp/unbox ~p)))
+
+(defmacro ->*
+  [head & tail]
+  `(-> ~head
+       ~@(map #(cond
+                 (symbol? %)
+                 (symbol "cpp" %)
+
+                 (list? %)
+                 (concat (list (symbol "cpp" (first %))) (rest %))
+
+                 :else
+                 %)
+              tail)))

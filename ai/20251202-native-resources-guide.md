@@ -8,6 +8,7 @@ This guide documents how to use native (C/C++) resources in jank, how to minimiz
 
 1. [Header Requires - The Clean Way](#header-requires---the-clean-way)
 2. [The cpp/ Prefix - Direct C++ Access](#the-cpp-prefix---direct-c-access)
+   - [Raw Array Access with cpp/aget](#raw-array-access-with-cppaget)
    - [Container Access with cpp/.at](#container-access-with-cppat)
    - [REPL-Persistent Mutable Primitives with cpp/new](#repl-persistent-mutable-primitives-with-cppnew)
 3. [Why Wrappers Are Still Needed](#why-wrappers-are-still-needed)
@@ -130,9 +131,38 @@ Use `cpp/.method` (without dash) for method calls:
 (cpp/.close file)
 ```
 
+### Raw Array Access with cpp/aget
+
+Use `cpp/aget` for raw C array subscript access (`[]` operator):
+
+```clojure
+;; Define a raw C array
+(cpp/raw "int numbers[] = {10, 20, 30, 40, 50};")
+
+;; Access elements (subscript operator)
+(cpp/aget cpp/numbers (cpp/int. 0))  ;; → 10
+(cpp/aget cpp/numbers (cpp/int. 1))  ;; → 20
+(cpp/aget cpp/numbers (cpp/int. 2))  ;; → 30
+
+;; Modify elements (returns lvalue reference)
+(cpp/= (cpp/aget cpp/numbers (cpp/int. 0)) (cpp/int. 99))
+;; Now numbers[0] == 99
+
+;; Works with pointers too
+(cpp/raw "int* ptr = numbers;")
+(cpp/aget cpp/ptr (cpp/int. 2))  ;; → 30
+```
+
+**Key points:**
+- Works with raw C arrays and pointers (not just containers)
+- First argument must be pointer or array type
+- Second argument must be integral type (int, long, size_t, etc.)
+- Returns an lvalue reference, allowing both reads and writes
+- NOT bounds-checked (use `cpp/.at` for bounds-checked access)
+
 ### Container Access with cpp/.at
 
-Use `cpp/.at` for array/vector element access (the `[]` operator equivalent):
+Use `cpp/.at` for bounds-checked container element access (the `.at()` method):
 
 ```clojure
 ;; Access vector element by index
