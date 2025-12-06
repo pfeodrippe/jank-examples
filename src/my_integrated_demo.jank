@@ -2,6 +2,8 @@
   (:require
    ;; Raylib with global scope (C functions)
    ["raylib.h" :as rl :scope ""]
+   ;; rlgl for low-level OpenGL functions (rlUnloadTexture, etc.)
+   ["rlgl.h" :as rlgl :scope ""]
    ;; ImGui with ImGui:: scope
    ["imgui.h" :as imgui :scope "ImGui"]
    ["imgui.h" :as imgui-h :scope ""]
@@ -235,9 +237,7 @@ inline void imgui_update_input() {
     while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
 }
 
-inline bool imgui_wants_input() {
-    return ImGui::GetIO().WantCaptureMouse || ImGui::GetIO().WantCaptureKeyboard;
-}
+// imgui_wants_input now in pure jank!
 
 inline void imgui_render_draw_data() {
     ImDrawData* dd = ImGui::GetDrawData();
@@ -272,10 +272,7 @@ inline void imgui_render_draw_data() {
     rlEnableBackfaceCulling();
 }
 
-inline void imgui_shutdown() {
-    if (get_font_tex()) { rlUnloadTexture(get_font_tex()); get_font_tex() = 0; }
-    ImGui::DestroyContext();
-}
+// imgui_shutdown now in pure jank!
 
 // =============================================================================
 // Rendering functions - NOW MOSTLY IN PURE JANK!
@@ -314,14 +311,22 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; =============================================================================
 
 (defn create-world [] (cpp/jolt_create_world))
+
 (defn destroy-world! [w] (cpp/jolt_destroy_world w))
+
 (defn create-sphere [w x y z r] (cpp/jolt_create_sphere w x y z r))
+
 (defn create-floor [w] (cpp/jolt_create_floor w))
+
 (defn set-velocity! [w id vx vy vz]
   (jolt/jolt_body_set_velocity (cpp/opaque_box_ptr w) (cpp/uint32_t. id) (cpp/float. vx) (cpp/float. vy) (cpp/float. vz)))
+
 (defn step! [w dt] (jolt/jolt_world_step (cpp/opaque_box_ptr w) (cpp/float. dt) 1))
+
 (defn optimize! [w] (jolt/jolt_world_optimize_broad_phase (cpp/opaque_box_ptr w)))
+
 (defn num-bodies [w] (jolt/jolt_world_get_num_bodies (cpp/opaque_box_ptr w)))
+
 (defn num-active [w] (jolt/jolt_world_get_num_active_bodies (cpp/opaque_box_ptr w)))
 
 ;; =============================================================================
@@ -344,6 +349,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   "Get entity count using cpp/.size on the entities vector."
   []
   (cpp/.size (cpp/get_entities)))
+
 (defn clear-entities!
   "Clear entities using cpp/.clear on the entities vector."
   []
@@ -354,8 +360,11 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; =============================================================================
 
 (defn paused? [] (u/p->v is-paused))
+
 (defn time-scale [] (cpp/get_time_scale))
+
 (defn spawn-count [] (cpp/get_spawn_count))
+
 (defn view-scale [] (cpp/get_view_scale))
 
 ;; =============================================================================
@@ -369,9 +378,13 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   (rl/InitWindow 1280 720 "jank: Raylib + ImGui + Jolt + Flecs")
   (rl/SetTargetFPS 60))
 
+
 (defn raylib-shutdown! [] (rl/CloseWindow))
+
 (defn raylib-should-close? [] (rl/WindowShouldClose))
+
 (defn get-dt [] (rl/GetFrameTime))
+
 (defn get-fps [] (rl/GetFPS))
 
 (defn begin-frame! []
@@ -413,6 +426,43 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   nil)
 
 ;; =============================================================================
+;; ImGui - complex rendering stays in cpp, simple calls use header requires
+;; =============================================================================
+
+(defn imgui-init! [] (cpp/imgui_init))
+
+(defn imgui-update! [] (cpp/imgui_update_input))
+
+(defn imgui-new-frame! [] (imgui/NewFrame))  ;; Direct header require!
+
+(defn imgui-render! [] (imgui/Render))       ;; Direct header require!
+
+(defn imgui-draw! [] (cpp/imgui_render_draw_data))
+
+(defn imgui-wants-input?
+  "Check if ImGui wants mouse/keyboard input. Pure jank via header require."
+  []
+  (or (boolean (cpp/.-WantCaptureMouse (imgui/GetIO)))
+      (boolean (cpp/.-WantCaptureKeyboard (imgui/GetIO)))))
+
+(defn imgui-shutdown!
+  "Shutdown ImGui. Pure jank using rlgl header require."
+  []
+  (let [tex (cpp/get_font_tex)]
+    (when (not= tex 0)
+      (rlgl/rlUnloadTexture tex)
+      (cpp/= (cpp/get_font_tex) (cpp/uint. 0))))
+  (imgui/DestroyContext))
+
+(defn imgui-reset-view!
+  "Reset view to default position and scale. Pure jank using cpp/= for assignment."
+  []
+  (cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0))
+  (cpp/= (cpp/get_view_offset_y) (cpp/float. 500.0))
+  (cpp/= (cpp/get_view_scale) (cpp/float. 15.0))
+  nil)
+
+;; =============================================================================
 ;; Input handling - pure jank with cpp/ prefix!
 ;; Uses let* with _ binding for void returns
 ;; =============================================================================
@@ -420,7 +470,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 (defn handle-input!
   "Handle pan/zoom input. Returns true if space was pressed (spawn request)."
   []
-  (if (cpp/imgui_wants_input)
+  (if (imgui-wants-input?)
     false
     (let* [mouse-down (rl/IsMouseButtonDown rl/MOUSE_BUTTON_LEFT)]
       (when mouse-down
@@ -432,25 +482,6 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
         (when (not= wheel 0.0)
           (scale-view! (if (> wheel 0) 1.1 0.9))))
       (rl/IsKeyPressed rl/KEY_SPACE))))
-
-;; =============================================================================
-;; ImGui - complex rendering stays in cpp, simple calls use header requires
-;; =============================================================================
-
-(defn imgui-init! [] (cpp/imgui_init))
-(defn imgui-update! [] (cpp/imgui_update_input))
-(defn imgui-new-frame! [] (imgui/NewFrame))  ;; Direct header require!
-(defn imgui-render! [] (imgui/Render))       ;; Direct header require!
-(defn imgui-draw! [] (cpp/imgui_render_draw_data))
-(defn imgui-shutdown! [] (cpp/imgui_shutdown))
-
-(defn imgui-reset-view!
-  "Reset view to default position and scale. Pure jank using cpp/= for assignment."
-  []
-  (cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0))
-  (cpp/= (cpp/get_view_offset_y) (cpp/float. 500.0))
-  (cpp/= (cpp/get_view_scale) (cpp/float. 15.0))
-  nil)
 
 ;; =============================================================================
 ;; Drawing - pure jank with raylib header requires!
@@ -562,7 +593,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
     (imgui/Separator)
     (imgui/Text #cpp "Jolt Bodies: %d" (jolt/jolt_world_get_num_bodies (cpp/opaque_box_ptr w)))
     (imgui/Text #cpp "Active: %d" (jolt/jolt_world_get_num_active_bodies (cpp/opaque_box_ptr w)))
-    (imgui/Text #cpp "Flecs Entities: %d" (cpp/.size (cpp/get_entities)))
+    (imgui/Text #cpp "Flecs Entities: %d" (cpp/int. (entity-count)))
     (imgui/Separator)
 
     (imgui/Checkbox "Paused" (cpp/unbox is-paused))
