@@ -762,6 +762,32 @@ The `#cpp` reader macro provides the cleanest syntax for C++ string literals:
 2. **Use `#cpp` for string literals** - Cleaner than `cpp/value` with escaped quotes
 3. **All arguments passed through** - jank doesn't need to know the function is variadic
 
+### ⚠️ CRITICAL: Use Raw C Values, Not jank Wrappers
+
+When passing values to `#cpp` format strings, you MUST use raw C values (from header require calls), NOT jank wrapper functions:
+
+```clojure
+;; BAD: jank wrapper returns boxed integer - prints garbage (memory address!)
+(defn entity-count [] (cpp/.size (cpp/get_entities)))
+(imgui/Text #cpp "Count: %d" (entity-count))  ;; Shows 7400053088 instead of 200!
+
+;; GOOD: Call C function directly in the #cpp expression
+(imgui/Text #cpp "Count: %d" (cpp/.size (cpp/get_entities)))  ;; Shows 200
+
+;; BAD: jank wrapper
+(defn num-active [w] (jolt/jolt_world_get_num_active_bodies (cpp/opaque_box_ptr w)))
+(imgui/Text #cpp "Active: %d" (num-active w))  ;; Garbage!
+
+;; GOOD: Call C API directly
+(imgui/Text #cpp "Active: %d" (jolt/jolt_world_get_num_active_bodies (cpp/opaque_box_ptr w)))
+```
+
+**Why this happens:**
+- jank wrapper functions (`defn`) return boxed jank objects (e.g., boxed int64)
+- `#cpp` format strings expect raw C values
+- Passing a boxed object prints its memory address, not its value
+- Calling C functions directly (via header require) returns raw C values that work correctly
+
 ---
 
 ### Example: Output Parameters

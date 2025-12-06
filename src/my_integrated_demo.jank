@@ -90,7 +90,6 @@ static float* g_view_scale_ptr = nullptr;
 static float* g_view_offset_x_ptr = nullptr;
 static float* g_view_offset_y_ptr = nullptr;
 static unsigned int* g_font_tex_ptr = nullptr;
-static bool* g_reset_requested_ptr = nullptr;
 
 inline float& get_time_scale() {
     if (!g_time_scale_ptr) g_time_scale_ptr = new float(1.0f);
@@ -122,11 +121,6 @@ inline unsigned int& get_font_tex() {
     return *g_font_tex_ptr;
 }
 
-inline bool& get_reset_requested() {
-    if (!g_reset_requested_ptr) g_reset_requested_ptr = new bool(false);
-    return *g_reset_requested_ptr;
-}
-
 // =============================================================================
 // Jolt wrapper functions
 // =============================================================================
@@ -150,26 +144,6 @@ inline int64_t jolt_create_sphere(jank::runtime::object_ref w, double x, double 
 inline int64_t jolt_create_floor(jank::runtime::object_ref w) {
     auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
     return jolt_body_create_box(o->data.data, 0, -0.5f, 0, 50, 0.5f, 50, false, false);
-}
-
-inline void jolt_set_vel(jank::runtime::object_ref w, int64_t id, double vx, double vy, double vz) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    jolt_body_set_velocity(o->data.data, (uint32_t)id, (float)vx, (float)vy, (float)vz);
-}
-
-inline void jolt_step(jank::runtime::object_ref w, double dt) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    jolt_world_step(o->data.data, (float)dt, 1);
-}
-
-inline void jolt_optimize(jank::runtime::object_ref w) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    jolt_world_optimize_broad_phase(o->data.data);
-}
-
-inline int64_t jolt_num_active(jank::runtime::object_ref w) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    return jolt_world_get_num_active_bodies(o->data.data);
 }
 
 // =============================================================================
@@ -200,13 +174,8 @@ inline void flecs_add_entity(jank::runtime::object_ref flecs_world_box, int64_t 
     get_entities().push_back(e);
 }
 
-inline int64_t flecs_entity_count() {
-    return (int64_t)get_entities().size();
-}
-
-inline void flecs_clear_entities() {
-    get_entities().clear();
-}
+// flecs_entity_count and flecs_clear_entities are now in pure jank!
+// Using cpp/.size and cpp/.clear on get_entities() vector directly
 
 // Get entity position from Jolt - returns Vector3-like struct
 // Uses out parameters converted to a simple struct for jank access
@@ -309,31 +278,9 @@ inline void imgui_shutdown() {
 }
 
 // =============================================================================
-// Rendering functions (only complex ones that need C++ loops)
+// Rendering functions - NOW MOSTLY IN PURE JANK!
+// See jank section below for: draw-grid!, physics-to-screen, draw-entities!
 // =============================================================================
-
-inline Vector2 physics_to_screen(float px, float pz) {
-    return {
-        get_view_offset_x() + px * get_view_scale(),
-        get_view_offset_y() - pz * get_view_scale()
-    };
-}
-
-// Grid needs C++ loop for performance
-inline void draw_grid() {
-    Color grid_color = Fade(LIGHTGRAY, 0.3f);
-    for (int i = -50; i <= 50; i += 5) {
-        Vector2 p1 = physics_to_screen((float)i, -50.0f);
-        Vector2 p2 = physics_to_screen((float)i, 50.0f);
-        DrawLineV(p1, p2, grid_color);
-        p1 = physics_to_screen(-50.0f, (float)i);
-        p2 = physics_to_screen(50.0f, (float)i);
-        DrawLineV(p1, p2, grid_color);
-    }
-}
-
-// draw_entities - NOW IN PURE JANK as draw-entities! (see jank section below)
-// Uses entity accessor helpers + cpp/= for iteration
 ")
 
 #_(require '[jank.compiler :as jc])
@@ -370,11 +317,12 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 (defn destroy-world! [w] (cpp/jolt_destroy_world w))
 (defn create-sphere [w x y z r] (cpp/jolt_create_sphere w x y z r))
 (defn create-floor [w] (cpp/jolt_create_floor w))
-(defn set-velocity! [w id vx vy vz] (cpp/jolt_set_vel w id vx vy vz))
-(defn step! [w dt] (cpp/jolt_step w dt))
-(defn optimize! [w] (cpp/jolt_optimize w))
+(defn set-velocity! [w id vx vy vz]
+  (jolt/jolt_body_set_velocity (cpp/opaque_box_ptr w) (cpp/uint32_t. id) (cpp/float. vx) (cpp/float. vy) (cpp/float. vz)))
+(defn step! [w dt] (jolt/jolt_world_step (cpp/opaque_box_ptr w) (cpp/float. dt) 1))
+(defn optimize! [w] (jolt/jolt_world_optimize_broad_phase (cpp/opaque_box_ptr w)))
 (defn num-bodies [w] (jolt/jolt_world_get_num_bodies (cpp/opaque_box_ptr w)))
-(defn num-active [w] (cpp/jolt_num_active w))
+(defn num-active [w] (jolt/jolt_world_get_num_active_bodies (cpp/opaque_box_ptr w)))
 
 ;; =============================================================================
 ;; Flecs - using header require directly!
@@ -392,8 +340,14 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   [flecs-world jolt-id r cr cg cb]
   (cpp/flecs_add_entity flecs-world jolt-id r cr cg cb))
 
-(defn entity-count [] (cpp/flecs_entity_count))
-(defn clear-entities! [] (cpp/flecs_clear_entities))
+(defn entity-count
+  "Get entity count using cpp/.size on the entities vector."
+  []
+  (cpp/.size (cpp/get_entities)))
+(defn clear-entities!
+  "Clear entities using cpp/.clear on the entities vector."
+  []
+  (cpp/.clear (cpp/get_entities)))
 
 ;; =============================================================================
 ;; State accessors (read-only from jank - ImGui panel handles mutation)
@@ -502,13 +456,32 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; Drawing - pure jank with raylib header requires!
 ;; =============================================================================
 
-(defn draw-grid! [] (cpp/draw_grid))
-
 (defn physics-to-screen
   "Convert physics coords (x,z) to screen coords. Returns [screen-x screen-y]."
   [px pz]
   [(+ (cpp/get_view_offset_x) (* px (cpp/get_view_scale)))
    (- (cpp/get_view_offset_y) (* pz (cpp/get_view_scale)))])
+
+(defn draw-grid-line!
+  "Draw a single grid line. Helper to avoid capturing Color in closure."
+  [x1 y1 x2 y2]
+  (rl/DrawLineV (rl/Vector2. (cpp/float. x1) (cpp/float. y1))
+                (rl/Vector2. (cpp/float. x2) (cpp/float. y2))
+                (rl/Fade (rl/LIGHTGRAY) (cpp/float. 0.3))))
+
+(defn draw-grid!
+  "Draw grid lines. Pure jank using raylib header requires."
+  []
+  (doseq [i (range -50 51 5)]
+    ;; Vertical line
+    (let [[x1 y1] (physics-to-screen i -50.0)
+          [x2 y2] (physics-to-screen i 50.0)]
+      (draw-grid-line! x1 y1 x2 y2))
+    ;; Horizontal line
+    (let [[x1 y1] (physics-to-screen -50.0 i)
+          [x2 y2] (physics-to-screen 50.0 i)]
+      (draw-grid-line! x1 y1 x2 y2)))
+  nil)
 
 (defn get-entity-position
   "Get entity position from Jolt. Returns [x y z]."
@@ -588,8 +561,8 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
     (imgui/Text #cpp "FPS: %d" (rl/GetFPS))
     (imgui/Separator)
     (imgui/Text #cpp "Jolt Bodies: %d" (jolt/jolt_world_get_num_bodies (cpp/opaque_box_ptr w)))
-    (imgui/Text #cpp "Active: %d" (cpp/jolt_num_active w))
-    (imgui/Text #cpp "Flecs Entities: %d" (cpp/flecs_entity_count))
+    (imgui/Text #cpp "Active: %d" (jolt/jolt_world_get_num_active_bodies (cpp/opaque_box_ptr w)))
+    (imgui/Text #cpp "Flecs Entities: %d" (cpp/.size (cpp/get_entities)))
     (imgui/Separator)
 
     (imgui/Checkbox "Paused" (cpp/unbox is-paused))
