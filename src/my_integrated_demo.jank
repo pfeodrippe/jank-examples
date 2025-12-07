@@ -85,7 +85,7 @@ inline std::vector<Entity>& get_entities() {
 // Global state with heap-pointer pattern (ODR-safe)
 // =============================================================================
 
-static void* g_jolt_world = nullptr;
+// g_jolt_world removed - no longer needed with pure jank wrappers
 static float* g_time_scale_ptr = nullptr;
 static int* g_spawn_count_ptr = nullptr;
 static float* g_view_scale_ptr = nullptr;
@@ -124,57 +124,19 @@ inline unsigned int& get_font_tex() {
 }
 
 // =============================================================================
-// Jolt wrapper functions
+// Jolt wrapper functions - NOW ALL IN PURE JANK!
+// See: create-world, destroy-world!, create-sphere, create-floor
 // =============================================================================
 
-inline jank::runtime::object_ref jolt_create_world() {
-    g_jolt_world = jolt_world_create();
-    return jank::runtime::make_box<jank::runtime::obj::opaque_box>(g_jolt_world, \"JoltWorld\");
-}
-
-inline void jolt_destroy_world(jank::runtime::object_ref w) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    jolt_world_destroy(o->data.data);
-    g_jolt_world = nullptr;
-}
-
-inline int64_t jolt_create_sphere(jank::runtime::object_ref w, double x, double y, double z, double r) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    return jolt_body_create_sphere(o->data.data, (float)x, (float)y, (float)z, (float)r, true, true);
-}
-
-inline int64_t jolt_create_floor(jank::runtime::object_ref w) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(w);
-    return jolt_body_create_box(o->data.data, 0, -0.5f, 0, 50, 0.5f, 50, false, false);
-}
-
 // =============================================================================
-// Flecs helpers - minimal wrappers for opaque_box handling
-// Uses fl/ecs_mini for init (called from jank), wrappers for opaque_box ops
+// Flecs helpers - NOW ALL IN PURE JANK!
+// See: flecs-create-world, flecs-destroy-world!, add-entity!
 // =============================================================================
 
-// Wrapper needed: ecs_fini needs raw pointer from opaque_box
-inline void flecs_fini_world(jank::runtime::object_ref flecs_world_box) {
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(flecs_world_box);
-    ecs_fini(static_cast<ecs_world_t*>(o->data.data));
-}
+// Helper to cast void* to ecs_world_t* (jank doesn't have static_cast)
+inline ecs_world_t* to_ecs_world(void* p) { return static_cast<ecs_world_t*>(p); }
 
-inline void flecs_add_entity(jank::runtime::object_ref flecs_world_box, int64_t jolt_id, double radius, int64_t r, int64_t g, int64_t b) {
-    // Extract world from opaque_box and create entity
-    auto o = jank::runtime::expect_object<jank::runtime::obj::opaque_box>(flecs_world_box);
-    ecs_world_t* world = static_cast<ecs_world_t*>(o->data.data);
-    uint64_t flecs_id = ecs_new(world);
-
-    // Store in vector for iteration (avoids JIT template issues with Flecs queries)
-    Entity e;
-    e.flecs_id = flecs_id;
-    e.jolt_id = (uint32_t)jolt_id;
-    e.radius = (float)radius;
-    e.r = (uint8_t)r;
-    e.g = (uint8_t)g;
-    e.b = (uint8_t)b;
-    get_entities().push_back(e);
-}
+// flecs_add_entity now in pure jank! Uses fl/ecs_new, cpp/value, and cpp/.push_back
 
 // flecs_entity_count and flecs_clear_entities are now in pure jank!
 // Using cpp/.size and cpp/.clear on get_entities() vector directly
@@ -218,13 +180,33 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; Jolt wrapper functions
 ;; =============================================================================
 
-(defn create-world [] (cpp/jolt_create_world))
+(defn create-world
+  "Create Jolt physics world. Pure jank!"
+  []
+  (cpp/box (jolt/jolt_world_create)))
 
-(defn destroy-world! [w] (cpp/jolt_destroy_world w))
+(defn destroy-world!
+  "Destroy Jolt physics world. Pure jank!"
+  [w]
+  (jolt/jolt_world_destroy (cpp/opaque_box_ptr w))
+  nil)
 
-(defn create-sphere [w x y z r] (cpp/jolt_create_sphere w x y z r))
+(defn create-sphere
+  "Create a sphere body in Jolt. Pure jank!"
+  [w x y z r]
+  (jolt/jolt_body_create_sphere
+   (cpp/opaque_box_ptr w)
+   (cpp/float. x) (cpp/float. y) (cpp/float. z) (cpp/float. r)
+   (cpp/bool. true) (cpp/bool. true)))
 
-(defn create-floor [w] (cpp/jolt_create_floor w))
+(defn create-floor
+  "Create a floor body in Jolt. Pure jank!"
+  [w]
+  (jolt/jolt_body_create_box
+   (cpp/opaque_box_ptr w)
+   (cpp/float. 0.0) (cpp/float. -0.5) (cpp/float. 0.0)
+   (cpp/float. 50.0) (cpp/float. 0.5) (cpp/float. 50.0)
+   (cpp/bool. false) (cpp/bool. false)))
 
 (defn set-velocity! [w id vx vy vz]
   (jolt/jolt_body_set_velocity (cpp/opaque_box_ptr w) (cpp/uint32_t. id) (cpp/float. vx) (cpp/float. vy) (cpp/float. vz)))
@@ -245,13 +227,27 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   (println "[flecs] ECS world created via fl/ecs_mini")
   (cpp/box (fl/ecs_mini)))
 
-(defn flecs-destroy-world! "Destroy a Flecs world."
+(defn flecs-destroy-world!
+  "Destroy a Flecs world. Pure jank!"
   [flecs-world]
-  (cpp/flecs_fini_world flecs-world))
+  (fl/ecs_fini (cpp/to_ecs_world (cpp/opaque_box_ptr flecs-world)))
+  nil)
 
-(defn add-entity! "Add entity to Flecs world and entity storage."
-  [flecs-world jolt-id r cr cg cb]
-  (cpp/flecs_add_entity flecs-world jolt-id r cr cg cb))
+(defn add-entity!
+  "Add entity to Flecs world and entity storage. Pure jank!"
+  [flecs-world jolt-id radius cr cg cb]
+  (let [world-ptr (cpp/to_ecs_world (cpp/opaque_box_ptr flecs-world))
+        flecs-id (fl/ecs_new world-ptr)
+        entities (cpp/get_entities)
+        e (cpp/value "Entity{}")]
+    (cpp/= (cpp/.-flecs_id e) flecs-id)
+    (cpp/= (cpp/.-jolt_id e) (cpp/uint32_t. jolt-id))
+    (cpp/= (cpp/.-radius e) (cpp/float. radius))
+    (cpp/= (cpp/.-r e) (cpp/uint8_t. cr))
+    (cpp/= (cpp/.-g e) (cpp/uint8_t. cg))
+    (cpp/= (cpp/.-b e) (cpp/uint8_t. cb))
+    (cpp/.push_back entities e)
+    nil))
 
 (defn entity-count
   "Get entity count using cpp/.size on the entities vector."
