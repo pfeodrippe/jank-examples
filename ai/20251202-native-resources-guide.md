@@ -1068,15 +1068,32 @@ When converting C++ code to jank, these patterns are essential:
   ...)
 ```
 
-### 7. What to Keep in cpp/raw
+### 7. Out Parameters - Now Possible in Pure jank!
 
-Some things are better left in C++:
-- **Out parameters**: `GetTexDataAsRGBA32(&pixels, &w, &h)`
-- **Struct initializer lists**: `Image img = { pixels, w, h, 1, FORMAT }`
-- **Complex pointer casting**: `(ImTextureID)(intptr_t)ptr`
-- **While loops with native types**: When loop variable must stay native
+Out parameters CAN be handled in pure jank using `cpp/new`:
 
-### 8. Header Require Scopes for Constants
+```clojure
+;; C++: void GetData(unsigned char** pixels, int* w, int* h)
+
+;; jank: allocate pointers on heap
+(let [pixels_ptr (cpp/new (cpp/type "unsigned char*") (cpp/value "nullptr"))
+      w_ptr (cpp/new cpp/int 0)
+      h_ptr (cpp/new cpp/int 0)]
+  ;; Pass pointers directly (they're already pointer-to-pointer)
+  (cpp/.GetData obj pixels_ptr w_ptr h_ptr)
+  ;; Dereference to read values
+  (let [pixels (cpp/* pixels_ptr)
+        w (cpp/* w_ptr)
+        h (cpp/* h_ptr)]
+    ...))
+```
+
+### 8. What to Keep in cpp/raw
+
+Some things are still better in C++:
+- **While loops with native types**: When loop variable must stay native (loop/recur boxes)
+
+### 9. Header Require Scopes for Constants
 
 Use two imports for namespaced C++ with constants:
 

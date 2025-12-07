@@ -123,16 +123,6 @@ inline unsigned int& get_font_tex() {
     return *g_font_tex_ptr;
 }
 
-// Helper for loading ImGui font texture (complex out params)
-inline void imgui_load_font_texture() {
-    ImGuiIO& io = ImGui::GetIO();
-    unsigned char* pixels; int w, h;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
-    Image img = { pixels, w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-    get_font_tex() = LoadTextureFromImage(img).id;
-    io.Fonts->SetTexID((ImTextureID)(intptr_t)get_font_tex());
-}
-
 // =============================================================================
 // Jolt wrapper functions
 // =============================================================================
@@ -366,11 +356,38 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   nil)
 
 ;; =============================================================================
-;; ImGui - complex rendering stays in cpp, simple calls use header requires
+;; ImGui
 ;; =============================================================================
 
+(defn imgui-load-font-texture!
+  "Load ImGui font texture. Pure jank with out-param handling."
+  []
+  ;; Allocate out-param variables on heap
+  (let [pixels_ptr (cpp/new (cpp/type "unsigned char*") (cpp/value "nullptr"))
+        w_ptr (cpp/new cpp/int 0)
+        h_ptr (cpp/new cpp/int 0)
+        io (imgui/GetIO)
+        fonts (cpp/.-Fonts io)
+        ;; Get font texture data (fills out params) - fonts is pointer, dereference first
+        _ (cpp/.GetTexDataAsRGBA32 (cpp/* fonts) pixels_ptr w_ptr h_ptr)
+        ;; Create Image struct using constructor
+        img (rl/Image. (cpp/* pixels_ptr) ;; data
+                       (cpp/* w_ptr)      ;; width
+                       (cpp/* h_ptr)      ;; height
+                       (cpp/int. 1)       ;; mipmaps
+                       rl/PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
+        tex (rl/LoadTextureFromImage img)
+        tex_id (cpp/.-id tex)
+        ;; Store texture ID
+        ]
+    (cpp/= (cpp/get_font_tex) tex_id)
+    ;; Set texture ID in ImGui fonts
+    (cpp/.SetTexID (cpp/* fonts) (cpp/cast (cpp/type "ImTextureID")
+                                             (cpp/cast cpp/intptr_t tex_id)))
+    nil))
+
 (defn imgui-init!
-  "Initialize ImGui. Pure jank except font texture loading helper."
+  "Initialize ImGui. Pure jank."
   []
   (imgui/CreateContext)
   (let [io (imgui/GetIO)
@@ -380,8 +397,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
     (cpp/= (->* io .-DisplaySize)
            (imgui-h/ImVec2. (cpp/float. (rl/GetScreenWidth))
                             (cpp/float. (rl/GetScreenHeight))))
-    (cpp/imgui_load_font_texture)
-    nil))
+    (imgui-load-font-texture!)))
 
 (defn imgui-update-input!
   "Update ImGui input from raylib. Pure jank implementation."

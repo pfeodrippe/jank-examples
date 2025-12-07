@@ -144,3 +144,37 @@ The font texture loading (`imgui_load_font_texture`) stays in C++ because:
 ## Test Result
 
 **SUCCESS** - `./run_integrated.sh` runs correctly with ImGui panel rendering properly.
+
+## Additional: Font Texture Loading Converted
+
+Also converted `imgui_load_font_texture` to pure jank:
+
+```clojure
+(defn imgui-load-font-texture!
+  []
+  (let [pixels_ptr (cpp/new (cpp/type "unsigned char*") (cpp/value "nullptr"))
+        w_ptr (cpp/new cpp/int 0)
+        h_ptr (cpp/new cpp/int 0)
+        io (imgui/GetIO)
+        fonts (cpp/.-Fonts io)
+        ;; Get font data (out params)
+        _ (cpp/.GetTexDataAsRGBA32 (cpp/* fonts) pixels_ptr w_ptr h_ptr)
+        ;; Create Image struct
+        img (rl/Image. (cpp/* pixels_ptr) (cpp/* w_ptr) (cpp/* h_ptr)
+                       (cpp/int. 1) rl/PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
+        tex (rl/LoadTextureFromImage img)
+        tex_id (cpp/.-id tex)
+        _ (cpp/= (cpp/get_font_tex) tex_id)
+        _ (cpp/.SetTexID (cpp/* fonts)
+                         (cpp/cast (cpp/type "ImTextureID")
+                                   (cpp/cast cpp/intptr_t tex_id)))]
+    nil))
+```
+
+### Key patterns for out parameters:
+
+1. **Allocate pointer on heap**: `(cpp/new (cpp/type "unsigned char*") (cpp/value "nullptr"))`
+2. **Pass pointer directly** (it's already a pointer-to-pointer): `pixels_ptr`
+3. **Dereference to read value**: `(cpp/* pixels_ptr)`
+4. **Dereference pointer before method call**: `(cpp/.Method (cpp/* ptr) args)`
+5. **Use underscores in variable names** when used with `->*` macro
