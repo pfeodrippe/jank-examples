@@ -82,46 +82,10 @@ inline std::vector<Entity>& get_entities() {
 }
 
 // =============================================================================
-// Global state with heap-pointer pattern (ODR-safe)
+// Global state - NOW ALL IN PURE JANK!
+// See: *time-scale, *spawn-count, *view-scale, *view-offset-x/y, *font-tex
+// All use cpp/new for heap-allocated mutable C++ values
 // =============================================================================
-
-// g_jolt_world removed - no longer needed with pure jank wrappers
-static float* g_time_scale_ptr = nullptr;
-static int* g_spawn_count_ptr = nullptr;
-static float* g_view_scale_ptr = nullptr;
-static float* g_view_offset_x_ptr = nullptr;
-static float* g_view_offset_y_ptr = nullptr;
-static unsigned int* g_font_tex_ptr = nullptr;
-
-inline float& get_time_scale() {
-    if (!g_time_scale_ptr) g_time_scale_ptr = new float(1.0f);
-    return *g_time_scale_ptr;
-}
-
-inline int& get_spawn_count() {
-    if (!g_spawn_count_ptr) g_spawn_count_ptr = new int(5);
-    return *g_spawn_count_ptr;
-}
-
-inline float& get_view_scale() {
-    if (!g_view_scale_ptr) g_view_scale_ptr = new float(15.0f);
-    return *g_view_scale_ptr;
-}
-
-inline float& get_view_offset_x() {
-    if (!g_view_offset_x_ptr) g_view_offset_x_ptr = new float(640.0f);
-    return *g_view_offset_x_ptr;
-}
-
-inline float& get_view_offset_y() {
-    if (!g_view_offset_y_ptr) g_view_offset_y_ptr = new float(500.0f);
-    return *g_view_offset_y_ptr;
-}
-
-inline unsigned int& get_font_tex() {
-    if (!g_font_tex_ptr) g_font_tex_ptr = new unsigned int(0);
-    return *g_font_tex_ptr;
-}
 
 // =============================================================================
 // Jolt wrapper functions - NOW ALL IN PURE JANK!
@@ -175,6 +139,23 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; =============================================================================
 
 (defonce is-paused (u/v->p false))
+
+;; =============================================================================
+;; Global State - Pure jank using cpp/new for mutable C++ values
+;; These replace the C++ get_* accessor functions
+;; =============================================================================
+
+(defonce *time-scale (cpp/box (cpp/new cpp/float 1.0)))
+(defonce *spawn-count (cpp/box (cpp/new cpp/int 5)))
+(defonce *view-scale (cpp/box (cpp/new cpp/float 15.0)))
+(defonce *view-offset-x (cpp/box (cpp/new cpp/float 640.0)))
+(defonce *view-offset-y (cpp/box (cpp/new cpp/float 500.0)))
+(defonce *font-tex (cpp/box (cpp/new (cpp/type "unsigned int") 0)))
+
+;; Access patterns:
+;; - To read: (cpp/* (cpp/unbox cpp/float* *time-scale))
+;; - To write: (cpp/= (cpp/* (cpp/unbox cpp/float* *time-scale)) value)
+;; - For ImGui sliders: (cpp/unbox cpp/float* *time-scale)
 
 ;; =============================================================================
 ;; Jolt wrapper functions
@@ -265,11 +246,11 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 
 (defn paused? [] (u/p->v is-paused))
 
-(defn time-scale [] (cpp/get_time_scale))
+(defn time-scale [] (cpp/* (cpp/unbox cpp/float* *time-scale)))
 
-(defn spawn-count [] (cpp/get_spawn_count))
+(defn spawn-count [] (cpp/* (cpp/unbox cpp/int* *spawn-count)))
 
-(defn view-scale [] (cpp/get_view_scale))
+(defn view-scale [] (cpp/* (cpp/unbox cpp/float* *view-scale)))
 
 ;; =============================================================================
 ;; Raylib - using header requires directly!
@@ -308,25 +289,25 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 (defn scale-view!
   "Scale view by factor, clamped between 5.0 and 50.0. Pure jank."
   [factor]
-  (let [s (* (cpp/get_view_scale) factor)
+  (let [s (* (cpp/* (cpp/unbox cpp/float* *view-scale)) factor)
         clamped (min 50.0 (max 5.0 s))]
-    (cpp/= (cpp/get_view_scale) (cpp/float. clamped))
+    (cpp/= (cpp/* (cpp/unbox cpp/float* *view-scale)) (cpp/float. clamped))
     nil))
 
 (defn add-view-offset!
   "Add to view offset. Pure jank using cpp/= with read-modify-write."
   [dx dy]
-  (let [new-x (+ (cpp/get_view_offset_x) dx)
-        new-y (+ (cpp/get_view_offset_y) dy)]
-    (cpp/= (cpp/get_view_offset_x) (cpp/float. new-x))
-    (cpp/= (cpp/get_view_offset_y) (cpp/float. new-y))
+  (let [new-x (+ (cpp/* (cpp/unbox cpp/float* *view-offset-x)) dx)
+        new-y (+ (cpp/* (cpp/unbox cpp/float* *view-offset-y)) dy)]
+    (cpp/= (cpp/* (cpp/unbox cpp/float* *view-offset-x)) (cpp/float. new-x))
+    (cpp/= (cpp/* (cpp/unbox cpp/float* *view-offset-y)) (cpp/float. new-y))
     nil))
 
 (defn set-view-offset!
   "Set view offset directly. Pure jank using cpp/=."
   [x y]
-  (cpp/= (cpp/get_view_offset_x) (cpp/float. x))
-  (cpp/= (cpp/get_view_offset_y) (cpp/float. y))
+  (cpp/= (cpp/* (cpp/unbox cpp/float* *view-offset-x)) (cpp/float. x))
+  (cpp/= (cpp/* (cpp/unbox cpp/float* *view-offset-y)) (cpp/float. y))
   nil)
 
 ;; =============================================================================
@@ -354,7 +335,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
         tex_id (cpp/.-id tex)
         ;; Store texture ID
         ]
-    (cpp/= (cpp/get_font_tex) tex_id)
+    (cpp/= (cpp/* (cpp/unbox (cpp/type "unsigned int*") *font-tex)) tex_id)
     ;; Set texture ID in ImGui fonts
     (cpp/.SetTexID (cpp/* fonts) (cpp/cast (cpp/type "ImTextureID")
                                              (cpp/cast cpp/intptr_t tex_id)))
@@ -521,18 +502,18 @@ while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
 (defn imgui-shutdown!
   "Shutdown ImGui. Pure jank using rlgl header require."
   []
-  (let [tex (cpp/get_font_tex)]
+  (let [tex (cpp/* (cpp/unbox (cpp/type "unsigned int*") *font-tex))]
     (when (not= tex 0)
       (rlgl/rlUnloadTexture tex)
-      (cpp/= (cpp/get_font_tex) (cpp/uint. 0))))
+      (cpp/= (cpp/* (cpp/unbox (cpp/type "unsigned int*") *font-tex)) (cpp/uint. 0))))
   (imgui/DestroyContext))
 
 (defn imgui-reset-view!
   "Reset view to default position and scale. Pure jank using cpp/= for assignment."
   []
-  (cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0))
-  (cpp/= (cpp/get_view_offset_y) (cpp/float. 500.0))
-  (cpp/= (cpp/get_view_scale) (cpp/float. 15.0))
+  (cpp/= (cpp/* (cpp/unbox cpp/float* *view-offset-x)) (cpp/float. 640.0))
+  (cpp/= (cpp/* (cpp/unbox cpp/float* *view-offset-y)) (cpp/float. 500.0))
+  (cpp/= (cpp/* (cpp/unbox cpp/float* *view-scale)) (cpp/float. 15.0))
   nil)
 
 ;; =============================================================================
@@ -559,13 +540,25 @@ while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
 ;; Drawing - pure jank with raylib header requires!
 ;; =============================================================================
 
+;; Per-frame cached view values (set at start of draw loop)
+(def ^:private *cached-view-offset-x (atom 640.0))
+(def ^:private *cached-view-offset-y (atom 500.0))
+(def ^:private *cached-view-scale (atom 15.0))
+
+(defn cache-view-values!
+  "Cache view values at start of frame to avoid repeated cpp/unbox calls."
+  []
+  (reset! *cached-view-offset-x (double (cpp/* (cpp/unbox cpp/float* *view-offset-x))))
+  (reset! *cached-view-offset-y (double (cpp/* (cpp/unbox cpp/float* *view-offset-y))))
+  (reset! *cached-view-scale (double (cpp/* (cpp/unbox cpp/float* *view-scale)))))
+
 (defn physics-to-screen
   "Convert physics coords (x,z) to screen coords. Returns [screen-x screen-y] as jank numbers."
   [px pz]
-  ;; Convert native floats to jank numbers for consistent arithmetic
-  (let [offset-x (double (cpp/get_view_offset_x))
-        offset-y (double (cpp/get_view_offset_y))
-        scale (double (cpp/get_view_scale))]
+  ;; Use cached values for fast access
+  (let [offset-x @*cached-view-offset-x
+        offset-y @*cached-view-offset-y
+        scale @*cached-view-scale]
     [(+ offset-x (* px scale))
      (- offset-y (* pz scale))]))
 
@@ -631,8 +624,8 @@ while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
         py (entity-pos-y)
         pz (entity-pos-z)
         [screen-x screen-y] (physics-to-screen px pz)
-        view-scale (double (cpp/get_view_scale))
-        sr (* (double radius) view-scale)
+        vs @*cached-view-scale
+        sr (* (double radius) vs)
         ;; Brightness based on height
         h-factor (min 1.0 (max 0.0 (/ (+ py 5.0) 50.0)))
         brightness (+ 0.5 (* 0.5 h-factor))
@@ -660,6 +653,8 @@ while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
 (defn draw-entities!
   "Draw all entities. Pure jank - iterates over entity storage."
   [world]
+  ;; Cache view values once at start of frame
+  (cache-view-values!)
   (let [count (entity-count)]
     (dotimes [i count]
       (draw-entity! world i))
@@ -693,8 +688,8 @@ while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
     (imgui/Separator)
 
     (imgui/Checkbox "Paused" (cpp/unbox is-paused))
-    (imgui/SliderFloat "Time Scale" (cpp/& (cpp/get_time_scale)) 0.1 3.0)
-    (imgui/SliderInt "Spawn Count" (cpp/& (cpp/get_spawn_count)) 1 20)
+    (imgui/SliderFloat "Time Scale" (cpp/unbox cpp/float* *time-scale) 0.1 3.0)
+    (imgui/SliderInt "Spawn Count" (cpp/unbox cpp/int* *spawn-count) 1 20)
     (imgui/Separator)
 
     (when (imgui/Button "Reset Simulation") (swap! *per-frame-state assoc ::reset-simulation true))
@@ -703,9 +698,9 @@ while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
 
     ;; View info
     (imgui/Text #cpp "View: (%.0f, %.0f) scale: %.1f"
-                (cpp/get_view_offset_x)
-                (cpp/get_view_offset_y)
-                (cpp/get_view_scale))
+                (cpp/* (cpp/unbox cpp/float* *view-offset-x))
+                (cpp/* (cpp/unbox cpp/float* *view-offset-y))
+                (cpp/* (cpp/unbox cpp/float* *view-scale)))
     (imgui/Separator)
 
     ;; Help text
