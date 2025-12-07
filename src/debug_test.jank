@@ -1,0 +1,37 @@
+(ns debug-test
+  (:require ["raylib.h" :as rl :scope ""]))
+
+;; Declare functions first
+(declare outer-fn middle-fn inner-fn trigger-type-error)
+
+;; This function will trigger a type error: BeginScissorMode expects int, not float
+(defn trigger-type-error []
+  (println "About to trigger type error on line 10...")
+  ;; BeginScissorMode expects (int, int, int, int) but we pass floats
+  ;; This should trigger: "invalid object type (expected integer found real)"
+  (let* [_ (rl/BeginScissorMode 1.5 2.5 100.5 50.5)]
+    nil))
+
+(defn inner-fn []
+  (println "In inner-fn (line 16)")
+  (trigger-type-error))
+
+(defn middle-fn []
+  (println "In middle-fn (line 20)")
+  (inner-fn))
+
+(defn outer-fn []
+  (println "In outer-fn (line 24)")
+  (middle-fn))
+
+;; Main entry point
+(defn -main []
+  (println "=== Debug Test ===")
+  (println "Testing #line directive source mapping...")
+  (println "We expect error at line 12 (BeginScissorMode call)")
+  (println "")
+  ;; Initialize raylib minimally
+  (rl/InitWindow 100 100 "Debug Test")
+  (outer-fn)
+  (rl/CloseWindow)
+  (println "Done!"))

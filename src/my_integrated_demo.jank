@@ -509,14 +509,32 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
               (if (cpp/! (->* pc * .-UserCallback))
                 (let [p (->* dd * .-DisplayPos)
                       cr (->* pc * .-ClipRect)]
-                  (rl/BeginScissorMode (- (->* cr .-x) (->* p .-x))
-                                       (- (->* cr .-y) (->* p .-y))
-                                       (- (->* cr .-z) (->* cr .-x))
-                                       (- (->* cr .-w) (->* cr .-y)))
+                  ;; BeginScissorMode expects int args - must cast from float
+                  (rl/BeginScissorMode (int (- (->* cr .-x) (->* p .-x)))
+                                       (int (- (->* cr .-y) (->* p .-y)))
+                                       (int (- (->* cr .-z) (->* cr .-x)))
+                                       (int (- (->* cr .-w) (->* cr .-y))))
                   (rlgl/rlSetTexture (->* pc * .GetTexID))
                   (rlgl/rlBegin rlgl/RL_TRIANGLES)
 
-
+                  (loop [j 0]
+                    (when (< j (->* pc * .-ElemCount))
+                      (dotimes [k 3]
+                        (let [idx (->* ib (aget (cpp/int (+ (->* pc * .-IdxOffset)
+                                                            j
+                                                            k))))
+                              v (->* vb &)
+                              col (->* v * .-col)]
+                          (rlgl/rlColor4ub (bit-and col 0xFF)
+                                           (bit-and (bit-shift-right col 8) 0xFF)
+                                           (bit-and (bit-shift-right col 16) 0xFF)
+                                           (bit-and (bit-shift-right col 24) 0xFF))
+                          (rlgl/rlTexCoord2f (->* v * .-uv .-x)
+                                             (->* v * .-uv .-y))
+                          (rlgl/rlVertex2f (->* v * .-pos .-x)
+                                           (->* v * .-pos .-y))
+                          nil))
+                      (recur (+ j 3))))
 
                   (rlgl/rlEnd)
                   (rlgl/rlSetTexture 0)
@@ -530,7 +548,8 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
   "Draw ImGui. Pure jank implementation using loop* to avoid closure capture issues.
    Uses render-draw-data which handles the nested loops with native types."
   []
-  (cpp/imgui_render_draw_data))
+  #_(cpp/imgui_render_draw_data)
+  (render-draw-data))
 
 (defn imgui-wants-input?
   "Check if ImGui wants mouse/keyboard input. Pure jank via header require."

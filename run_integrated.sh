@@ -3,12 +3,29 @@ set -e
 
 cd "$(dirname "$0")"
 
-# Check for --lldb flag
+# Check for flags
 USE_LLDB=false
-if [ "$1" = "--lldb" ]; then
-    USE_LLDB=true
-    shift
-fi
+USE_DEBUG=false
+SAVE_CPP=false
+while [[ "$1" == --* ]]; do
+    case "$1" in
+        --lldb)
+            USE_LLDB=true
+            shift
+            ;;
+        --debug)
+            USE_DEBUG=true
+            shift
+            ;;
+        --save-cpp)
+            SAVE_CPP=true
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
 export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
@@ -64,15 +81,41 @@ JANK_ARGS=(
     --framework CoreVideo
     --framework CoreFoundation
     --module-path src
-    run-main my-integrated-demo -main
 )
+
+# Add debug flag if requested
+if [ "$USE_DEBUG" = true ]; then
+    echo "Debug mode enabled - generating debug symbols"
+    JANK_ARGS+=(--debug)
+fi
+
+# Add save-cpp flag if requested
+if [ "$SAVE_CPP" = true ]; then
+    echo "Saving generated C++ to ./generated_cpp/"
+    mkdir -p generated_cpp
+    JANK_ARGS+=(--save-cpp --save-cpp-path ./generated_cpp)
+fi
+
+JANK_ARGS+=(run-main my-integrated-demo -main)
 
 # Run with or without lldb
 if [ "$USE_LLDB" = true ]; then
-    echo "Running with lldb debugger..."
-    echo "Type 'run' to start, 'bt' for backtrace on crash"
+    # Enable debug symbols for lldb (required for source mapping)
+    JANK_ARGS=(--debug "${JANK_ARGS[@]}")
+
+    echo "Running with lldb debugger (JIT loader enabled)..."
+    echo "This will show jank source locations in stack traces!"
     echo ""
-    lldb -- jank "${JANK_ARGS[@]}"
+
+    # Create lldb commands file with JIT loader settings
+    cat > /tmp/lldb_commands.txt << 'EOF'
+settings set plugin.jit-loader.gdb.enable on
+breakpoint set -n __cxa_throw
+run
+bt
+EOF
+
+    lldb -s /tmp/lldb_commands.txt -- jank "${JANK_ARGS[@]}"
 else
     jank "${JANK_ARGS[@]}"
 fi
