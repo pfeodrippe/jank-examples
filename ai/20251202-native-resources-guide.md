@@ -18,6 +18,7 @@ This guide documents how to use native (C/C++) resources in jank, how to minimiz
 7. [C-Style Variadic Functions (WORKS!)](#c-style-variadic-functions-works)
 8. [Potential jank Improvements](#potential-jank-improvements)
 9. [Best Practices](#best-practices)
+10. [C++ to jank Conversion Patterns](#c-to-jank-conversion-patterns)
 
 ---
 
@@ -988,6 +989,103 @@ inline void native_set_value(double v) { get_value() = (float)v; }
 // Pattern: jolt_* or flecs_* for library-specific wrappers
 inline void jolt_step(...) { ... }
 inline void flecs_init() { ... }
+```
+
+---
+
+## C++ to jank Conversion Patterns
+
+When converting C++ code to jank, these patterns are essential:
+
+### 1. `bit-or` Returns jank Object - Cast for C++ Assignment
+
+```clojure
+;; WRONG: bit-or returns jank object, can't assign to C++ int
+(cpp/= (cpp/.-ConfigFlags io) (bit-or flags new-flag))
+
+;; CORRECT: Wrap with cpp/int to convert to C++ int
+(cpp/= (cpp/.-ConfigFlags io)
+       (cpp/int (bit-or (cpp/.-ConfigFlags io)
+                        imgui-h/ImGuiConfigFlags_NavEnableKeyboard)))
+```
+
+### 2. `loop/recur` Doesn't Preserve Native Types
+
+`loop/recur` converts native ints to jank objects on each iteration. For while loops with native ints, use `cpp/raw`:
+
+```clojure
+;; WRONG: loop/recur boxes the int, causing type errors
+(loop [c (rl/GetCharPressed)]
+  (when (> c 0)
+    (cpp/.AddInputCharacter io c)
+    (recur (rl/GetCharPressed))))  ;; Error: assigning jank object to int
+
+;; CORRECT: Use cpp/raw for while loops with native ints
+(cpp/raw "{ ImGuiIO& io = ImGui::GetIO(); int c = GetCharPressed(); while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); } }")
+```
+
+### 3. Array Indexing with `->*`
+
+```clojure
+;; WRONG: Just gets &arr, not &arr[idx]
+(let [idx (->* ib (aget offset))
+      v (->* vb &)]  ;; This is &vb, not &vb[idx]!
+  ...)
+
+;; CORRECT: Use aget THEN & to get &arr[idx]
+(let [idx (->* ib (aget offset))
+      v (->* vb (aget idx) &)]  ;; This is &vb[idx]
+  ...)
+```
+
+### 4. Struct Field Assignment
+
+```clojure
+;; C++: io.DisplaySize = ImVec2(width, height);
+(cpp/= (cpp/.-DisplaySize io)
+       (imgui-h/ImVec2. (cpp/float. (rl/GetScreenWidth))
+                        (cpp/float. (rl/GetScreenHeight))))
+```
+
+### 5. Method Calls on References
+
+```clojure
+;; C++: io.AddMousePosEvent(x, y);
+(cpp/.AddMousePosEvent io x y)
+
+;; C++: io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+;; Complex out params - keep in C++ helper
+```
+
+### 6. Void Returns in `let*`
+
+```clojure
+;; Bind void-returning calls to _ in let*
+(let* [_ (imgui/CreateContext)
+       io (imgui/GetIO)
+       _ (imgui/StyleColorsDark)
+       _ (cpp/= (cpp/.-DisplaySize io) ...)]
+  ...)
+```
+
+### 7. What to Keep in cpp/raw
+
+Some things are better left in C++:
+- **Out parameters**: `GetTexDataAsRGBA32(&pixels, &w, &h)`
+- **Struct initializer lists**: `Image img = { pixels, w, h, 1, FORMAT }`
+- **Complex pointer casting**: `(ImTextureID)(intptr_t)ptr`
+- **While loops with native types**: When loop variable must stay native
+
+### 8. Header Require Scopes for Constants
+
+Use two imports for namespaced C++ with constants:
+
+```clojure
+(:require
+ ;; For functions: ImGui::Begin, ImGui::End
+ ["imgui.h" :as imgui :scope "ImGui"]
+ ;; For constants: ImGuiMod_Ctrl, ImGuiConfigFlags_NavEnableKeyboard
+ ["imgui.h" :as imgui-h :scope ""])
 ```
 
 ---

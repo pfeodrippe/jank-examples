@@ -123,6 +123,16 @@ inline unsigned int& get_font_tex() {
     return *g_font_tex_ptr;
 }
 
+// Helper for loading ImGui font texture (complex out params)
+inline void imgui_load_font_texture() {
+    ImGuiIO& io = ImGui::GetIO();
+    unsigned char* pixels; int w, h;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+    Image img = { pixels, w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+    get_font_tex() = LoadTextureFromImage(img).id;
+    io.Fonts->SetTexID((ImTextureID)(intptr_t)get_font_tex());
+}
+
 // =============================================================================
 // Jolt wrapper functions
 // =============================================================================
@@ -205,40 +215,8 @@ inline void draw_height_label(int64_t x, int64_t y, int64_t height) {
 }
 
 // =============================================================================
-// ImGui renderer
-// =============================================================================
-
-inline void imgui_init() {
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    ImGui::StyleColorsDark();
-    io.DisplaySize = ImVec2((float)GetScreenWidth(), (float)GetScreenHeight());
-    unsigned char* pixels; int w, h;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
-    Image img = { pixels, w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-    get_font_tex() = LoadTextureFromImage(img).id;
-    io.Fonts->SetTexID((ImTextureID)(intptr_t)get_font_tex());
-}
-
-inline void imgui_update_input() {
-    ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2((float)GetScreenWidth(), (float)GetScreenHeight());
-    io.DeltaTime = GetFrameTime();
-    Vector2 m = GetMousePosition();
-    io.AddMousePosEvent(m.x, m.y);
-    io.AddMouseButtonEvent(0, IsMouseButtonDown(MOUSE_LEFT_BUTTON));
-    io.AddMouseButtonEvent(1, IsMouseButtonDown(MOUSE_RIGHT_BUTTON));
-    Vector2 wh = GetMouseWheelMoveV();
-    io.AddMouseWheelEvent(wh.x, wh.y);
-    io.AddKeyEvent(ImGuiMod_Ctrl, IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
-    io.AddKeyEvent(ImGuiMod_Shift, IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
-    int c = GetCharPressed();
-    while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
-}
-
-// =============================================================================
 // Rendering functions - NOW MOSTLY IN PURE JANK!
+// ImGui init/update/render now in jank (see imgui-init!, imgui-update-input!)
 // See jank section below for: draw-grid!, physics-to-screen, draw-entities!
 // =============================================================================
 ")
@@ -391,9 +369,55 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; ImGui - complex rendering stays in cpp, simple calls use header requires
 ;; =============================================================================
 
-(defn imgui-init! [] (cpp/imgui_init))
+(defn imgui-init!
+  "Initialize ImGui. Pure jank except font texture loading helper."
+  []
+  (let* [_ (imgui/CreateContext)
+         io (imgui/GetIO)
+         ;; Enable keyboard navigation - need cpp/int to convert jank int to C++ int
+         _ (cpp/= (cpp/.-ConfigFlags io)
+                  (cpp/int (bit-or (cpp/.-ConfigFlags io)
+                                   imgui-h/ImGuiConfigFlags_NavEnableKeyboard)))
+         _ (imgui/StyleColorsDark)
+         ;; Set initial display size
+         _ (cpp/= (cpp/.-DisplaySize io)
+                  (imgui-h/ImVec2. (cpp/float. (rl/GetScreenWidth))
+                                   (cpp/float. (rl/GetScreenHeight))))
+         ;; Load font texture (uses C++ helper for out params)
+         _ (cpp/imgui_load_font_texture)]
+    nil))
 
-(defn imgui-update! [] (cpp/imgui_update_input))
+(defn imgui-update-input!
+  "Update ImGui input from raylib. Pure jank implementation."
+  []
+  (let* [io (imgui/GetIO)
+         ;; Display size
+         _ (cpp/= (cpp/.-DisplaySize io)
+                  (imgui-h/ImVec2. (cpp/float. (rl/GetScreenWidth))
+                                   (cpp/float. (rl/GetScreenHeight))))
+         ;; Delta time
+         _ (cpp/= (cpp/.-DeltaTime io) (rl/GetFrameTime))
+         ;; Mouse position
+         m (rl/GetMousePosition)
+         _ (cpp/.AddMousePosEvent io (cpp/.-x m) (cpp/.-y m))
+         ;; Mouse buttons
+         _ (cpp/.AddMouseButtonEvent io 0 (rl/IsMouseButtonDown rl/MOUSE_BUTTON_LEFT))
+         _ (cpp/.AddMouseButtonEvent io 1 (rl/IsMouseButtonDown rl/MOUSE_BUTTON_RIGHT))
+         ;; Mouse wheel
+         wh (rl/GetMouseWheelMoveV)
+         _ (cpp/.AddMouseWheelEvent io (cpp/.-x wh) (cpp/.-y wh))
+         ;; Keyboard modifiers
+         _ (cpp/.AddKeyEvent io imgui-h/ImGuiMod_Ctrl
+                             (or (rl/IsKeyDown rl/KEY_LEFT_CONTROL)
+                                 (rl/IsKeyDown rl/KEY_RIGHT_CONTROL)))
+         _ (cpp/.AddKeyEvent io imgui-h/ImGuiMod_Shift
+                             (or (rl/IsKeyDown rl/KEY_LEFT_SHIFT)
+                                 (rl/IsKeyDown rl/KEY_RIGHT_SHIFT)))]
+    ;; Character input - use cpp/raw for while loop with native int
+    (cpp/raw "{ ImGuiIO& io = ImGui::GetIO(); int c = GetCharPressed(); while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); } }"))
+  nil)
+
+(defn imgui-update! [] (imgui-update-input!))
 
 (defn imgui-new-frame! [] (imgui/NewFrame))  ;; Direct header require!
 
@@ -455,7 +479,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 
   ())
 
-(defn render-draw-data
+(defn imgui-draw!
   []
   (let [dd (imgui/GetDrawData)]
     (when (and (not (cpp/! dd))
@@ -472,7 +496,6 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
               (if (cpp/! (->* pc * .-UserCallback))
                 (let [p (->* dd * .-DisplayPos)
                       cr (->* pc * .-ClipRect)]
-                  ;; BeginScissorMode expects int args - must cast from float
                   (rl/BeginScissorMode (int (- (->* cr .-x) (->* p .-x)))
                                        (int (- (->* cr .-y) (->* p .-y)))
                                        (int (- (->* cr .-z) (->* cr .-x)))
@@ -486,7 +509,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
                         (let [idx (->* ib (aget (cpp/int (+ (->* pc * .-IdxOffset)
                                                             j
                                                             k))))
-                              v (->* vb (aget idx) &)  ;; &vb[idx] - use index to get correct vertex
+                              v (->* vb (aget idx) &)
                               col (->* v * .-col)]
                           (rlgl/rlColor4ub (bit-and col 0xFF)
                                            (bit-and (bit-shift-right col 8) 0xFF)
@@ -506,13 +529,6 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
                 ((->* pc * .-UserCallback) cl pc))))))
 
       (rlgl/rlEnableBackfaceCulling))))
-
-(defn imgui-draw!
-  "Draw ImGui. Pure jank implementation using loop* to avoid closure capture issues.
-   Uses render-draw-data which handles the nested loops with native types."
-  []
-  #_(cpp/imgui_render_draw_data)
-  (render-draw-data))
 
 (defn imgui-wants-input?
   "Check if ImGui wants mouse/keyboard input. Pure jank via header require."
