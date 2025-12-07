@@ -237,43 +237,6 @@ inline void imgui_update_input() {
     while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
 }
 
-// imgui_wants_input now in pure jank!
-
-inline void imgui_render_draw_data() {
-    ImDrawData* dd = ImGui::GetDrawData();
-    if (!dd || dd->CmdListsCount == 0) return;
-    rlDrawRenderBatchActive();
-    rlDisableBackfaceCulling();
-    for (int n = 0; n < dd->CmdListsCount; n++) {
-        const ImDrawList* cl = dd->CmdLists[n];
-        const ImDrawVert* vb = cl->VtxBuffer.Data;
-        const ImDrawIdx* ib = cl->IdxBuffer.Data;
-        for (int i = 0; i < cl->CmdBuffer.Size; i++) {
-            const ImDrawCmd* pc = &cl->CmdBuffer[i];
-            if (pc->UserCallback) { pc->UserCallback(cl, pc); continue; }
-            ImVec2 p = dd->DisplayPos;
-            ImVec4 cr = pc->ClipRect;
-            BeginScissorMode((int)(cr.x-p.x), (int)(cr.y-p.y), (int)(cr.z-cr.x), (int)(cr.w-cr.y));
-            rlSetTexture((unsigned int)(intptr_t)pc->GetTexID());
-            rlBegin(RL_TRIANGLES);
-            for (unsigned int j = 0; j < pc->ElemCount; j += 3) {
-                for (int k = 0; k < 3; k++) {
-                    const ImDrawVert* v = &vb[ib[pc->IdxOffset + j + k]];
-                    rlColor4ub((v->col>>0)&0xFF,(v->col>>8)&0xFF,(v->col>>16)&0xFF,(v->col>>24)&0xFF);
-                    rlTexCoord2f(v->uv.x, v->uv.y);
-                    rlVertex2f(v->pos.x, v->pos.y);
-                }
-            }
-            rlEnd();
-            rlSetTexture(0);
-            EndScissorMode();
-        }
-    }
-    rlEnableBackfaceCulling();
-}
-
-// imgui_shutdown now in pure jank!
-
 // =============================================================================
 // Rendering functions - NOW MOSTLY IN PURE JANK!
 // See jank section below for: draw-grid!, physics-to-screen, draw-entities!
@@ -523,7 +486,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
                         (let [idx (->* ib (aget (cpp/int (+ (->* pc * .-IdxOffset)
                                                             j
                                                             k))))
-                              v (->* vb &)
+                              v (->* vb (aget idx) &)  ;; &vb[idx] - use index to get correct vertex
                               col (->* v * .-col)]
                           (rlgl/rlColor4ub (bit-and col 0xFF)
                                            (bit-and (bit-shift-right col 8) 0xFF)
