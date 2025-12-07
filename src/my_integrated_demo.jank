@@ -81,47 +81,9 @@ inline std::vector<Entity>& get_entities() {
     return *g_entities_ptr;
 }
 
-// =============================================================================
-// Global state - NOW ALL IN PURE JANK!
-// See: *time-scale, *spawn-count, *view-scale, *view-offset-x/y, *font-tex
-// All use cpp/new for heap-allocated mutable C++ values
-// =============================================================================
-
-// =============================================================================
-// Jolt wrapper functions - NOW ALL IN PURE JANK!
-// See: create-world, destroy-world!, create-sphere, create-floor
-// =============================================================================
-
-// =============================================================================
-// Flecs helpers - NOW ALL IN PURE JANK!
-// See: flecs-create-world, flecs-destroy-world!, add-entity!
-// =============================================================================
-
-// Helper to cast void* to ecs_world_t* (jank doesn't have static_cast)
+// Helper to cast void* to ecs_world_t* (jank's cpp/cast can't do this)
 inline ecs_world_t* to_ecs_world(void* p) { return static_cast<ecs_world_t*>(p); }
-
-// flecs_add_entity now in pure jank! Uses fl/ecs_new, cpp/value, and cpp/.push_back
-
-// flecs_entity_count and flecs_clear_entities are now in pure jank!
-// Using cpp/.size and cpp/.clear on get_entities() vector directly
-
-// Entity position and height label now in pure jank!
-// See: get-entity-position, draw-entity! (uses rl/TextFormat)
-
-// =============================================================================
-// Rendering functions - NOW MOSTLY IN PURE JANK!
-// ImGui init/update/render now in jank (see imgui-init!, imgui-update-input!)
-// See jank section below for: draw-grid!, physics-to-screen, draw-entities!
-// =============================================================================
 ")
-
-;; get_view_offset_x() = 640.0f;
-#_(jc/native-source '
-
-
-   (cpp/= (cpp/get_view_offset_x) (cpp/float. 640.0)))
-
-#_(cpp/get_view_offset_x)
 
 (cpp/raw
  "// =============================================================================
@@ -151,6 +113,8 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 (defonce *view-offset-x (cpp/box (cpp/new cpp/float 640.0)))
 (defonce *view-offset-y (cpp/box (cpp/new cpp/float 500.0)))
 (defonce *font-tex (cpp/box (cpp/new (cpp/type "unsigned int") 0)))
+
+;; get_entities() and to_ecs_world() are in cpp/raw - template type naming issues prevent pure jank conversion
 
 ;; Access patterns:
 ;; - To read: (cpp/* (cpp/unbox cpp/float* *time-scale))
