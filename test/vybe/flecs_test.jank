@@ -107,8 +107,8 @@
       ;; Add tag to entities
       (fl/ecs_add_id (vf/world-ptr w) e1 tag-id)
       (fl/ecs_add_id (vf/world-ptr w) e2 tag-id)
-      ;; Iterate using with-query - query string is in :vf/expr binding
-      (let [entities (vf/with-query w [:vf/expr "TestTag", e :vf/entity]
+      ;; Iterate using with-query - matches vybe interface: [_ "QueryTerm", e :vf/entity]
+      (let [entities (vf/with-query w [_ "TestTag", e :vf/entity]
                        e)]
         ;; Should have found 2 entities
         (is (= 2 (count entities)))

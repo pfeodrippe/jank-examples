@@ -228,30 +228,36 @@ jank::runtime::object_ref vybe_query_entities(ecs_world_t* w, ecs_query_t* q) {
   `(cpp/vybe_query_entities (world-ptr ~world)
                             (cpp/unbox (cpp/type "ecs_query_t*") (query-str ~world ~query-string))))
 
-;; with-query is a convenience macro that combines query-entities with doseq
-;; Usage: (with-query world [:vf/expr "TestTag", e :vf/entity] body...)
+;; with-query matches vybe's interface: (with-query world [_ "QueryTerm", e :vf/entity] body...)
+;; String values in bindings become query terms, :vf/entity binds the entity ID
 (defmacro with-query
-  "Iterate over query results.
+  "Iterate over query results. Matches vybe's with-query interface.
 
    world    - the Flecs world
-   bindings - [:vf/expr \"query-string\", sym :vf/entity]
+   bindings - pairs of [sym spec], where:
+              - String spec becomes a query term (use _ to ignore binding)
+              - :vf/entity binds the entity ID
    body     - forms to execute for each matched entity
 
    Example:
-     (with-query world [:vf/expr \"TestTag\", e :vf/entity]
-       (println \"Entity:\" e))"
+     (with-query world [_ \"Position\", _ \"Velocity\", e :vf/entity]
+       (println \"Entity:\" e))
+
+   Multiple string terms are joined with ', ' to form the query expression."
   [world bindings & body]
   (let [binding-pairs (partition 2 bindings)
-        query-string (->> binding-pairs
-                          (filter #(= :vf/expr (first %)))
-                          first
-                          second)
+        ;; Extract query terms from string values in bindings
+        query-terms (->> binding-pairs
+                         (map second)
+                         (filter string?))
+        query-string (apply str (interpose ", " query-terms))
+        ;; Extract entity binding (where value is :vf/entity)
         entity-binding (->> binding-pairs
                             (filter #(= :vf/entity (second %)))
                             first
                             first)]
-    (when-not query-string
-      (throw (ex-info "with-query requires :vf/expr" {:bindings bindings})))
+    (when (empty? query-terms)
+      (throw (ex-info "with-query requires at least one query term (string)" {:bindings bindings})))
     `(let [entities# (query-entities ~world ~query-string)]
        (mapv (fn [~(or entity-binding '_)]
                ~@body)
