@@ -120,23 +120,6 @@
 ;; =============================================================================
 
 (defn -main [& args]
-  (println "Running vybe.flecs tests...")
-  (world-creation-test)
-  (println "  world-creation-test passed")
-  (world-mini-creation-test)
-  (println "  world-mini-creation-test passed")
-  (world-ptr-test)
-  (println "  world-ptr-test passed")
-  (new-entity-test)
-  (println "  new-entity-test passed")
-  (eid-test)
-  (println "  eid-test passed")
-  (progress-test)
-  (println "  progress-test passed")
-  (defn*-generates-macro-test)
-  (println "  defn*-generates-macro-test passed")
-  (query-str-test)
-  (println "  query-str-test passed")
-  (with-query-test)
-  (println "  with-query-test passed")
-  (println "All tests passed!"))
+  (let [results (clojure.test/run-tests 'vybe.flecs-test)]
+    (when-not (clojure.test/successful? results)
+      (throw (ex-info "Tests failed!" results)))))

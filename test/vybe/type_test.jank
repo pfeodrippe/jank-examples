@@ -1,0 +1,96 @@
+(ns vybe.type-test
+  (:require
+   [clojure.test :refer [deftest is testing]]
+   [vybe.type :as vt]
+   [vybe.flecs :as vf]))
+
+;; Tests for vybe.type defcomp implementation.
+
+;; =============================================================================
+;; make-comp tests
+;; =============================================================================
+
+(deftest make-comp-test
+  (testing "make-comp creates correct descriptor structure"
+    (let [desc (vt/make-comp 'Position [[:x :float] [:y :float]])]
+      (is (= "Position" (:name desc)))
+      (is (= 2 (count (:fields desc))))
+      (is (= "x" (:name (first (:fields desc)))))
+      (is (= :float (:type (first (:fields desc)))))
+      (is (= "y" (:name (second (:fields desc)))))
+      (is (= :float (:type (second (:fields desc))))))))
+
+(deftest make-comp-single-field-test
+  (testing "make-comp with single field"
+    (let [desc (vt/make-comp 'Health [[:value :i32]])]
+      (is (= "Health" (:name desc)))
+      (is (= 1 (count (:fields desc))))
+      (is (= "value" (:name (first (:fields desc)))))
+      (is (= :i32 (:type (first (:fields desc))))))))
+
+(deftest make-comp-multiple-types-test
+  (testing "make-comp with different field types"
+    (let [desc (vt/make-comp 'Stats [[:health :i32]
+                                      [:speed :float]
+                                      [:name :string]
+                                      [:alive :bool]])]
+      (is (= "Stats" (:name desc)))
+      (is (= 4 (count (:fields desc))))
+      (is (= :i32 (:type (nth (:fields desc) 0))))
+      (is (= :float (:type (nth (:fields desc) 1))))
+      (is (= :string (:type (nth (:fields desc) 2))))
+      (is (= :bool (:type (nth (:fields desc) 3)))))))
+
+;; =============================================================================
+;; defcomp macro tests
+;; =============================================================================
+
+(vt/defcomp Position [[:x :float] [:y :float]])
+(vt/defcomp Velocity [[:dx :float] [:dy :float]])
+(vt/defcomp Health [[:value :i32]])
+
+(deftest defcomp-test
+  (testing "defcomp creates var with correct descriptor"
+    (is (= "Position" (:name Position)))
+    (is (= 2 (count (:fields Position))))
+    (is (= "Velocity" (:name Velocity)))
+    (is (= "Health" (:name Health)))
+    (is (= 1 (count (:fields Health))))))
+
+;; =============================================================================
+;; register-comp! tests
+;; =============================================================================
+
+(deftest register-comp-test
+  (testing "register-comp! registers component with Flecs world"
+    (let [world (vf/make-world)
+          pos-id (vt/register-comp! world Position)]
+      ;; Component ID should be non-zero (valid entity)
+      (is (> pos-id 0))
+      (vf/destroy-world! world))))
+
+(deftest register-multiple-comp-test
+  (testing "register-comp! can register multiple components"
+    (let [world (vf/make-world)
+          pos-id (vt/register-comp! world Position)
+          vel-id (vt/register-comp! world Velocity)
+          health-id (vt/register-comp! world Health)]
+      ;; All component IDs should be different non-zero values
+      (is (> pos-id 0))
+      (is (> vel-id 0))
+      (is (> health-id 0))
+      (is (not= pos-id vel-id))
+      (is (not= vel-id health-id))
+      (vf/destroy-world! world))))
+
+;; =============================================================================
+;; Integration test - component in query (future)
+;; =============================================================================
+
+;; TODO: Add test for using components with with-query once we have
+;; component data access implemented
+
+(defn -main [& args]
+  (let [results (clojure.test/run-tests 'vybe.type-test)]
+    (when-not (clojure.test/successful? results)
+      (throw (ex-info "Tests failed!" results)))))
