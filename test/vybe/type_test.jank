@@ -12,8 +12,8 @@
 
 (deftest make-comp-test
   (testing "make-comp creates correct descriptor structure"
-    (let [desc (vt/make-comp 'Position [[:x :float] [:y :float]])]
-      (is (= "Position" (:name desc)))
+    (let [desc (vt/make-comp "test_ns__Position" [[:x :float] [:y :float]])]
+      (is (= "test_ns__Position" (:name desc)))
       (is (= 2 (count (:fields desc))))
       (is (= "x" (:name (first (:fields desc)))))
       (is (= :float (:type (first (:fields desc)))))
@@ -22,19 +22,19 @@
 
 (deftest make-comp-single-field-test
   (testing "make-comp with single field"
-    (let [desc (vt/make-comp 'Health [[:value :i32]])]
-      (is (= "Health" (:name desc)))
+    (let [desc (vt/make-comp "test_ns__Health" [[:value :i32]])]
+      (is (= "test_ns__Health" (:name desc)))
       (is (= 1 (count (:fields desc))))
       (is (= "value" (:name (first (:fields desc)))))
       (is (= :i32 (:type (first (:fields desc))))))))
 
 (deftest make-comp-multiple-types-test
   (testing "make-comp with different field types"
-    (let [desc (vt/make-comp 'Stats [[:health :i32]
-                                      [:speed :float]
-                                      [:name :string]
-                                      [:alive :bool]])]
-      (is (= "Stats" (:name desc)))
+    (let [desc (vt/make-comp "test_ns__Stats" [[:health :i32]
+                                               [:speed :float]
+                                               [:name :string]
+                                               [:alive :bool]])]
+      (is (= "test_ns__Stats" (:name desc)))
       (is (= 4 (count (:fields desc))))
       (is (= :i32 (:type (nth (:fields desc) 0))))
       (is (= :float (:type (nth (:fields desc) 1))))
@@ -51,10 +51,10 @@
 
 (deftest defcomp-test
   (testing "defcomp creates var with correct descriptor"
-    (is (= "Position" (:name Position)))
+    (is (= "vybe_type_test__Position" (:name Position)))
     (is (= 2 (count (:fields Position))))
-    (is (= "Velocity" (:name Velocity)))
-    (is (= "Health" (:name Health)))
+    (is (= "vybe_type_test__Velocity" (:name Velocity)))
+    (is (= "vybe_type_test__Health" (:name Health)))
     (is (= 1 (count (:fields Health))))))
 
 ;; =============================================================================

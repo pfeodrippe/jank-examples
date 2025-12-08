@@ -81,6 +81,19 @@ Created a new namespace `vybe.type` for Flecs component type definitions using r
        (throw (ex-info "Tests failed!" results))))
    ```
 
+4. **ecs_id macro**: The `ecs_id(T)` macro uses token pasting which doesn't work at runtime. Solution: Access global variables directly like `fl/FLECS_IDecs_f32_tID_`.
+
+5. **String conversion**: jank strings can't be directly assigned to C `const char*`. The cpp/raw helper is necessary to receive strings from jank and convert them via C++ function parameters.
+
+6. **Cleaner implementation**: Instead of integer type mapping, `flecs-type-id` now returns the Flecs entity ID directly using global variables:
+   ```clojure
+   (defn flecs-type-id [type-kw]
+     (cond
+       (or (= type-kw :float) (= type-kw :f32)) fl/FLECS_IDecs_f32_tID_
+       ;; ...
+     ))
+   ```
+
 ## What's Next
 
 Future improvements could include:

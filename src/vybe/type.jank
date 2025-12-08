@@ -9,180 +9,109 @@
 
   ())
 
+
 ;; =============================================================================
-;; Type Mapping
+;; Name mangling - convert Clojure namespaced names to Flecs-safe identifiers
 ;; =============================================================================
 
-;; Map jank type keywords to Flecs primitive type IDs
-;; These are accessed via FLECS_IDecs_*_tID_ macros
-(def flecs-type-ids
-  "Map of jank type keywords to Flecs primitive type ID macro names."
-  {:float  "FLECS_IDecs_f32_tID_"
-   :f32    "FLECS_IDecs_f32_tID_"
-   :double "FLECS_IDecs_f64_tID_"
-   :f64    "FLECS_IDecs_f64_tID_"
-   :i8     "FLECS_IDecs_i8_tID_"
-   :i16    "FLECS_IDecs_i16_tID_"
-   :i32    "FLECS_IDecs_i32_tID_"
-   :int    "FLECS_IDecs_i32_tID_"
-   :i64    "FLECS_IDecs_i64_tID_"
-   :long   "FLECS_IDecs_i64_tID_"
-   :u8     "FLECS_IDecs_u8_tID_"
-   :u16    "FLECS_IDecs_u16_tID_"
-   :u32    "FLECS_IDecs_u32_tID_"
-   :u64    "FLECS_IDecs_u64_tID_"
-   :bool   "FLECS_IDecs_bool_tID_"
-   :string "FLECS_IDecs_string_tID_"
-   :entity "FLECS_IDecs_entity_tID_"})
+(defn mangle-char
+  "Replace . and - with _"
+  [c]
+  (cond
+    (= c \.) \_
+    (= c \-) \_
+    :else c))
+
+(defn mangle-name
+  "Convert a namespaced symbol to a Flecs-safe identifier.
+   Replaces . with _ and - with _ and separates ns/sym with __
+   Example: 'vybe.type-test/Position' -> 'vybe_type_test__Position'"
+  [ns-str sym-str]
+  (let [mangled-ns (apply str (map mangle-char (str ns-str)))]
+    (str mangled-ns "__" sym-str)))
 
 ;; =============================================================================
 ;; make-comp - Pure function to create component descriptors
 ;; =============================================================================
 
 (defn make-comp
-  "Create a component descriptor from a name and field definitions.
+  "Create a component descriptor from a mangled name string and field definitions.
    Returns a map that can later be registered with a Flecs world.
 
    Usage:
-     (make-comp 'Position [[:x :float] [:y :float]])
+     (make-comp \"vybe_type__Position\" [[:x :float] [:y :float]])
 
    Returns:
-     {:name \"Position\"
+     {:name \"vybe_type__Position\"
       :fields [{:name \"x\" :type :float}
                {:name \"y\" :type :float}]}"
-  [sym fields]
+  [name-str fields]
   (let [field-maps (mapv (fn [[fname ftype]]
                            {:name (name fname)
                             :type ftype})
                          fields)]
-    {:name (str sym)
+    {:name name-str
      :fields field-maps}))
 
 ;; =============================================================================
-;; C++ Helper for ecs_struct registration
+;; Type ID lookup - maps keywords to Flecs primitive type entities
 ;; =============================================================================
 
-;; Helper to register a struct with up to 4 members using ecs_struct_init
-;; We use explicit struct initialization to avoid compound literal issues with JIT
+(defn flecs-type-id
+  "Get the Flecs entity ID for a primitive type keyword."
+  [type-kw]
+  (cond
+    (or (= type-kw :float) (= type-kw :f32))    fl/FLECS_IDecs_f32_tID_
+    (or (= type-kw :double) (= type-kw :f64))   fl/FLECS_IDecs_f64_tID_
+    (= type-kw :i8)                             fl/FLECS_IDecs_i8_tID_
+    (= type-kw :i16)                            fl/FLECS_IDecs_i16_tID_
+    (or (= type-kw :i32) (= type-kw :int))      fl/FLECS_IDecs_i32_tID_
+    (or (= type-kw :i64) (= type-kw :long))     fl/FLECS_IDecs_i64_tID_
+    (= type-kw :u8)                             fl/FLECS_IDecs_u8_tID_
+    (= type-kw :u16)                            fl/FLECS_IDecs_u16_tID_
+    (= type-kw :u32)                            fl/FLECS_IDecs_u32_tID_
+    (= type-kw :u64)                            fl/FLECS_IDecs_u64_tID_
+    (= type-kw :bool)                           fl/FLECS_IDecs_bool_tID_
+    (= type-kw :string)                         fl/FLECS_IDecs_string_tID_
+    (= type-kw :entity)                         fl/FLECS_IDecs_entity_tID_
+    :else (throw (ex-info "Unknown type" {:type type-kw}))))
+
+;; =============================================================================
+;; C++ helpers for struct registration (builder pattern)
+;; =============================================================================
+
+;; Builder pattern: create desc, add members one at a time, then register
 (cpp/raw "
-// Helper to get Flecs primitive type ID
-ecs_entity_t vybe_get_flecs_type(ecs_world_t* w, int type_id) {
-  switch(type_id) {
-    case 0: return ecs_id(ecs_f32_t);   // :float, :f32
-    case 1: return ecs_id(ecs_f64_t);   // :double, :f64
-    case 2: return ecs_id(ecs_i8_t);    // :i8
-    case 3: return ecs_id(ecs_i16_t);   // :i16
-    case 4: return ecs_id(ecs_i32_t);   // :i32, :int
-    case 5: return ecs_id(ecs_i64_t);   // :i64, :long
-    case 6: return ecs_id(ecs_u8_t);    // :u8
-    case 7: return ecs_id(ecs_u16_t);   // :u16
-    case 8: return ecs_id(ecs_u32_t);   // :u32
-    case 9: return ecs_id(ecs_u64_t);   // :u64
-    case 10: return ecs_id(ecs_bool_t); // :bool
-    case 11: return ecs_id(ecs_string_t); // :string
-    case 12: return ecs_id(ecs_entity_t); // :entity
-    default: return 0;
+struct VybeStructBuilder {
+  ecs_world_t* world;
+  ecs_struct_desc_t desc;
+  int member_idx;
+};
+
+VybeStructBuilder* vybe_struct_begin(ecs_world_t* w, const char* name) {
+  auto* b = new VybeStructBuilder();
+  b->world = w;
+  b->desc = {};
+  ecs_entity_desc_t ed = {}; ed.name = name;
+  b->desc.entity = ecs_entity_init(w, &ed);
+  b->member_idx = 0;
+  return b;
+}
+
+void vybe_struct_add_member(VybeStructBuilder* b, const char* name, ecs_entity_t type) {
+  if (b->member_idx < 32) {
+    b->desc.members[b->member_idx].name = name;
+    b->desc.members[b->member_idx].type = type;
+    b->member_idx++;
   }
 }
 
-// Register a struct with 1 member
-ecs_entity_t vybe_register_struct_1(
-    ecs_world_t* w, const char* name,
-    const char* n0, int t0
-) {
-  ecs_entity_desc_t ent_desc = {};
-  ent_desc.name = name;
-  ecs_entity_t ent = ecs_entity_init(w, &ent_desc);
-
-  ecs_struct_desc_t desc = {};
-  desc.entity = ent;
-  desc.members[0].name = n0;
-  desc.members[0].type = vybe_get_flecs_type(w, t0);
-  return ecs_struct_init(w, &desc);
-}
-
-// Register a struct with 2 members
-ecs_entity_t vybe_register_struct_2(
-    ecs_world_t* w, const char* name,
-    const char* n0, int t0,
-    const char* n1, int t1
-) {
-  ecs_entity_desc_t ent_desc = {};
-  ent_desc.name = name;
-  ecs_entity_t ent = ecs_entity_init(w, &ent_desc);
-
-  ecs_struct_desc_t desc = {};
-  desc.entity = ent;
-  desc.members[0].name = n0;
-  desc.members[0].type = vybe_get_flecs_type(w, t0);
-  desc.members[1].name = n1;
-  desc.members[1].type = vybe_get_flecs_type(w, t1);
-  return ecs_struct_init(w, &desc);
-}
-
-// Register a struct with 3 members
-ecs_entity_t vybe_register_struct_3(
-    ecs_world_t* w, const char* name,
-    const char* n0, int t0,
-    const char* n1, int t1,
-    const char* n2, int t2
-) {
-  ecs_entity_desc_t ent_desc = {};
-  ent_desc.name = name;
-  ecs_entity_t ent = ecs_entity_init(w, &ent_desc);
-
-  ecs_struct_desc_t desc = {};
-  desc.entity = ent;
-  desc.members[0].name = n0;
-  desc.members[0].type = vybe_get_flecs_type(w, t0);
-  desc.members[1].name = n1;
-  desc.members[1].type = vybe_get_flecs_type(w, t1);
-  desc.members[2].name = n2;
-  desc.members[2].type = vybe_get_flecs_type(w, t2);
-  return ecs_struct_init(w, &desc);
-}
-
-// Register a struct with 4 members
-ecs_entity_t vybe_register_struct_4(
-    ecs_world_t* w, const char* name,
-    const char* n0, int t0,
-    const char* n1, int t1,
-    const char* n2, int t2,
-    const char* n3, int t3
-) {
-  ecs_entity_desc_t ent_desc = {};
-  ent_desc.name = name;
-  ecs_entity_t ent = ecs_entity_init(w, &ent_desc);
-
-  ecs_struct_desc_t desc = {};
-  desc.entity = ent;
-  desc.members[0].name = n0;
-  desc.members[0].type = vybe_get_flecs_type(w, t0);
-  desc.members[1].name = n1;
-  desc.members[1].type = vybe_get_flecs_type(w, t1);
-  desc.members[2].name = n2;
-  desc.members[2].type = vybe_get_flecs_type(w, t2);
-  desc.members[3].name = n3;
-  desc.members[3].type = vybe_get_flecs_type(w, t3);
-  return ecs_struct_init(w, &desc);
+ecs_entity_t vybe_struct_end(VybeStructBuilder* b) {
+  ecs_entity_t result = ecs_struct_init(b->world, &b->desc);
+  delete b;
+  return result;
 }
 ")
-
-;; Map type keywords to integer IDs for the C++ helper
-(def type-to-id
-  {:float 0, :f32 0
-   :double 1, :f64 1
-   :i8 2
-   :i16 3
-   :i32 4, :int 4
-   :i64 5, :long 5
-   :u8 6
-   :u16 7
-   :u32 8
-   :u64 9
-   :bool 10
-   :string 11
-   :entity 12})
 
 ;; =============================================================================
 ;; register-comp! - Register component with Flecs world
@@ -190,53 +119,34 @@ ecs_entity_t vybe_register_struct_4(
 
 (defn register-comp!
   "Register a component descriptor with a Flecs world using ecs_struct.
-   Returns the Flecs entity ID for the component.
+   Returns the Flecs entity ID for the component. Supports up to 32 fields.
 
    Usage:
-     (def Position (make-comp 'Position [[:x :float] [:y :float]]))
+     (defcomp Position [[:x :float] [:y :float]])
      (register-comp! world Position)"
   [world comp]
   (let [w (vf/world-ptr world)
-        comp-name (:name comp)
-        fields (:fields comp)
-        n (count fields)]
-    (case n
-      1 (cpp/vybe_register_struct_1
-         w comp-name
-         (:name (nth fields 0)) (get type-to-id (:type (nth fields 0))))
-
-      2 (cpp/vybe_register_struct_2
-         w comp-name
-         (:name (nth fields 0)) (get type-to-id (:type (nth fields 0)))
-         (:name (nth fields 1)) (get type-to-id (:type (nth fields 1))))
-
-      3 (cpp/vybe_register_struct_3
-         w comp-name
-         (:name (nth fields 0)) (get type-to-id (:type (nth fields 0)))
-         (:name (nth fields 1)) (get type-to-id (:type (nth fields 1)))
-         (:name (nth fields 2)) (get type-to-id (:type (nth fields 2))))
-
-      4 (cpp/vybe_register_struct_4
-         w comp-name
-         (:name (nth fields 0)) (get type-to-id (:type (nth fields 0)))
-         (:name (nth fields 1)) (get type-to-id (:type (nth fields 1)))
-         (:name (nth fields 2)) (get type-to-id (:type (nth fields 2)))
-         (:name (nth fields 3)) (get type-to-id (:type (nth fields 3))))
-
-      ;; Default: throw for unsupported member count
-      (throw (ex-info "Component must have 1-4 fields" {:count n})))))
+        builder (cpp/box (cpp/vybe_struct_begin w (:name comp)))]
+    (doseq [field (:fields comp)]
+      (cpp/vybe_struct_add_member
+       (cpp/unbox (cpp/type "VybeStructBuilder*") builder)
+       (:name field)
+       (flecs-type-id (:type field))))
+    (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))))
 
 ;; =============================================================================
 ;; defcomp - Macro to define components
 ;; =============================================================================
 
 (defmacro defcomp
-  "Define a Flecs component type.
+  "Define a Flecs component type with namespace-qualified name.
 
    Usage:
      (defcomp Position [[:x :float] [:y :float]])
 
    Creates a var `Position` containing the component descriptor.
+   The component name will be namespace-qualified and mangled for Flecs
+   (e.g., \"vybe_type__Position\" for vybe.type/Position).
    Register with a world using: (register-comp! world Position)
 
    Supported types:
@@ -250,6 +160,6 @@ ecs_entity_t vybe_register_struct_4(
      :string         - string (char*)
      :entity         - entity reference"
   [sym fields]
-  `(def ~sym (make-comp '~sym ~fields)))
+  `(def ~sym (make-comp ~(mangle-name *ns* sym) ~fields)))
 
 (defn -main [& args])
