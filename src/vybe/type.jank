@@ -298,65 +298,118 @@ bool vybe_get_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
               (cpp/vybe_set_field_bool wb entity cid field-name value))))))))
 
 (defn get-comp
-  "Get component data from an entity as a map.
+  "Get component data from an entity as a ComponentRef.
+   Returns a map-like object that can be read with keywords and updated with merge!.
 
    Usage:
      (get-comp world entity Position)
-     ;; => {:x 10.0 :y 20.0}"
+     ;; => {:x 10.0 :y 20.0 :vt/world-box ... :vt/entity ... :vt/comp ...}
+
+     (let [pos (get-comp world entity Position)]
+       (:x pos)              ; read field
+       (merge! pos {:x 5}))  ; update field"
   [world entity comp]
   (let [w (vf/world-ptr world)
         w-box (cpp/box w)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
-      (into {}
-            (map (fn [field]
-                   (let [field-name (:name field)
-                         field-type (:type field)
-                         wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)
-                         value (cond
-                                 (is-float-type? field-type)
-                                 (cpp/vybe_get_field_float wb entity cid field-name)
+      ;; Build the component ref with metadata for later updates
+      (let [field-values (into {}
+                               (map (fn [field]
+                                      (let [field-name (:name field)
+                                            field-type (:type field)
+                                            wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+                                            value (cond
+                                                    (is-float-type? field-type)
+                                                    (cpp/vybe_get_field_float wb entity cid field-name)
 
-                                 (is-int-type? field-type)
-                                 (cpp/vybe_get_field_int wb entity cid field-name)
+                                                    (is-int-type? field-type)
+                                                    (cpp/vybe_get_field_int wb entity cid field-name)
 
-                                 (is-uint-type? field-type)
-                                 (cpp/vybe_get_field_uint wb entity cid field-name)
+                                                    (is-uint-type? field-type)
+                                                    (cpp/vybe_get_field_uint wb entity cid field-name)
 
-                                 (= field-type :bool)
-                                 (cpp/vybe_get_field_bool wb entity cid field-name)
+                                                    (= field-type :bool)
+                                                    (cpp/vybe_get_field_bool wb entity cid field-name)
 
-                                 :else nil)]
-                     [(keyword field-name) value]))
-                 (:fields comp))))))
+                                                    :else nil)]
+                                        [(keyword field-name) value]))
+                                    (:fields comp)))]
+        ;; Return map with component ref metadata embedded
+        (assoc field-values
+               :vt/world-box w-box
+               :vt/entity entity
+               :vt/comp comp)))))
+
+(defn comp-ref?
+  "Check if x is a ComponentRef (returned by get-comp)."
+  [x]
+  (and (map? x) (contains? x :vt/comp)))
+
+(defn merge!
+  "Update component fields. Works with either:
+   1. A ComponentRef from get-comp: (merge! pos {:x 5})
+   2. Explicit args: (merge! world entity Position {:x 5})
+
+   Usage:
+     (let [pos (get-comp world entity Position)]
+       (merge! pos {:x 5.0}))  ; update using ComponentRef
+
+     (merge! world entity Position {:x 5.0})  ; explicit form"
+  ([comp-ref values]
+   ;; ComponentRef form: (merge! pos {:x 5})
+   (let [w-box (:vt/world-box comp-ref)
+         entity (:vt/entity comp-ref)
+         comp (:vt/comp comp-ref)
+         cid (fl/ecs_lookup (cpp/unbox (cpp/type "ecs_world_t*") w-box) (:name comp))]
+     (doseq [[field-kw value] values]
+       (let [field-name (name field-kw)
+             field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                              (:fields comp))
+             wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+         (cond
+           (is-float-type? field-type)
+           (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
+
+           (is-int-type? field-type)
+           (cpp/vybe_set_field_int wb entity cid field-name (cpp/long. value))
+
+           (is-uint-type? field-type)
+           (cpp/vybe_set_field_uint wb entity cid field-name (cpp/long. value))
+
+           (= field-type :bool)
+           (cpp/vybe_set_field_bool wb entity cid field-name value))))))
+  ([world entity comp values]
+   ;; Explicit form: (merge! world entity Position {:x 5})
+   (let [w (vf/world-ptr world)
+         w-box (cpp/box w)
+         cid (comp-id world comp)]
+     (doseq [[field-kw value] values]
+       (let [field-name (name field-kw)
+             field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                              (:fields comp))
+             wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+         (cond
+           (is-float-type? field-type)
+           (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
+
+           (is-int-type? field-type)
+           (cpp/vybe_set_field_int wb entity cid field-name (cpp/long. value))
+
+           (is-uint-type? field-type)
+           (cpp/vybe_set_field_uint wb entity cid field-name (cpp/long. value))
+
+           (= field-type :bool)
+           (cpp/vybe_set_field_bool wb entity cid field-name value)))))))
 
 (defn set-comp!
-  "Set component fields on an entity using a map (like merge).
+  "Alias for merge! with explicit args. Set component fields on an entity.
 
    Usage:
      (set-comp! world entity Position {:x 10.0})       ; update just :x
      (set-comp! world entity Position {:x 1.0 :y 2.0}) ; update both"
   [world entity comp values]
-  (let [w (vf/world-ptr world)
-        w-box (cpp/box w)
-        cid (comp-id world comp)]
-    (doseq [[field-kw value] values]
-      (let [field-name (name field-kw)
-            field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                             (:fields comp))
-            wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
-        (cond
-          (is-float-type? field-type)
-          (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
-
-          (is-int-type? field-type)
-          (cpp/vybe_set_field_int wb entity cid field-name (cpp/long. value))
-
-          (is-uint-type? field-type)
-          (cpp/vybe_set_field_uint wb entity cid field-name (cpp/long. value))
-
-          (= field-type :bool)
-          (cpp/vybe_set_field_bool wb entity cid field-name value))))))
+  (merge! world entity comp values))
 
 ;; =============================================================================
 ;; defcomp - Macro to define components

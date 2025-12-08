@@ -7,6 +7,9 @@ cd "$(dirname "$0")"
 USE_LLDB=false
 USE_DEBUG=false
 SAVE_CPP=false
+USE_PROFILE=false
+USE_PROFILE_FNS=false
+USE_XTRACE=false
 while [[ "$1" == --* ]]; do
     case "$1" in
         --lldb)
@@ -19,6 +22,18 @@ while [[ "$1" == --* ]]; do
             ;;
         --save-cpp)
             SAVE_CPP=true
+            shift
+            ;;
+        --profile)
+            USE_PROFILE=true
+            shift
+            ;;
+        --profile-fns)
+            USE_PROFILE_FNS=true
+            shift
+            ;;
+        --xtrace)
+            USE_XTRACE=true
             shift
             ;;
         *)
@@ -96,9 +111,21 @@ if [ "$SAVE_CPP" = true ]; then
     JANK_ARGS+=(--save-cpp --save-cpp-path ./generated_cpp)
 fi
 
+# Add profile flag if requested
+if [ "$USE_PROFILE" = true ]; then
+    echo "Profiling enabled - output will be written to jank.profile"
+    JANK_ARGS+=(--profile)
+fi
+
+# Add profile-fns flag if requested (automatically profiles all functions)
+if [ "$USE_PROFILE_FNS" = true ]; then
+    echo "Function profiling enabled - all functions will be automatically profiled"
+    JANK_ARGS+=(--profile-fns)
+fi
+
 JANK_ARGS+=(run-main my-integrated-demo -main)
 
-# Run with or without lldb
+# Run with appropriate tool
 if [ "$USE_LLDB" = true ]; then
     # Enable debug symbols for lldb (required for source mapping)
     JANK_ARGS=(--debug "${JANK_ARGS[@]}")
@@ -116,6 +143,25 @@ bt
 EOF
 
     lldb -s /tmp/lldb_commands.txt -- jank "${JANK_ARGS[@]}"
+elif [ "$USE_XTRACE" = true ]; then
+    TRACE_FILE="something_$(date +%Y%m%d_%H%M%S).trace"
+    echo "Running with xctrace (Time Profiler)..."
+    echo "Trace will be saved to: $TRACE_FILE"
+    echo "Open with: open $TRACE_FILE"
+    echo ""
+
+    xctrace record --template 'Time Profiler' --output "$TRACE_FILE" --launch -- jank "${JANK_ARGS[@]}"
+
+    echo ""
+    echo "Trace recorded: $TRACE_FILE"
+    echo "Run 'open $TRACE_FILE' to view in Instruments"
 else
     jank "${JANK_ARGS[@]}"
+fi
+
+# If profiling was enabled, show analysis hint
+if ([ "$USE_PROFILE" = true ] || [ "$USE_PROFILE_FNS" = true ]) && [ -f "jank.profile" ]; then
+    echo ""
+    echo "Profile data written to jank.profile"
+    echo "Analyze with: /Users/pfeodrippe/dev/jank/compiler+runtime/bin/profile-analyze jank.profile"
 fi
