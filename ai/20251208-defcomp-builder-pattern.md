@@ -1,108 +1,110 @@
-# Session: defcomp Builder Pattern - Unlimited Fields + Name Mangling
+# Session: defcomp with Field Access API
 
 **Date**: 2025-12-08
-**Status**: COMPLETED - All tests pass
+**Status**: COMPLETED - All 22 tests pass (9 flecs + 13 type)
 
-## What Was Changed
+## What Was Implemented
 
-### Problem 1: Fixed field count
-The previous implementation used separate C++ helper functions for 1-4 fields (`vybe_register_struct_1` through `vybe_register_struct_4`), which was limiting and "bad code" per user feedback.
-
-### Solution 1: Builder Pattern
-Implemented a **builder pattern** that supports unlimited fields (up to 32, which is Flecs' internal limit for `ecs_struct_desc_t.members`):
+### 1. Builder Pattern for Unlimited Fields
+Implemented a builder pattern supporting unlimited fields (up to 32):
 
 ```cpp
-struct VybeStructBuilder {
-  ecs_world_t* world;
-  ecs_struct_desc_t desc;
-  int member_idx;
-};
-
 VybeStructBuilder* vybe_struct_begin(ecs_world_t* w, const char* name);
 void vybe_struct_add_member(VybeStructBuilder* b, const char* name, ecs_entity_t type);
 ecs_entity_t vybe_struct_end(VybeStructBuilder* b);
 ```
 
-### Problem 2: Unqualified component names
-Component names like "Position" would conflict if defined in multiple namespaces.
+### 2. Namespace-qualified Mangled Names
+Component names are mangled for Flecs (no `.` or `/`):
+- `vybe.type-test/Position` → `vybe_type_test__Position`
 
-### Solution 2: Namespace-qualified mangled names
-Added `mangle-name` function to convert namespace names to Flecs-safe identifiers:
-- Replaces `.` with `_`
-- Replaces `-` with `_`
-- Separates namespace and symbol with `__`
+### 3. Field Access API (NEW)
+Using Flecs meta cursor API for runtime field access:
 
-Example: `vybe.type-test/Position` → `vybe_type_test__Position`
-
-```clojure
-(defn mangle-char [c]
-  (cond
-    (= c \.) \_
-    (= c \-) \_
-    :else c))
-
-(defn mangle-name [ns-str sym-str]
-  (let [mangled-ns (apply str (map mangle-char (str ns-str)))]
-    (str mangled-ns "__" sym-str)))
+**C++ helpers:**
+```cpp
+void vybe_add_comp(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp);
+void vybe_set_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* name, double val);
+double vybe_get_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* name);
+// ... similar for int, uint, bool
 ```
 
-The `defcomp` macro now automatically includes the namespace:
+**jank API:**
 ```clojure
-(defmacro defcomp [sym fields]
-  `(def ~sym (make-comp ~(mangle-name *ns* sym) ~fields)))
+;; Add component with optional values
+(add-comp! world entity Position)                    ; zero-initialized
+(add-comp! world entity Position {:x 10.0 :y 20.0})  ; with map
+(add-comp! world entity Position 10.0 20.0)          ; positional args
+
+;; Get component as map
+(get-comp world entity Position)
+;; => {:x 10.0 :y 20.0}
+
+;; Access fields like normal maps
+(let [pos (get-comp world entity Position)]
+  (:x pos))  ; => 10.0
+
+;; Update component (like merge)
+(set-comp! world entity Position {:x 100.0})  ; updates just :x
+
+;; Check if entity has component
+(has-comp? world entity Position)
 ```
 
-### Key Technique: Boxing Native Pointers
+## Key Techniques
 
-To capture a native pointer (`VybeStructBuilder*`) in a jank closure (like `doseq`), we need to box it:
+### Boxing World Pointer for Closures
+Native pointers can't be captured in closures (like `doseq`), must box them:
 
 ```clojure
-(defn register-comp! [world comp]
-  (let [w (vf/world-ptr world)
-        builder (cpp/box (cpp/vybe_struct_begin w (:name comp)))]
-    (doseq [field (:fields comp)]
-      (cpp/vybe_struct_add_member
-       (cpp/unbox (cpp/type "VybeStructBuilder*") builder)
-       (:name field)
-       (flecs-type-id (:type field))))
-    (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))))
+(let [w (vf/world-ptr world)
+      w-box (cpp/box w)]
+  (doseq [[field-kw value] values]
+    (let [wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+      (cpp/vybe_set_field_float wb entity cid field-name value))))
+```
+
+### Type Dispatch
+Field types determine which C++ helper to call:
+
+```clojure
+(defn- is-float-type? [t]
+  (or (= t :float) (= t :f32) (= t :double) (= t :f64)))
+
+(cond
+  (is-float-type? field-type)
+  (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
+  ...)
 ```
 
 ## Commands Run
 
 ```bash
 ./run_tests.sh
-# Output:
-# Testing vybe.flecs-test
-# Ran 9 tests containing 10 assertions.
-# 0 failures, 0 errors.
-#
-# Testing vybe.type-test
-# Ran 6 tests containing 27 assertions.
-# 0 failures, 0 errors.
+# Testing vybe.flecs-test - 9 tests, 10 assertions
+# Testing vybe.type-test - 13 tests, 37 assertions
+# All tests passed!
 ```
 
 ## Key Learnings
 
-1. **Native pointers can't be captured directly in jank closures** - use `cpp/box` to wrap them first
-
-2. **`cpp/unbox` requires type annotation** - use `(cpp/unbox (cpp/type "T*") boxed-value)`
-
-3. **Builder pattern is better than fixed-arity functions** - allows iterating with `doseq` instead of hardcoded field counts
-
-4. **Flecs type globals exist** - Access `fl/FLECS_IDecs_f32_tID_` etc. directly instead of using `ecs_id(T)` macro (which uses token pasting and doesn't work at runtime)
-
-5. **Flecs entity names must be simple** - No `.` or `/` characters, must mangle to `_` and `__`
-
-6. **`clojure.string/replace` not implemented in jank** - Use `(apply str (map f s))` pattern instead
+1. **Flecs meta cursor API** - Use `ecs_meta_cursor`, `ecs_meta_push`, `ecs_meta_member`, `ecs_meta_set/get_*` for runtime field access
+2. **Entity-based C++ helpers** - Pass entity ID to helpers, let them get pointers internally (avoids pointer conversion issues)
+3. **Box native pointers for closures** - `cpp/box` + `cpp/unbox` pattern is essential for `doseq`/`map`
+4. **Return maps from get-comp** - Makes component data work with standard Clojure idioms (`(:x pos)`)
 
 ## Files Modified
 
-- `src/vybe/type.jank` - Builder pattern + name mangling
-- `test/vybe/type_test.jank` - Updated expected names to mangled format
+- `src/vybe/type.jank` - Full field access API
+- `test/vybe/type_test.jank` - 13 tests covering all functionality
 
-## What's Next
+## API Summary
 
-- Component data access in `with-query` (reading/writing field values)
-- Constructor functions that accept jank hash maps for component instantiation
-- Investigate jank macro aliasing issues (full namespace qualification needed in macro expansion)
+| Function | Description |
+|----------|-------------|
+| `(defcomp Name [[f1 :type] ...])` | Define a component type |
+| `(register-comp! world Comp)` | Register with Flecs world |
+| `(add-comp! world e Comp ...)` | Add component with optional values |
+| `(get-comp world e Comp)` | Get as map `{:field value}` |
+| `(set-comp! world e Comp {:f v})` | Update fields (merge-like) |
+| `(has-comp? world e Comp)` | Check if entity has component |

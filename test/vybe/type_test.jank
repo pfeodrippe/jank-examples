@@ -84,11 +84,80 @@
       (vf/destroy-world! world))))
 
 ;; =============================================================================
-;; Integration test - component in query (future)
+;; Field access tests
 ;; =============================================================================
 
-;; TODO: Add test for using components with with-query once we have
-;; component data access implemented
+(deftest add-comp-test
+  (testing "add-comp! adds component to entity"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)
+          e (vf/new-entity world)]
+      (vt/add-comp! world e Position)
+      (is (vt/has-comp? world e Position))
+      (vf/destroy-world! world))))
+
+(deftest add-comp-with-map-test
+  (testing "add-comp! with map initializes fields"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)
+          e (vf/new-entity world)]
+      (vt/add-comp! world e Position {:x 10.5 :y 20.25})
+      (is (= {:x 10.5 :y 20.25} (vt/get-comp world e Position)))
+      (vf/destroy-world! world))))
+
+(deftest add-comp-with-positional-args-test
+  (testing "add-comp! with positional args initializes fields in order"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)
+          e (vf/new-entity world)]
+      (vt/add-comp! world e Position 40.0 60.0)
+      (is (= {:x 40.0 :y 60.0} (vt/get-comp world e Position)))
+      (vf/destroy-world! world))))
+
+(deftest get-comp-returns-map-test
+  (testing "get-comp returns component data as a map"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)
+          e (vf/new-entity world)]
+      (vt/add-comp! world e Position {:x 1.0 :y 2.0})
+      (let [pos (vt/get-comp world e Position)]
+        (is (map? pos))
+        (is (= 1.0 (:x pos)))
+        (is (= 2.0 (:y pos))))
+      (vf/destroy-world! world))))
+
+(deftest set-comp-partial-update-test
+  (testing "set-comp! updates only specified fields (like merge)"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)
+          e (vf/new-entity world)]
+      (vt/add-comp! world e Position {:x 1.0 :y 2.0})
+      ;; Update only :x
+      (vt/set-comp! world e Position {:x 100.0})
+      (is (= {:x 100.0 :y 2.0} (vt/get-comp world e Position)))
+      (vf/destroy-world! world))))
+
+(deftest set-and-get-int-field-test
+  (testing "int fields work correctly"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Health)
+          e (vf/new-entity world)]
+      (vt/add-comp! world e Health {:value 100})
+      (is (= {:value 100} (vt/get-comp world e Health)))
+      (vf/destroy-world! world))))
+
+(deftest multiple-entities-with-components-test
+  (testing "multiple entities can have same component with different values"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)
+          e1 (vf/new-entity world)
+          e2 (vf/new-entity world)]
+      (vt/add-comp! world e1 Position 1.0 2.0)
+      (vt/add-comp! world e2 Position 100.0 200.0)
+      ;; Verify values are independent
+      (is (= {:x 1.0 :y 2.0} (vt/get-comp world e1 Position)))
+      (is (= {:x 100.0 :y 200.0} (vt/get-comp world e2 Position)))
+      (vf/destroy-world! world))))
 
 (defn -main [& args]
   (let [results (clojure.test/run-tests 'vybe.type-test)]

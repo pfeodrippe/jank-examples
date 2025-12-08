@@ -111,6 +111,102 @@ ecs_entity_t vybe_struct_end(VybeStructBuilder* b) {
   delete b;
   return result;
 }
+
+// =============================================================================
+// Field access helpers using meta cursor API
+// =============================================================================
+
+// Add component to entity (ensures it exists)
+void vybe_add_comp(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
+  if (ti) {
+    ecs_ensure_id(w, e, comp, ti->size);
+  }
+}
+
+// Set a float field on a component (entity version - gets pointer internally)
+void vybe_set_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, double value) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
+  if (!ti) return;
+  void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  ecs_meta_set_float(&cur, value);
+}
+
+// Set an int field on a component
+void vybe_set_field_int(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, int64_t value) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
+  if (!ti) return;
+  void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  ecs_meta_set_int(&cur, value);
+}
+
+// Set a uint field on a component
+void vybe_set_field_uint(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, uint64_t value) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
+  if (!ti) return;
+  void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  ecs_meta_set_uint(&cur, value);
+}
+
+// Set a bool field on a component
+void vybe_set_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, bool value) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
+  if (!ti) return;
+  void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  ecs_meta_set_bool(&cur, value);
+}
+
+// Get a float field from a component
+double vybe_get_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  const void* ptr = ecs_get_id(w, e, comp);
+  if (!ptr) return 0.0;
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  return ecs_meta_get_float(&cur);
+}
+
+// Get an int field from a component
+int64_t vybe_get_field_int(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  const void* ptr = ecs_get_id(w, e, comp);
+  if (!ptr) return 0;
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  return ecs_meta_get_int(&cur);
+}
+
+// Get a uint field from a component
+uint64_t vybe_get_field_uint(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  const void* ptr = ecs_get_id(w, e, comp);
+  if (!ptr) return 0;
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  return ecs_meta_get_uint(&cur);
+}
+
+// Get a bool field from a component
+bool vybe_get_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  const void* ptr = ecs_get_id(w, e, comp);
+  if (!ptr) return false;
+  ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
+  ecs_meta_push(&cur);
+  ecs_meta_member(&cur, field_name);
+  return ecs_meta_get_bool(&cur);
+}
 ")
 
 ;; =============================================================================
@@ -133,6 +229,134 @@ ecs_entity_t vybe_struct_end(VybeStructBuilder* b) {
        (:name field)
        (flecs-type-id (:type field))))
     (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))))
+
+;; =============================================================================
+;; Component data access - add, get, set fields
+;; =============================================================================
+
+(defn comp-id
+  "Get the registered entity ID for a component descriptor.
+   The component must have been registered with register-comp! first."
+  [world comp]
+  (fl/ecs_lookup (vf/world-ptr world) (:name comp)))
+
+(defn has-comp?
+  "Check if an entity has a component.
+
+   Usage:
+     (has-comp? world entity Position)"
+  [world entity comp]
+  (let [w (vf/world-ptr world)
+        cid (comp-id world comp)]
+    (fl/ecs_has_id w entity cid)))
+
+(defn- is-float-type? [t]
+  (or (= t :float) (= t :f32) (= t :double) (= t :f64)))
+
+(defn- is-int-type? [t]
+  (or (= t :i8) (= t :i16) (= t :i32) (= t :i64) (= t :int) (= t :long)))
+
+(defn- is-uint-type? [t]
+  (or (= t :u8) (= t :u16) (= t :u32) (= t :u64)))
+
+(defn add-comp!
+  "Add a component to an entity with optional initial values.
+
+   Usage:
+     (add-comp! world entity Position)                    ; zero-initialized
+     (add-comp! world entity Position {:x 10.0 :y 20.0})  ; with map
+     (add-comp! world entity Position 10.0 20.0)          ; positional args"
+  [world entity comp & args]
+  (let [w (vf/world-ptr world)
+        w-box (cpp/box w)
+        cid (comp-id world comp)]
+    ;; Add the component
+    (cpp/vybe_add_comp w entity cid)
+    ;; Set initial values if provided
+    (when (seq args)
+      (let [values (if (map? (first args))
+                     (first args)  ; {:x 10 :y 20}
+                     ;; positional args: convert to map using field order
+                     (zipmap (map (fn [f] (keyword (:name f))) (:fields comp))
+                             args))]
+        (doseq [[field-kw value] values]
+          (let [field-name (name field-kw)
+                field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                                 (:fields comp))
+                wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+            (cond
+              (is-float-type? field-type)
+              (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
+
+              (is-int-type? field-type)
+              (cpp/vybe_set_field_int wb entity cid field-name (cpp/long. value))
+
+              (is-uint-type? field-type)
+              (cpp/vybe_set_field_uint wb entity cid field-name (cpp/long. value))
+
+              (= field-type :bool)
+              (cpp/vybe_set_field_bool wb entity cid field-name value))))))))
+
+(defn get-comp
+  "Get component data from an entity as a map.
+
+   Usage:
+     (get-comp world entity Position)
+     ;; => {:x 10.0 :y 20.0}"
+  [world entity comp]
+  (let [w (vf/world-ptr world)
+        w-box (cpp/box w)
+        cid (comp-id world comp)]
+    (when (fl/ecs_has_id w entity cid)
+      (into {}
+            (map (fn [field]
+                   (let [field-name (:name field)
+                         field-type (:type field)
+                         wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+                         value (cond
+                                 (is-float-type? field-type)
+                                 (cpp/vybe_get_field_float wb entity cid field-name)
+
+                                 (is-int-type? field-type)
+                                 (cpp/vybe_get_field_int wb entity cid field-name)
+
+                                 (is-uint-type? field-type)
+                                 (cpp/vybe_get_field_uint wb entity cid field-name)
+
+                                 (= field-type :bool)
+                                 (cpp/vybe_get_field_bool wb entity cid field-name)
+
+                                 :else nil)]
+                     [(keyword field-name) value]))
+                 (:fields comp))))))
+
+(defn set-comp!
+  "Set component fields on an entity using a map (like merge).
+
+   Usage:
+     (set-comp! world entity Position {:x 10.0})       ; update just :x
+     (set-comp! world entity Position {:x 1.0 :y 2.0}) ; update both"
+  [world entity comp values]
+  (let [w (vf/world-ptr world)
+        w-box (cpp/box w)
+        cid (comp-id world comp)]
+    (doseq [[field-kw value] values]
+      (let [field-name (name field-kw)
+            field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                             (:fields comp))
+            wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+        (cond
+          (is-float-type? field-type)
+          (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
+
+          (is-int-type? field-type)
+          (cpp/vybe_set_field_int wb entity cid field-name (cpp/long. value))
+
+          (is-uint-type? field-type)
+          (cpp/vybe_set_field_uint wb entity cid field-name (cpp/long. value))
+
+          (= field-type :bool)
+          (cpp/vybe_set_field_bool wb entity cid field-name value))))))
 
 ;; =============================================================================
 ;; defcomp - Macro to define components
