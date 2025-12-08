@@ -118,17 +118,20 @@ ecs_entity_t vybe_struct_end(VybeStructBuilder* b) {
 
 // Add component to entity (ensures it exists)
 void vybe_add_comp(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp) {
+  if (!w || !e || !comp) return;
   const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
-  if (ti) {
+  if (ti && ti->size > 0) {
     ecs_ensure_id(w, e, comp, ti->size);
   }
 }
 
 // Set a float field on a component (entity version - gets pointer internally)
 void vybe_set_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, double value) {
+  if (!w || !e || !comp || !field_name) return;
   const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
-  if (!ti) return;
+  if (!ti || ti->size == 0) return;
   void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  if (!ptr) return;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
   ecs_meta_push(&cur);
   ecs_meta_member(&cur, field_name);
@@ -137,9 +140,11 @@ void vybe_set_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, con
 
 // Set an int field on a component
 void vybe_set_field_int(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, int64_t value) {
+  if (!w || !e || !comp || !field_name) return;
   const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
-  if (!ti) return;
+  if (!ti || ti->size == 0) return;
   void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  if (!ptr) return;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
   ecs_meta_push(&cur);
   ecs_meta_member(&cur, field_name);
@@ -148,9 +153,11 @@ void vybe_set_field_int(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const
 
 // Set a uint field on a component
 void vybe_set_field_uint(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, uint64_t value) {
+  if (!w || !e || !comp || !field_name) return;
   const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
-  if (!ti) return;
+  if (!ti || ti->size == 0) return;
   void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  if (!ptr) return;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
   ecs_meta_push(&cur);
   ecs_meta_member(&cur, field_name);
@@ -159,9 +166,11 @@ void vybe_set_field_uint(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
 
 // Set a bool field on a component
 void vybe_set_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name, bool value) {
+  if (!w || !e || !comp || !field_name) return;
   const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
-  if (!ti) return;
+  if (!ti || ti->size == 0) return;
   void* ptr = ecs_ensure_id(w, e, comp, ti->size);
+  if (!ptr) return;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, ptr);
   ecs_meta_push(&cur);
   ecs_meta_member(&cur, field_name);
@@ -170,6 +179,7 @@ void vybe_set_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
 
 // Get a float field from a component
 double vybe_get_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  if (!w || !e || !comp || !field_name) return 0.0;
   const void* ptr = ecs_get_id(w, e, comp);
   if (!ptr) return 0.0;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
@@ -180,6 +190,7 @@ double vybe_get_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, c
 
 // Get an int field from a component
 int64_t vybe_get_field_int(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  if (!w || !e || !comp || !field_name) return 0;
   const void* ptr = ecs_get_id(w, e, comp);
   if (!ptr) return 0;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
@@ -190,6 +201,7 @@ int64_t vybe_get_field_int(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, co
 
 // Get a uint field from a component
 uint64_t vybe_get_field_uint(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  if (!w || !e || !comp || !field_name) return 0;
   const void* ptr = ecs_get_id(w, e, comp);
   if (!ptr) return 0;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
@@ -200,6 +212,7 @@ uint64_t vybe_get_field_uint(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, 
 
 // Get a bool field from a component
 bool vybe_get_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
+  if (!w || !e || !comp || !field_name) return false;
   const void* ptr = ecs_get_id(w, e, comp);
   if (!ptr) return false;
   ecs_meta_cursor_t cur = ecs_meta_cursor(w, comp, const_cast<void*>(ptr));
@@ -207,7 +220,212 @@ bool vybe_get_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
   ecs_meta_member(&cur, field_name);
   return ecs_meta_get_bool(&cur);
 }
+
+// =============================================================================
+// Field metadata access - get offsets and sizes from Flecs
+// =============================================================================
+
+// Get the number of members in a struct component
+int32_t vybe_get_member_count(ecs_world_t* w, ecs_entity_t comp) {
+  const EcsStruct* st = ecs_get(w, comp, EcsStruct);
+  if (!st) return 0;
+  return ecs_vec_count(&st->members);
+}
+
+// Get the offset of a member by index
+int32_t vybe_get_member_offset(ecs_world_t* w, ecs_entity_t comp, int32_t idx) {
+  const EcsStruct* st = ecs_get(w, comp, EcsStruct);
+  if (!st) return -1;
+  if (idx < 0 || idx >= ecs_vec_count(&st->members)) return -1;
+  const ecs_member_t* m = ecs_vec_get_t(&st->members, ecs_member_t, idx);
+  return m->offset;
+}
+
+// Get the size of a member by index
+int32_t vybe_get_member_size(ecs_world_t* w, ecs_entity_t comp, int32_t idx) {
+  const EcsStruct* st = ecs_get(w, comp, EcsStruct);
+  if (!st) return -1;
+  if (idx < 0 || idx >= ecs_vec_count(&st->members)) return -1;
+  const ecs_member_t* m = ecs_vec_get_t(&st->members, ecs_member_t, idx);
+  return m->size;
+}
+
+// Get the name of a member by index (returns empty string if not found)
+const char* vybe_get_member_name(ecs_world_t* w, ecs_entity_t comp, int32_t idx) {
+  const EcsStruct* st = ecs_get(w, comp, EcsStruct);
+  if (!st) return \"\";
+  if (idx < 0 || idx >= ecs_vec_count(&st->members)) return \"\";
+  const ecs_member_t* m = ecs_vec_get_t(&st->members, ecs_member_t, idx);
+  return m->name ? m->name : \"\";
+}
+
+// Get the total size of a component
+int32_t vybe_get_comp_size(ecs_world_t* w, ecs_entity_t comp) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
+  return ti ? ti->size : 0;
+}
+
+// =============================================================================
+// Direct memory access - use offsets for O(1) field access
+// =============================================================================
+
+// Get component pointer for an entity (returns NULL if entity doesn't have it)
+void* vybe_get_comp_ptr(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp) {
+  // First check if entity has the component
+  if (!ecs_has_id(w, e, comp)) return nullptr;
+  const ecs_type_info_t* ti = ecs_get_type_info(w, comp);
+  if (!ti || ti->size == 0) return nullptr;
+  return ecs_ensure_id(w, e, comp, ti->size);
+}
+
+// Get const component pointer for an entity (returns NULL if entity doesn't have it)
+const void* vybe_get_comp_ptr_const(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp) {
+  if (!ecs_has_id(w, e, comp)) return nullptr;
+  return ecs_get_id(w, e, comp);
+}
+
+// Direct set float at offset
+void vybe_set_float_at(void* base, int32_t offset, double value) {
+  if (!base) return;
+  *(float*)((char*)base + offset) = (float)value;
+}
+
+// Direct set double at offset
+void vybe_set_double_at(void* base, int32_t offset, double value) {
+  if (!base) return;
+  *(double*)((char*)base + offset) = value;
+}
+
+// Direct set i32 at offset
+void vybe_set_i32_at(void* base, int32_t offset, int64_t value) {
+  if (!base) return;
+  *(int32_t*)((char*)base + offset) = (int32_t)value;
+}
+
+// Direct set i64 at offset
+void vybe_set_i64_at(void* base, int32_t offset, int64_t value) {
+  if (!base) return;
+  *(int64_t*)((char*)base + offset) = value;
+}
+
+// Direct set u32 at offset
+void vybe_set_u32_at(void* base, int32_t offset, uint64_t value) {
+  if (!base) return;
+  *(uint32_t*)((char*)base + offset) = (uint32_t)value;
+}
+
+// Direct set u64 at offset
+void vybe_set_u64_at(void* base, int32_t offset, uint64_t value) {
+  if (!base) return;
+  *(uint64_t*)((char*)base + offset) = value;
+}
+
+// Direct set bool at offset
+void vybe_set_bool_at(void* base, int32_t offset, bool value) {
+  if (!base) return;
+  *(bool*)((char*)base + offset) = value;
+}
+
+// Direct get float at offset
+double vybe_get_float_at(const void* base, int32_t offset) {
+  if (!base) return 0.0;
+  return (double)*(const float*)((const char*)base + offset);
+}
+
+// Direct get double at offset
+double vybe_get_double_at(const void* base, int32_t offset) {
+  if (!base) return 0.0;
+  return *(const double*)((const char*)base + offset);
+}
+
+// Direct get i32 at offset
+int64_t vybe_get_i32_at(const void* base, int32_t offset) {
+  if (!base) return 0;
+  return (int64_t)*(const int32_t*)((const char*)base + offset);
+}
+
+// Direct get i64 at offset
+int64_t vybe_get_i64_at(const void* base, int32_t offset) {
+  if (!base) return 0;
+  return *(const int64_t*)((const char*)base + offset);
+}
+
+// Direct get u32 at offset
+uint64_t vybe_get_u32_at(const void* base, int32_t offset) {
+  if (!base) return 0;
+  return (uint64_t)*(const uint32_t*)((const char*)base + offset);
+}
+
+// Direct get u64 at offset
+uint64_t vybe_get_u64_at(const void* base, int32_t offset) {
+  if (!base) return 0;
+  return *(const uint64_t*)((const char*)base + offset);
+}
+
+// Direct get bool at offset
+bool vybe_get_bool_at(const void* base, int32_t offset) {
+  if (!base) return false;
+  return *(const bool*)((const char*)base + offset);
+}
 ")
+
+;; =============================================================================
+;; Component metadata cache - stores offsets and sizes for direct memory access
+;; =============================================================================
+
+;; Global cache: component-name -> {:offsets {field-name offset} :sizes {field-name size} :comp-size size}
+(def ^:private comp-meta-cache (atom {}))
+
+(defn- cache-comp-meta!
+  "Cache field offsets and sizes for a component after registration."
+  [world comp cid]
+  (let [w (vf/world-ptr world)
+        w-box (cpp/box w)
+        member-count (cpp/vybe_get_member_count w cid)
+        comp-size (cpp/vybe_get_comp_size w cid)]
+    ;; Build offset and size maps for each field
+    (loop [idx 0
+           offsets {}
+           sizes {}]
+      (if (>= idx member-count)
+        ;; Done - cache the metadata
+        (swap! comp-meta-cache assoc (:name comp)
+               {:offsets offsets
+                :sizes sizes
+                :comp-size comp-size
+                :cid cid})
+        ;; Get metadata for this field
+        (let [wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+              fname (cpp/vybe_get_member_name wb cid idx)
+              offset (cpp/vybe_get_member_offset wb cid idx)
+              size (cpp/vybe_get_member_size wb cid idx)]
+          (recur (inc idx)
+                 (assoc offsets fname offset)
+                 (assoc sizes fname size)))))))
+
+(defn get-comp-meta
+  "Get cached metadata for a component. Returns nil if not cached."
+  [comp]
+  (get @comp-meta-cache (:name comp)))
+
+(defn comp-size
+  "Get the total size of a component in bytes. Requires prior registration."
+  [comp]
+  (:comp-size (get-comp-meta comp)))
+
+(defn field-offset
+  "Get the byte offset of a field. Requires prior registration."
+  [comp field-name]
+  (get-in (get-comp-meta comp) [:offsets (if (keyword? field-name)
+                                            (name field-name)
+                                            field-name)]))
+
+(defn field-size
+  "Get the byte size of a field. Requires prior registration."
+  [comp field-name]
+  (get-in (get-comp-meta comp) [:sizes (if (keyword? field-name)
+                                          (name field-name)
+                                          field-name)]))
 
 ;; =============================================================================
 ;; register-comp! - Register component with Flecs world
@@ -216,6 +434,7 @@ bool vybe_get_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
 (defn register-comp!
   "Register a component descriptor with a Flecs world using ecs_struct.
    Returns the Flecs entity ID for the component. Supports up to 32 fields.
+   Also caches field offsets and sizes for direct memory access.
 
    Usage:
      (defcomp Position [[:x :float] [:y :float]])
@@ -228,7 +447,32 @@ bool vybe_get_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
        (cpp/unbox (cpp/type "VybeStructBuilder*") builder)
        (:name field)
        (flecs-type-id (:type field))))
-    (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))))
+    (let [cid (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))]
+      ;; Cache the field metadata for direct memory access
+      (cache-comp-meta! world comp cid)
+      cid)))
+
+;; =============================================================================
+;; init-comp-meta! - Initialize component metadata using a temporary world
+;; =============================================================================
+
+(defn init-comp-meta!
+  "Initialize component metadata using a temporary world.
+   This allows getting field offsets before registering with a real world.
+   Useful for pre-caching metadata at startup.
+
+   Note: Uses full world (not mini) because meta addon is required for structs.
+   The world is intentionally not destroyed to avoid issues with jank's
+   lazy evaluation accessing the world after destruction.
+
+   Usage:
+     (defcomp Position [[:x :float] [:y :float]])
+     (init-comp-meta! Position)
+     ;; Now field-offset and comp-size work without a real world"
+  [comp]
+  (let [temp-world (vf/make-world)]
+    (register-comp! temp-world comp))
+  nil)
 
 ;; =============================================================================
 ;; Component data access - add, get, set fields
@@ -410,6 +654,188 @@ bool vybe_get_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
      (set-comp! world entity Position {:x 1.0 :y 2.0}) ; update both"
   [world entity comp values]
   (merge! world entity comp values))
+
+;; =============================================================================
+;; Direct memory access - O(1) field access using cached offsets
+;; =============================================================================
+
+(defn- is-f32-type? [t]
+  (or (= t :float) (= t :f32)))
+
+(defn- is-f64-type? [t]
+  (or (= t :double) (= t :f64)))
+
+(defn- is-i32-type? [t]
+  (or (= t :i32) (= t :int) (= t :i8) (= t :i16)))
+
+(defn- is-i64-type? [t]
+  (or (= t :i64) (= t :long)))
+
+(defn- is-u32-type? [t]
+  (or (= t :u32) (= t :u8) (= t :u16)))
+
+(defn- is-u64-type? [t]
+  (= t :u64))
+
+(defn get-field-direct
+  "Get a single field value using direct memory access (O(1)).
+   Requires component to be registered first.
+
+   Usage:
+     (get-field-direct world entity Position :x)"
+  [world entity comp field-kw]
+  (let [w (vf/world-ptr world)
+        cid (comp-id world comp)]
+    (when (fl/ecs_has_id w entity cid)
+      (let [ptr (cpp/vybe_get_comp_ptr_const w entity cid)
+            field-name (name field-kw)
+            offset (field-offset comp field-name)
+            field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                             (:fields comp))]
+        (when offset
+          (cond
+            (is-f32-type? field-type)
+            (cpp/vybe_get_float_at ptr offset)
+
+            (is-f64-type? field-type)
+            (cpp/vybe_get_double_at ptr offset)
+
+            (is-i32-type? field-type)
+            (cpp/vybe_get_i32_at ptr offset)
+
+            (is-i64-type? field-type)
+            (cpp/vybe_get_i64_at ptr offset)
+
+            (is-u32-type? field-type)
+            (cpp/vybe_get_u32_at ptr offset)
+
+            (is-u64-type? field-type)
+            (cpp/vybe_get_u64_at ptr offset)
+
+            (= field-type :bool)
+            (cpp/vybe_get_bool_at ptr offset)))))))
+
+(defn set-field-direct!
+  "Set a single field value using direct memory access (O(1)).
+   Requires component to be registered first.
+
+   Usage:
+     (set-field-direct! world entity Position :x 42.0)"
+  [world entity comp field-kw value]
+  (let [w (vf/world-ptr world)
+        cid (comp-id world comp)]
+    (when (fl/ecs_has_id w entity cid)
+      (let [ptr (cpp/vybe_get_comp_ptr w entity cid)
+            field-name (name field-kw)
+            offset (field-offset comp field-name)
+            field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                             (:fields comp))]
+        (when offset
+          (cond
+            (is-f32-type? field-type)
+            (cpp/vybe_set_float_at ptr offset (cpp/double. value))
+
+            (is-f64-type? field-type)
+            (cpp/vybe_set_double_at ptr offset (cpp/double. value))
+
+            (is-i32-type? field-type)
+            (cpp/vybe_set_i32_at ptr offset (cpp/long. value))
+
+            (is-i64-type? field-type)
+            (cpp/vybe_set_i64_at ptr offset (cpp/long. value))
+
+            (is-u32-type? field-type)
+            (cpp/vybe_set_u32_at ptr offset (cpp/long. value))
+
+            (is-u64-type? field-type)
+            (cpp/vybe_set_u64_at ptr offset (cpp/long. value))
+
+            (= field-type :bool)
+            (cpp/vybe_set_bool_at ptr offset value)))))))
+
+(defn get-comp-direct
+  "Get component data using direct memory access (faster than get-comp).
+   Returns a plain map without ComponentRef metadata.
+
+   Usage:
+     (get-comp-direct world entity Position)
+     ;; => {:x 10.0 :y 20.0}"
+  [world entity comp]
+  (let [w (vf/world-ptr world)
+        cid (comp-id world comp)]
+    (when (fl/ecs_has_id w entity cid)
+      (let [ptr (cpp/vybe_get_comp_ptr_const w entity cid)
+            ptr-box (cpp/box ptr)]
+        (into {}
+              (map (fn [field]
+                     (let [field-name (:name field)
+                           field-type (:type field)
+                           offset (field-offset comp field-name)
+                           p (cpp/unbox (cpp/type "const void*") ptr-box)
+                           value (when offset
+                                   (cond
+                                     (is-f32-type? field-type)
+                                     (cpp/vybe_get_float_at p offset)
+
+                                     (is-f64-type? field-type)
+                                     (cpp/vybe_get_double_at p offset)
+
+                                     (is-i32-type? field-type)
+                                     (cpp/vybe_get_i32_at p offset)
+
+                                     (is-i64-type? field-type)
+                                     (cpp/vybe_get_i64_at p offset)
+
+                                     (is-u32-type? field-type)
+                                     (cpp/vybe_get_u32_at p offset)
+
+                                     (is-u64-type? field-type)
+                                     (cpp/vybe_get_u64_at p offset)
+
+                                     (= field-type :bool)
+                                     (cpp/vybe_get_bool_at p offset)))]
+                       [(keyword field-name) value]))
+                   (:fields comp)))))))
+
+(defn set-comp-direct!
+  "Set component fields using direct memory access (faster than set-comp!).
+
+   Usage:
+     (set-comp-direct! world entity Position {:x 10.0 :y 20.0})"
+  [world entity comp values]
+  (let [w (vf/world-ptr world)
+        cid (comp-id world comp)]
+    (when (fl/ecs_has_id w entity cid)
+      (let [ptr (cpp/vybe_get_comp_ptr w entity cid)
+            ptr-box (cpp/box ptr)]
+        (doseq [[field-kw value] values]
+          (let [field-name (name field-kw)
+                offset (field-offset comp field-name)
+                field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                                 (:fields comp))
+                p (cpp/unbox (cpp/type "void*") ptr-box)]
+            (when offset
+              (cond
+                (is-f32-type? field-type)
+                (cpp/vybe_set_float_at p offset (cpp/double. value))
+
+                (is-f64-type? field-type)
+                (cpp/vybe_set_double_at p offset (cpp/double. value))
+
+                (is-i32-type? field-type)
+                (cpp/vybe_set_i32_at p offset (cpp/long. value))
+
+                (is-i64-type? field-type)
+                (cpp/vybe_set_i64_at p offset (cpp/long. value))
+
+                (is-u32-type? field-type)
+                (cpp/vybe_set_u32_at p offset (cpp/long. value))
+
+                (is-u64-type? field-type)
+                (cpp/vybe_set_u64_at p offset (cpp/long. value))
+
+                (= field-type :bool)
+                (cpp/vybe_set_bool_at p offset value)))))))))
 
 ;; =============================================================================
 ;; defcomp - Macro to define components

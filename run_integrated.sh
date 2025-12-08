@@ -9,6 +9,9 @@ USE_DEBUG=false
 SAVE_CPP=false
 USE_PROFILE=false
 USE_PROFILE_FNS=false
+USE_PROFILE_CORE=false
+USE_PROFILE_INTEROP=false
+PROFILE_SAMPLE_RATE=""
 USE_XTRACE=false
 while [[ "$1" == --* ]]; do
     case "$1" in
@@ -31,6 +34,18 @@ while [[ "$1" == --* ]]; do
         --profile-fns)
             USE_PROFILE_FNS=true
             shift
+            ;;
+        --profile-core)
+            USE_PROFILE_CORE=true
+            shift
+            ;;
+        --profile-interop)
+            USE_PROFILE_INTEROP=true
+            shift
+            ;;
+        --profile-sample)
+            PROFILE_SAMPLE_RATE="$2"
+            shift 2
             ;;
         --xtrace)
             USE_XTRACE=true
@@ -111,16 +126,40 @@ if [ "$SAVE_CPP" = true ]; then
     JANK_ARGS+=(--save-cpp --save-cpp-path ./generated_cpp)
 fi
 
-# Add profile flag if requested
+# Add profile flags
+# --profile enables ALL profiling (fns, core, interop) with 5% sampling by default
 if [ "$USE_PROFILE" = true ]; then
-    echo "Profiling enabled - output will be written to jank.profile"
-    JANK_ARGS+=(--profile)
-fi
-
-# Add profile-fns flag if requested (automatically profiles all functions)
-if [ "$USE_PROFILE_FNS" = true ]; then
+    echo "Full profiling enabled - all functions, clojure.core, and cpp/ interop will be profiled"
+    echo "  Output will be written to jank.profile"
+    JANK_ARGS+=(--profile-core --profile-interop)
+    # Default to 5% sampling unless explicitly set
+    if [ -z "$PROFILE_SAMPLE_RATE" ]; then
+        PROFILE_SAMPLE_RATE=1
+    fi
+elif [ "$USE_PROFILE_CORE" = true ]; then
+    echo "Core profiling enabled - clojure.core functions will be profiled"
+    JANK_ARGS+=(--profile-core)
+    if [ "$USE_PROFILE_INTEROP" = true ]; then
+        echo "Interop profiling enabled - cpp/box, cpp/unbox, cpp/new will be profiled"
+        JANK_ARGS+=(--profile-interop)
+    fi
+elif [ "$USE_PROFILE_FNS" = true ]; then
     echo "Function profiling enabled - all functions will be automatically profiled"
     JANK_ARGS+=(--profile-fns)
+    if [ "$USE_PROFILE_INTEROP" = true ]; then
+        echo "Interop profiling enabled - cpp/box, cpp/unbox, cpp/new will be profiled"
+        JANK_ARGS+=(--profile-interop)
+    fi
+elif [ "$USE_PROFILE_INTEROP" = true ]; then
+    echo "Interop profiling enabled - cpp/box, cpp/unbox, cpp/new will be profiled"
+    JANK_ARGS+=(--profile-interop)
+fi
+
+# Add sampling rate if specified
+if [ -n "$PROFILE_SAMPLE_RATE" ]; then
+    PERCENT=$(awk "BEGIN {printf \"%.1f\", 100/$PROFILE_SAMPLE_RATE}")
+    echo "Sampling rate: 1 in $PROFILE_SAMPLE_RATE events ($PERCENT%)"
+    JANK_ARGS+=(--profile-sample "$PROFILE_SAMPLE_RATE")
 fi
 
 JANK_ARGS+=(run-main my-integrated-demo -main)

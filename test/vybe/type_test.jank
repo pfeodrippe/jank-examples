@@ -207,6 +207,46 @@
           (is (= 2.0 (:y pos2)))))
       (vf/destroy-world! world))))
 
+;; =============================================================================
+;; Direct memory access tests
+;; =============================================================================
+
+(deftest field-metadata-test
+  (testing "field offsets and sizes are cached after registration"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)]
+      ;; Should have cached metadata
+      (is (some? (vt/get-comp-meta Position)))
+      ;; Should have field offsets
+      (is (= 0 (vt/field-offset Position :x)))
+      (is (= 4 (vt/field-offset Position :y)))
+      ;; Should have component size
+      (is (= 8 (vt/comp-size Position)))
+      (vf/destroy-world! world))))
+
+(deftest init-comp-meta-test
+  (testing "init-comp-meta! caches metadata using mini world"
+    ;; Define a new component just for this test
+    (let [TestComp (vt/make-comp "test__InitMetaComp" [[:a :i32] [:b :i32]])]
+      ;; Initialize metadata with mini world
+      (vt/init-comp-meta! TestComp)
+      ;; Should have cached metadata without a real world
+      (is (some? (vt/get-comp-meta TestComp)))
+      (is (= 0 (vt/field-offset TestComp "a")))
+      (is (= 4 (vt/field-offset TestComp "b")))
+      (is (= 8 (vt/comp-size TestComp))))))
+
+(deftest get-field-direct-test
+  (testing "get-field-direct reads individual fields with direct memory access"
+    (let [world (vf/make-world)
+          _ (vt/register-comp! world Position)
+          e (vf/new-entity world)]
+      (vt/add-comp! world e Position {:x 42.5 :y 99.25})
+      ;; Read fields directly
+      (is (= 42.5 (vt/get-field-direct world e Position :x)))
+      (is (= 99.25 (vt/get-field-direct world e Position :y)))
+      (vf/destroy-world! world))))
+
 (defn -main [& args]
   (let [results (clojure.test/run-tests 'vybe.type-test)]
     (when-not (clojure.test/successful? results)
