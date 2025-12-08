@@ -13,7 +13,8 @@
    ["jolt_c.h" :as jolt :scope ""]
    [jank.nrepl-server.server :as server]
    [clojure.string :as str]
-   [vybe.util :as u :refer [->*]]))
+   [vybe.util :as u :refer [->*]]
+   [vybe.flecs :as vf]))
 
 ;; Integrated demo: Raylib + ImGui + JoltPhysics + Flecs
 ;; Uses header requires for cleaner code

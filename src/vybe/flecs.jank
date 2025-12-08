@@ -1,0 +1,263 @@
+(ns vybe.flecs
+  (:require
+   ["flecs.h" :as fl :scope ""]))
+
+;; =============================================================================
+;; defn* macro - for functions that return native C++ types
+;; =============================================================================
+
+(defmacro defn*
+  "Define a function that returns a native C++ type.
+   When :tag metadata specifies a native type, generates a macro
+   that inlines the body and wraps the result in cpp/unbox.
+
+   This is needed because jank functions must return object_ref due to
+   virtual dispatch, but we often need to return native types for C interop.
+
+   Usage:
+     (defn* ^{:tag \"ecs_world_t*\"} world-ptr [world]
+       world)
+
+   Expands to a macro that inlines: (cpp/unbox (cpp/type \"ecs_world_t*\") world)"
+  [name & body]
+  (let [m (meta name)
+        tag (:tag m)
+        ;; Parse optional docstring
+        [docstring params forms] (if (string? (first body))
+                                   [(first body) (second body) (drop 2 body)]
+                                   [nil (first body) (rest body)])]
+    (if tag
+      ;; Generate a macro that wraps body result in cpp/unbox
+      `(defmacro ~(with-meta name (dissoc m :tag))
+         ~@(when docstring [docstring])
+         ~params
+         (list (quote cpp/unbox)
+               (list (quote cpp/type) ~tag)
+               ~@forms))
+      ;; No tag, just use regular defn
+      `(defn ~name ~@body))))
+
+;; =============================================================================
+;; Flecs C API wrappers for jank
+;; =============================================================================
+
+;; World management
+(defn ^{:tag "ecs_world_t*"} make-world
+  "Create a new Flecs world using ecs_init (full world with addons).
+   Returns a boxed ecs_world_t* - use (cpp/unbox (make-world)) to get raw pointer."
+  []
+  (cpp/box (fl/ecs_init)))
+
+(defn ^{:tag "ecs_world_t*"} make-world-mini
+  "Create a minimal Flecs world using ecs_mini (faster, no addons).
+   Returns a boxed ecs_world_t* - use (cpp/unbox (make-world-mini)) to get raw pointer."
+  []
+  (cpp/box (fl/ecs_mini)))
+
+(defn destroy-world!
+  "Destroy a Flecs world."
+  [world]
+  (fl/ecs_fini (cpp/unbox (cpp/type "ecs_world_t*") world))
+  nil)
+
+(defn* ^{:tag "ecs_world_t*"} world-ptr
+  "Extract ecs_world_t* from boxed world. Returns raw pointer for use in C calls."
+  [world]
+  world)
+
+;; Entity management
+(defn eid
+  "Create or get entity ID from keyword/string name."
+  [world e]
+  (cond
+    (int? e) e
+    (keyword? e) (fl/ecs_lookup (world-ptr world) (name e))
+    (string? e) (fl/ecs_lookup (world-ptr world) e)
+    :else (throw (ex-info "Unsupported entity type" {:e e}))))
+
+(defn new-entity
+  "Create a new entity in the world."
+  [world]
+  (fl/ecs_new (world-ptr world)))
+
+(defn new-entity-named
+  "Create a new named entity in the world."
+  [world entity-name]
+  (fl/ecs_entity_init
+   (world-ptr world)
+   (cpp/& (cpp/value "ecs_entity_desc_t{.name = nullptr}"))))
+
+(comment
+
+  (let [desc (cpp/new fl/ecs_entity_desc_t)]
+    (cpp/= (cpp/.-name desc) #cpp "ddd")
+    (-> desc cpp/* cpp/.-name))
+
+  (let [desc (cpp/new fl/ecs_entity_desc_t)]
+    (cpp/= (cpp/.-name (cpp/* desc)) (cpp/static_cast cpp/const_char* #cpp "ddd"))
+    nil)
+
+  (cpp/raw "
+  void set_entity_name(ecs_entity_desc_t* desc, const char* name) {
+    desc->name = name;
+  }
+  ")
+
+  (let [desc (cpp/new fl/ecs_entity_desc_t)]
+    (cpp/set_entity_name desc "ddd")
+    (-> desc cpp/* cpp/.-name))
+
+  ())
+
+#_(fl/ecs_entity_desc_)
+
+#_ (cpp/new fl/ecs_entity_desc_t)
+
+;; Component registration
+;; NOTE: Commented out due to cpp/value requiring literal strings
+;; TODO: Fix this using cpp/raw or a different approach
+#_(defn register-component
+  "Register a component type with the given name and size.
+   Returns the component entity ID."
+  [world component-name size alignment]
+  (let [w (world-ptr world)
+        ;; Create entity for the component
+        entity-id (fl/ecs_entity_init
+                   w
+                   (cpp/& (cpp/value "ecs_entity_desc_t{}")))
+        ;; Register as component with size info
+        comp-id (fl/ecs_component_init
+                 w
+                 (cpp/& (cpp/value
+                         (str "ecs_component_desc_t{.entity = " entity-id
+                              ", .type = {.size = " size
+                              ", .alignment = " alignment "}}"))))]
+    comp-id))
+
+;; =============================================================================
+;; System API
+;; =============================================================================
+
+(defn system-run
+  "Run a system by its entity ID with delta time."
+  ([world system-id]
+   (system-run world system-id 0.0))
+  ([world system-id delta-time]
+   (fl/ecs_run (world-ptr world)
+               (if (keyword? system-id)
+                 (eid world system-id)
+                 system-id)
+               (cpp/float. delta-time)
+               (cpp/value "nullptr"))
+   nil))
+
+(defn progress
+  "Advance the world by delta-time, running all systems in the pipeline."
+  ([world]
+   (progress world 0.0))
+  ([world delta-time]
+   (fl/ecs_progress (world-ptr world) (cpp/float. delta-time))))
+
+;; =============================================================================
+;; Query iteration helpers
+;; These are building blocks for with-system
+;; =============================================================================
+
+;; NOTE: Commented out due to cpp/value requiring literal strings
+;; TODO: Fix using cpp/raw or different approach
+#_(defn query-str
+  "Create a query from a Flecs DSL string.
+   Example: \"Position, Velocity\""
+  [world query-string]
+  (let [w (world-ptr world)]
+    (cpp/box
+     (fl/ecs_query_init
+      w
+      (cpp/& (cpp/value (str "ecs_query_desc_t{.expr = \"" query-string "\"}")))))))
+
+;; These return native types directly from C calls - use defmacro to inline
+(defmacro query-iter
+  "Get an iterator for a query. Returns ecs_iter_t (native struct)."
+  [world query]
+  `(fl/ecs_query_iter
+    (world-ptr ~world)
+    (cpp/unbox (cpp/type "ecs_query_t*") ~query)))
+
+(defmacro iter-next
+  "Advance the iterator. Returns true if there are more results."
+  [iter]
+  `(fl/ecs_query_next (cpp/& ~iter)))
+
+(defmacro iter-count
+  "Get the number of entities in the current iterator table."
+  [iter]
+  `(cpp/.-count ~iter))
+
+(defmacro iter-entities
+  "Get the entities array from the iterator."
+  [iter]
+  `(cpp/.-entities ~iter))
+
+(defmacro iter-entity-at
+  "Get entity ID at index from iterator."
+  [iter idx]
+  `(cpp/aget (iter-entities ~iter) (cpp/int. ~idx)))
+
+;; =============================================================================
+;; with-system macro
+;; Creates a Flecs system that calls a jank function for each matched entity
+;; =============================================================================
+
+;; Note: Due to jank's limitations with C++ callbacks, with-system works differently
+;; than the Clojure version. Instead of registering a callback with Flecs,
+;; we create a query and provide iteration helpers.
+;;
+;; Usage:
+;;   ;; Create a query for the "system"
+;;   (def my-query (vf/query-str world "Position, Velocity"))
+;;
+;;   ;; Run the "system" manually by iterating
+;;   (vf/with-each world my-query [e pos vel]
+;;     (println "Entity:" e "at" pos))
+
+(defmacro with-each
+  "Iterate over query results, binding entity and field values.
+
+   world   - the Flecs world
+   query   - a query created with query-str
+   bindings - [entity-sym field1 field2 ...] - entity ID followed by field accessors
+   body    - forms to execute for each matched entity
+
+   Example:
+     (with-each world my-query [e pos vel]
+       (println \"Entity:\" e))"
+  [world query bindings & body]
+  (let [entity-sym (first bindings)
+        field-count (dec (count bindings))]
+    `(let [w# ~world
+           q# ~query
+           iter# (query-iter w# q#)]
+       (while (iter-next iter#)
+         (dotimes [idx# (iter-count iter#)]
+           (let [~entity-sym (iter-entity-at iter# idx#)]
+             ~@body)))
+       nil)))
+
+;; =============================================================================
+;; Component field access helpers
+;; =============================================================================
+
+;; These return native pointers - use defmacro to inline
+(defmacro field-ptr
+  "Get pointer to component data at field index in iterator.
+   field-index is 0-based (first component in query = 0)."
+  [iter field-index size]
+  `(fl/ecs_field_w_size (cpp/& ~iter) (cpp/size_t. ~size) (cpp/int. (inc ~field-index))))
+
+(defmacro field-at
+  "Get component data pointer for entity at idx in the current iterator table."
+  [iter field-index size idx]
+  `(let [base-ptr# (field-ptr ~iter ~field-index ~size)]
+     (cpp/+ base-ptr# (cpp/* (cpp/size_t. ~idx) (cpp/size_t. ~size)))))
+
+(defn -main [& args])
