@@ -54,14 +54,28 @@ When called, `(world-ptr my-boxed-world)` inlines to:
 - **`/Users/pfeodrippe/dev/something/src/vybe/flecs.jank`**
   - Added `defn*` macro implementation
   - Converted `world-ptr` from `defmacro` to `defn*`
-  - Enabled previously commented-out macros: `query-iter`, `iter-next`, `iter-count`, `iter-entities`, `iter-entity-at`, `with-each`, `field-ptr`, `field-at`
+  - Enabled previously commented-out macros: `query-iter`, `iter-next`, `iter-count`, `iter-entities`, `iter-entity-at`, `with-query`, `field-ptr`, `field-at`
+  - Named `with-query` to match the vybe project's naming convention (see `vybe/flecs.clj` and `vybe/flecs_test.clj`)
 
 ## Commands Run
 
 ```bash
 # Test the integrated demo
 ./run_integrated.sh
+
+# Run flecs tests
+./run_tests.sh
 ```
+
+## Test File
+
+Created `src/vybe/flecs_test.jank` with tests for:
+- World creation/destruction
+- `world-ptr` macro (which uses `defn*`)
+- Entity creation
+- Progress function
+
+All tests pass!
 
 ## Implementation Details
 

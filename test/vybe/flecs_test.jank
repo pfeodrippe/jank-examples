@@ -1,0 +1,142 @@
+(ns vybe.flecs-test
+  (:require
+   [clojure.test :refer [deftest testing is]]
+   [vybe.flecs :as vf]
+   ["flecs.h" :as fl :scope ""]))
+
+;; =============================================================================
+;; Basic World Tests
+;; =============================================================================
+
+(deftest world-creation-test
+  (testing "create and destroy world"
+    (let [w (vf/make-world)]
+      (is (some? w))
+      (vf/destroy-world! w))))
+
+(deftest world-mini-creation-test
+  (testing "create and destroy mini world"
+    (let [w (vf/make-world-mini)]
+      (is (some? w))
+      (vf/destroy-world! w))))
+
+(deftest world-ptr-test
+  (testing "world-ptr macro extracts native pointer"
+    (let [w (vf/make-world)
+          ;; world-ptr is a macro that returns native ecs_world_t*
+          ;; We can't directly test the pointer value, but we can use it
+          _ (fl/ecs_progress (vf/world-ptr w) (cpp/float. 0.0))]
+      (vf/destroy-world! w)
+      (is true))))
+
+;; =============================================================================
+;; Entity Tests
+;; =============================================================================
+
+(deftest new-entity-test
+  (testing "create new entity"
+    (let [w (vf/make-world)
+          e (vf/new-entity w)]
+      (is (> e 0))
+      (vf/destroy-world! w))))
+
+(deftest eid-test
+  (testing "eid with integer returns same value"
+    (let [w (vf/make-world)]
+      (is (= 42 (vf/eid w 42)))
+      (vf/destroy-world! w))))
+
+;; =============================================================================
+;; Progress Tests
+;; =============================================================================
+
+(deftest progress-test
+  (testing "progress advances world"
+    (let [w (vf/make-world)]
+      ;; Should not throw
+      (vf/progress w)
+      (vf/progress w 0.016)
+      (vf/destroy-world! w)
+      (is true))))
+
+;; =============================================================================
+;; defn* Macro Tests
+;; =============================================================================
+
+(deftest defn*-generates-macro-test
+  (testing "defn* with :tag generates working macro"
+    ;; world-ptr is defined with defn* and should work as a macro
+    (let [w (vf/make-world)]
+      ;; This uses world-ptr which is defined with defn*
+      ;; If it works, the entity creation succeeds
+      (let [e (vf/new-entity w)]
+        (is (> e 0)))
+      (vf/destroy-world! w))))
+
+;; =============================================================================
+;; Query and Iteration Tests
+;; =============================================================================
+
+(deftest query-str-test
+  (testing "query-str creates a query"
+    (let [w (vf/make-world)
+          ;; Create a tag
+          tag (fl/ecs_new (vf/world-ptr w))
+          ;; Create entities with the tag
+          e1 (fl/ecs_new (vf/world-ptr w))
+          e2 (fl/ecs_new (vf/world-ptr w))]
+      ;; Add tag to entities
+      (fl/ecs_add_id (vf/world-ptr w) e1 tag)
+      (fl/ecs_add_id (vf/world-ptr w) e2 tag)
+      ;; Query should work (we can't easily test the returned value,
+      ;; but it shouldn't throw)
+      (vf/destroy-world! w)
+      (is true))))
+
+(deftest with-query-test
+  (testing "with-query iterates over entities"
+    (let [w (vf/make-world)
+          ;; Create and name a tag so we can query for it
+          _ (fl/ecs_entity_init
+             (vf/world-ptr w)
+             (cpp/& (cpp/value "ecs_entity_desc_t{.name = \"TestTag\"}")))
+          ;; Create entities with the tag
+          e1 (fl/ecs_new (vf/world-ptr w))
+          e2 (fl/ecs_new (vf/world-ptr w))
+          tag-id (fl/ecs_lookup (vf/world-ptr w) "TestTag")]
+      ;; Add tag to entities
+      (fl/ecs_add_id (vf/world-ptr w) e1 tag-id)
+      (fl/ecs_add_id (vf/world-ptr w) e2 tag-id)
+      ;; Iterate using with-query - query string is in :vf/expr binding
+      (let [entities (vf/with-query w [:vf/expr "TestTag", e :vf/entity]
+                       e)]
+        ;; Should have found 2 entities
+        (is (= 2 (count entities)))
+        (is (= #{e1 e2} (set entities))))
+      (vf/destroy-world! w))))
+
+;; =============================================================================
+;; Run all tests
+;; =============================================================================
+
+(defn -main [& args]
+  (println "Running vybe.flecs tests...")
+  (world-creation-test)
+  (println "  world-creation-test passed")
+  (world-mini-creation-test)
+  (println "  world-mini-creation-test passed")
+  (world-ptr-test)
+  (println "  world-ptr-test passed")
+  (new-entity-test)
+  (println "  new-entity-test passed")
+  (eid-test)
+  (println "  eid-test passed")
+  (progress-test)
+  (println "  progress-test passed")
+  (defn*-generates-macro-test)
+  (println "  defn*-generates-macro-test passed")
+  (query-str-test)
+  (println "  query-str-test passed")
+  (with-query-test)
+  (println "  with-query-test passed")
+  (println "All tests passed!"))

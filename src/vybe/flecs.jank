@@ -109,10 +109,6 @@
 
   ())
 
-#_(fl/ecs_entity_desc_)
-
-#_ (cpp/new fl/ecs_entity_desc_t)
-
 ;; Component registration
 ;; NOTE: Commented out due to cpp/value requiring literal strings
 ;; TODO: Fix this using cpp/raw or a different approach
@@ -163,17 +159,16 @@
 ;; These are building blocks for with-system
 ;; =============================================================================
 
-;; NOTE: Commented out due to cpp/value requiring literal strings
-;; TODO: Fix using cpp/raw or different approach
-#_(defn query-str
-  "Create a query from a Flecs DSL string.
-   Example: \"Position, Velocity\""
+;; Query creation - requires literal string due to cpp/value limitation
+(defmacro query-str
+  "Create a query from a Flecs DSL string literal.
+   NOTE: query-string must be a compile-time literal, not a runtime value.
+   Example: (query-str world \"Position, Velocity\")"
   [world query-string]
-  (let [w (world-ptr world)]
-    (cpp/box
-     (fl/ecs_query_init
-      w
-      (cpp/& (cpp/value (str "ecs_query_desc_t{.expr = \"" query-string "\"}")))))))
+  `(cpp/box
+    (fl/ecs_query_init
+     (world-ptr ~world)
+     (cpp/& (cpp/value ~(str "ecs_query_desc_t{.expr = \"" query-string "\"}"))))))
 
 ;; These return native types directly from C calls - use defmacro to inline
 (defmacro query-iter
@@ -208,40 +203,59 @@
 ;; Creates a Flecs system that calls a jank function for each matched entity
 ;; =============================================================================
 
-;; Note: Due to jank's limitations with C++ callbacks, with-system works differently
-;; than the Clojure version. Instead of registering a callback with Flecs,
-;; we create a query and provide iteration helpers.
-;;
-;; Usage:
-;;   ;; Create a query for the "system"
-;;   (def my-query (vf/query-str world "Position, Velocity"))
-;;
-;;   ;; Run the "system" manually by iterating
-;;   (vf/with-each world my-query [e pos vel]
-;;     (println "Entity:" e "at" pos))
+;; Define a C++ helper to collect query entities
+(cpp/raw "
+jank::runtime::object_ref vybe_query_entities(ecs_world_t* w, ecs_query_t* q) {
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  ecs_iter_t it = ecs_query_iter(w, q);
+  while (ecs_query_next(&it)) {
+    for (int i = 0; i < it.count; i++) {
+      ecs_entity_t entity = it.entities[i];
+      result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(entity)));
+    }
+  }
+  return result;
+}
+")
 
-(defmacro with-each
-  "Iterate over query results, binding entity and field values.
-
-   world   - the Flecs world
-   query   - a query created with query-str
-   bindings - [entity-sym field1 field2 ...] - entity ID followed by field accessors
-   body    - forms to execute for each matched entity
+(defmacro query-entities
+  "Return all entities matching a query string as a vector.
 
    Example:
-     (with-each world my-query [e pos vel]
+     (doseq [e (query-entities world \"TestTag\")]
        (println \"Entity:\" e))"
-  [world query bindings & body]
-  (let [entity-sym (first bindings)
-        field-count (dec (count bindings))]
-    `(let [w# ~world
-           q# ~query
-           iter# (query-iter w# q#)]
-       (while (iter-next iter#)
-         (dotimes [idx# (iter-count iter#)]
-           (let [~entity-sym (iter-entity-at iter# idx#)]
-             ~@body)))
-       nil)))
+  [world query-string]
+  `(cpp/vybe_query_entities (world-ptr ~world)
+                            (cpp/unbox (cpp/type "ecs_query_t*") (query-str ~world ~query-string))))
+
+;; with-query is a convenience macro that combines query-entities with doseq
+;; Usage: (with-query world [:vf/expr "TestTag", e :vf/entity] body...)
+(defmacro with-query
+  "Iterate over query results.
+
+   world    - the Flecs world
+   bindings - [:vf/expr \"query-string\", sym :vf/entity]
+   body     - forms to execute for each matched entity
+
+   Example:
+     (with-query world [:vf/expr \"TestTag\", e :vf/entity]
+       (println \"Entity:\" e))"
+  [world bindings & body]
+  (let [binding-pairs (partition 2 bindings)
+        query-string (->> binding-pairs
+                          (filter #(= :vf/expr (first %)))
+                          first
+                          second)
+        entity-binding (->> binding-pairs
+                            (filter #(= :vf/entity (second %)))
+                            first
+                            first)]
+    (when-not query-string
+      (throw (ex-info "with-query requires :vf/expr" {:bindings bindings})))
+    `(let [entities# (query-entities ~world ~query-string)]
+       (mapv (fn [~(or entity-binding '_)]
+               ~@body)
+             entities#))))
 
 ;; =============================================================================
 ;; Component field access helpers
