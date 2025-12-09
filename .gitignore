@@ -7,3 +7,10 @@ pom.xml
 *.o
 
 profile.txt
+jank.profile
+.lsp
+.calva
+.clj-kondo/.cache
+.clj-kondo/.lock
+.jank-repl-history
+.nrepl-port

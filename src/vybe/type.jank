@@ -3,13 +3,6 @@
    ["flecs.h" :as fl :scope ""]
    [vybe.flecs :as vf]))
 
-(comment
-
-  (fl/ecs_id fl/ecs_bool_t)
-
-  ())
-
-
 ;; =============================================================================
 ;; Name mangling - convert Clojure namespaced names to Flecs-safe identifiers
 ;; =============================================================================
@@ -367,6 +360,20 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
   if (!base) return false;
   return *(const bool*)((const char*)base + offset);
 }
+
+// =============================================================================
+// Standalone instance memory allocation
+// =============================================================================
+
+// Allocate memory for a standalone component instance
+void* vybe_alloc_comp(int32_t size) {
+  return calloc(1, size);  // Zero-initialized
+}
+
+// Free standalone component memory
+void vybe_free_comp(void* ptr) {
+  if (ptr) free(ptr);
+}
 ")
 
 ;; =============================================================================
@@ -375,6 +382,9 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
 
 ;; Global cache: component-name -> {:offsets {field-name offset} :sizes {field-name size} :comp-size size}
 (def ^:private comp-meta-cache (atom {}))
+
+;; Global registry: maps component constructor functions to their descriptors
+(def ^:private comp-registry (atom {}))
 
 (defn- cache-comp-meta!
   "Cache field offsets and sizes for a component after registration."
@@ -406,7 +416,8 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
 (defn get-comp-meta
   "Get cached metadata for a component. Returns nil if not cached."
   [comp]
-  (get @comp-meta-cache (:name comp)))
+  (let [desc (if (map? comp) comp (get @comp-registry comp))]
+    (get @comp-meta-cache (:name desc))))
 
 (defn comp-size
   "Get the total size of a component in bytes. Requires prior registration."
@@ -428,6 +439,18 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
                                           field-name)]))
 
 ;; =============================================================================
+;; Component resolution - handle both descriptors and constructor functions
+;; =============================================================================
+
+(defn resolve-descriptor
+  "Resolve a component to its descriptor.
+   Accepts either a descriptor map or a constructor function."
+  [comp]
+  (if (map? comp)
+    comp  ; Already a descriptor
+    (get @comp-registry comp)))  ; Look up constructor in registry
+
+;; =============================================================================
 ;; register-comp! - Register component with Flecs world
 ;; =============================================================================
 
@@ -440,16 +463,17 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
      (defcomp Position [[:x :float] [:y :float]])
      (register-comp! world Position)"
   [world comp]
-  (let [w (vf/world-ptr world)
-        builder (cpp/box (cpp/vybe_struct_begin w (:name comp)))]
-    (doseq [field (:fields comp)]
+  (let [desc (resolve-descriptor comp)
+        w (vf/world-ptr world)
+        builder (cpp/box (cpp/vybe_struct_begin w (:name desc)))]
+    (doseq [field (:fields desc)]
       (cpp/vybe_struct_add_member
        (cpp/unbox (cpp/type "VybeStructBuilder*") builder)
        (:name field)
        (flecs-type-id (:type field))))
     (let [cid (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))]
       ;; Cache the field metadata for direct memory access
-      (cache-comp-meta! world comp cid)
+      (cache-comp-meta! world desc cid)
       cid)))
 
 ;; =============================================================================
@@ -470,8 +494,9 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
      (init-comp-meta! Position)
      ;; Now field-offset and comp-size work without a real world"
   [comp]
-  (let [temp-world (vf/make-world)]
-    (register-comp! temp-world comp))
+  (let [desc (resolve-descriptor comp)
+        temp-world (vf/make-world)]
+    (register-comp! temp-world desc))
   nil)
 
 ;; =============================================================================
@@ -482,7 +507,8 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
   "Get the registered entity ID for a component descriptor.
    The component must have been registered with register-comp! first."
   [world comp]
-  (fl/ecs_lookup (vf/world-ptr world) (:name comp)))
+  (let [desc (resolve-descriptor comp)]
+    (fl/ecs_lookup (vf/world-ptr world) (:name desc))))
 
 (defn has-comp?
   "Check if an entity has a component.
@@ -511,7 +537,8 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
      (add-comp! world entity Position {:x 10.0 :y 20.0})  ; with map
      (add-comp! world entity Position 10.0 20.0)          ; positional args"
   [world entity comp & args]
-  (let [w (vf/world-ptr world)
+  (let [desc (resolve-descriptor comp)
+        w (vf/world-ptr world)
         w-box (cpp/box w)
         cid (comp-id world comp)]
     ;; Add the component
@@ -521,12 +548,12 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
       (let [values (if (map? (first args))
                      (first args)  ; {:x 10 :y 20}
                      ;; positional args: convert to map using field order
-                     (zipmap (map (fn [f] (keyword (:name f))) (:fields comp))
+                     (zipmap (map (fn [f] (keyword (:name f))) (:fields desc))
                              args))]
         (doseq [[field-kw value] values]
           (let [field-name (name field-kw)
                 field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                                 (:fields comp))
+                                 (:fields desc))
                 wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
             (cond
               (is-float-type? field-type)
@@ -553,7 +580,8 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
        (:x pos)              ; read field
        (merge! pos {:x 5}))  ; update field"
   [world entity comp]
-  (let [w (vf/world-ptr world)
+  (let [desc (resolve-descriptor comp)
+        w (vf/world-ptr world)
         w-box (cpp/box w)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
@@ -578,12 +606,12 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
 
                                                     :else nil)]
                                         [(keyword field-name) value]))
-                                    (:fields comp)))]
+                                    (:fields desc)))]
         ;; Return map with component ref metadata embedded
         (assoc field-values
                :vt/world-box w-box
                :vt/entity entity
-               :vt/comp comp)))))
+               :vt/comp desc)))))
 
 (defn comp-ref?
   "Check if x is a ComponentRef (returned by get-comp)."
@@ -591,47 +619,87 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
   (and (map? x) (contains? x :vt/comp)))
 
 (defn merge!
-  "Update component fields. Works with either:
-   1. A ComponentRef from get-comp: (merge! pos {:x 5})
-   2. Explicit args: (merge! world entity Position {:x 5})
+  "Update component fields. Works with:
+   1. A standalone instance: (merge! pos {:x 5})
+   2. A ComponentRef from get-comp: (merge! pos {:x 5})
+   3. Explicit args: (merge! world entity Position {:x 5})
 
    Usage:
+     (let [pos (Position {:x 1.0 :y 2.0})]
+       (merge! pos {:x 5.0}))  ; update standalone instance
+
      (let [pos (get-comp world entity Position)]
-       (merge! pos {:x 5.0}))  ; update using ComponentRef
+       (merge! pos {:x 5.0}))  ; update ComponentRef
 
      (merge! world entity Position {:x 5.0})  ; explicit form"
-  ([comp-ref values]
-   ;; ComponentRef form: (merge! pos {:x 5})
-   (let [w-box (:vt/world-box comp-ref)
-         entity (:vt/entity comp-ref)
-         comp (:vt/comp comp-ref)
-         cid (fl/ecs_lookup (cpp/unbox (cpp/type "ecs_world_t*") w-box) (:name comp))]
-     (doseq [[field-kw value] values]
-       (let [field-name (name field-kw)
-             field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                              (:fields comp))
-             wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
-         (cond
-           (is-float-type? field-type)
-           (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
+  ([instance-or-ref values]
+   ;; Check if it's a standalone instance (has :vt/ptr-box after deref)
+   ;; Note: standalone instances are atoms, ComponentRefs are plain maps
+   (if (and (not (map? instance-or-ref))
+            (contains? (deref instance-or-ref) :vt/ptr-box))
+     ;; Standalone instance: use direct update
+     (let [data @instance-or-ref
+           comp (:vt/comp data)
+           ptr-box (:vt/ptr-box data)]
+       ;; Write values to native memory
+       (doseq [[field-kw value] values]
+         (let [field-name (name field-kw)
+               offset (field-offset comp field-name)
+               field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                                (:fields comp))]
+           (when offset
+             (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
+               (cond
+                 ;; Float types (f32, f64)
+                 (is-float-type? field-type)
+                 (cpp/vybe_set_float_at ptr offset (cpp/double. value))
 
-           (is-int-type? field-type)
-           (cpp/vybe_set_field_int wb entity cid field-name (cpp/long. value))
+                 ;; Int types (i8, i16, i32, i64)
+                 (is-int-type? field-type)
+                 (cpp/vybe_set_i32_at ptr offset (cpp/long. value))
 
-           (is-uint-type? field-type)
-           (cpp/vybe_set_field_uint wb entity cid field-name (cpp/long. value))
+                 ;; Uint types (u8, u16, u32, u64)
+                 (is-uint-type? field-type)
+                 (cpp/vybe_set_u32_at ptr offset (cpp/long. value))
 
-           (= field-type :bool)
-           (cpp/vybe_set_field_bool wb entity cid field-name value))))))
+                 (= field-type :bool)
+                 (cpp/vybe_set_bool_at ptr offset value))))))
+       ;; Update the atom's map so keyword access works
+       (swap! instance-or-ref merge values)
+       instance-or-ref)
+     ;; ComponentRef form: (merge! pos {:x 5})
+     (let [comp-ref instance-or-ref
+           w-box (:vt/world-box comp-ref)
+           entity (:vt/entity comp-ref)
+           comp (:vt/comp comp-ref)
+           cid (fl/ecs_lookup (cpp/unbox (cpp/type "ecs_world_t*") w-box) (:name comp))]
+       (doseq [[field-kw value] values]
+         (let [field-name (name field-kw)
+               field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                                (:fields comp))
+               wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+           (cond
+             (is-float-type? field-type)
+             (cpp/vybe_set_field_float wb entity cid field-name (cpp/double. value))
+
+             (is-int-type? field-type)
+             (cpp/vybe_set_field_int wb entity cid field-name (cpp/long. value))
+
+             (is-uint-type? field-type)
+             (cpp/vybe_set_field_uint wb entity cid field-name (cpp/long. value))
+
+             (= field-type :bool)
+             (cpp/vybe_set_field_bool wb entity cid field-name value)))))))
   ([world entity comp values]
    ;; Explicit form: (merge! world entity Position {:x 5})
-   (let [w (vf/world-ptr world)
+   (let [desc (resolve-descriptor comp)
+         w (vf/world-ptr world)
          w-box (cpp/box w)
          cid (comp-id world comp)]
      (doseq [[field-kw value] values]
        (let [field-name (name field-kw)
              field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                              (:fields comp))
+                              (:fields desc))
              wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
          (cond
            (is-float-type? field-type)
@@ -684,14 +752,15 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
    Usage:
      (get-field-direct world entity Position :x)"
   [world entity comp field-kw]
-  (let [w (vf/world-ptr world)
+  (let [desc (resolve-descriptor comp)
+        w (vf/world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr_const w entity cid)
             field-name (name field-kw)
-            offset (field-offset comp field-name)
+            offset (field-offset desc field-name)
             field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                             (:fields comp))]
+                             (:fields desc))]
         (when offset
           (cond
             (is-f32-type? field-type)
@@ -722,14 +791,15 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
    Usage:
      (set-field-direct! world entity Position :x 42.0)"
   [world entity comp field-kw value]
-  (let [w (vf/world-ptr world)
+  (let [desc (resolve-descriptor comp)
+        w (vf/world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr w entity cid)
             field-name (name field-kw)
-            offset (field-offset comp field-name)
+            offset (field-offset desc field-name)
             field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                             (:fields comp))]
+                             (:fields desc))]
         (when offset
           (cond
             (is-f32-type? field-type)
@@ -761,7 +831,8 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
      (get-comp-direct world entity Position)
      ;; => {:x 10.0 :y 20.0}"
   [world entity comp]
-  (let [w (vf/world-ptr world)
+  (let [desc (resolve-descriptor comp)
+        w (vf/world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr_const w entity cid)
@@ -770,7 +841,7 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
               (map (fn [field]
                      (let [field-name (:name field)
                            field-type (:type field)
-                           offset (field-offset comp field-name)
+                           offset (field-offset desc field-name)
                            p (cpp/unbox (cpp/type "const void*") ptr-box)
                            value (when offset
                                    (cond
@@ -795,7 +866,7 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
                                      (= field-type :bool)
                                      (cpp/vybe_get_bool_at p offset)))]
                        [(keyword field-name) value]))
-                   (:fields comp)))))))
+                   (:fields desc)))))))
 
 (defn set-comp-direct!
   "Set component fields using direct memory access (faster than set-comp!).
@@ -803,16 +874,17 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
    Usage:
      (set-comp-direct! world entity Position {:x 10.0 :y 20.0})"
   [world entity comp values]
-  (let [w (vf/world-ptr world)
+  (let [desc (resolve-descriptor comp)
+        w (vf/world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr w entity cid)
             ptr-box (cpp/box ptr)]
         (doseq [[field-kw value] values]
           (let [field-name (name field-kw)
-                offset (field-offset comp field-name)
+                offset (field-offset desc field-name)
                 field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                                 (:fields comp))
+                                 (:fields desc))
                 p (cpp/unbox (cpp/type "void*") ptr-box)]
             (when offset
               (cond
@@ -838,8 +910,148 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
                 (cpp/vybe_set_bool_at p offset value)))))))))
 
 ;; =============================================================================
+;; Standalone component instances - native memory-backed mutable structs
+;; =============================================================================
+
+(defn- write-field-to-ptr!
+  "Write a field value to native memory at the given offset."
+  [ptr-box field-type offset value]
+  (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
+    (cond
+      (is-f32-type? field-type)
+      (cpp/vybe_set_float_at ptr offset (cpp/double. value))
+
+      (is-f64-type? field-type)
+      (cpp/vybe_set_double_at ptr offset (cpp/double. value))
+
+      (is-i32-type? field-type)
+      (cpp/vybe_set_i32_at ptr offset (cpp/long. value))
+
+      (is-i64-type? field-type)
+      (cpp/vybe_set_i64_at ptr offset (cpp/long. value))
+
+      (is-u32-type? field-type)
+      (cpp/vybe_set_u32_at ptr offset (cpp/long. value))
+
+      (is-u64-type? field-type)
+      (cpp/vybe_set_u64_at ptr offset (cpp/long. value))
+
+      (= field-type :bool)
+      (cpp/vybe_set_bool_at ptr offset value))))
+
+(defn- read-field-from-ptr
+  "Read a field value from native memory at the given offset."
+  [ptr-box field-type offset]
+  (let [ptr (cpp/unbox (cpp/type "const void*") ptr-box)]
+    (cond
+      (is-f32-type? field-type)
+      (cpp/vybe_get_float_at ptr offset)
+
+      (is-f64-type? field-type)
+      (cpp/vybe_get_double_at ptr offset)
+
+      (is-i32-type? field-type)
+      (cpp/vybe_get_i32_at ptr offset)
+
+      (is-i64-type? field-type)
+      (cpp/vybe_get_i64_at ptr offset)
+
+      (is-u32-type? field-type)
+      (cpp/vybe_get_u32_at ptr offset)
+
+      (is-u64-type? field-type)
+      (cpp/vybe_get_u64_at ptr offset)
+
+      (= field-type :bool)
+      (cpp/vybe_get_bool_at ptr offset))))
+
+(defn- create-standalone-instance
+  "Create a standalone component instance backed by native memory.
+   Returns an atom wrapping a map with :vt/comp, :vt/ptr-box, and field values.
+   The atom allows mutation while the pointer provides native memory storage."
+  [comp values]
+  ;; Ensure metadata is initialized
+  (when-not (get-comp-meta comp)
+    (init-comp-meta! comp))
+  (let [;; Allocate native memory
+        size (comp-size comp)
+        ptr (cpp/vybe_alloc_comp size)
+        ptr-box (cpp/box ptr)
+        ;; Convert values to a map if it's a vector (positional args)
+        value-map (if (vector? values)
+                    (zipmap (map (fn [f] (keyword (:name f))) (:fields comp))
+                            values)
+                    values)]
+    ;; Write initial values to native memory
+    (doseq [[field-kw value] value-map]
+      (let [field-name (name field-kw)
+            offset (field-offset comp field-name)
+            field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                             (:fields comp))]
+        (when offset
+          (write-field-to-ptr! ptr-box field-type offset value))))
+    ;; Return atom wrapping map with pointer and field values
+    (atom (merge value-map
+                 {:vt/comp comp
+                  :vt/ptr-box ptr-box}))))
+
+(defn standalone-instance?
+  "Check if x is a standalone component instance (atom wrapping pointer-backed map)."
+  [x]
+  (and (not (map? x))
+       (contains? (deref x) :vt/ptr-box)))
+
+(defn standalone-get
+  "Get a field value from a standalone instance by reading from native memory."
+  [instance field-kw]
+  (let [data @instance
+        comp (:vt/comp data)
+        ptr-box (:vt/ptr-box data)
+        field-name (name field-kw)
+        offset (field-offset comp field-name)
+        field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                         (:fields comp))]
+    (when offset
+      (read-field-from-ptr ptr-box field-type offset))))
+
+(defn standalone-merge!
+  "Update fields in a standalone instance by writing to native memory.
+   Also updates the atom's map so keyword access reflects changes."
+  [instance values]
+  (let [data @instance
+        comp (:vt/comp data)
+        ptr-box (:vt/ptr-box data)]
+    ;; Write values to native memory
+    (doseq [[field-kw value] values]
+      (let [field-name (name field-kw)
+            offset (field-offset comp field-name)
+            field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                             (:fields comp))]
+        (when offset
+          (write-field-to-ptr! ptr-box field-type offset value))))
+    ;; Update the atom's map so keyword access works
+    (swap! instance merge values)
+    instance))
+
+(defn comp-descriptor
+  "Get the component descriptor from a component constructor function."
+  [comp-fn]
+  (get @comp-registry comp-fn))
+
+;; =============================================================================
 ;; defcomp - Macro to define components
 ;; =============================================================================
+
+(defn make-comp-constructor
+  "Create a component constructor function from a descriptor.
+   The constructor can be called with a map or vector to create standalone instances.
+   Also registers the function in comp-registry for descriptor lookup."
+  [desc]
+  (let [constructor (fn [values]
+                      (create-standalone-instance desc values))]
+    ;; Register the constructor -> descriptor mapping
+    (swap! comp-registry assoc constructor desc)
+    constructor))
 
 (defmacro defcomp
   "Define a Flecs component type with namespace-qualified name.
@@ -847,7 +1059,10 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
    Usage:
      (defcomp Position [[:x :float] [:y :float]])
 
-   Creates a var `Position` containing the component descriptor.
+   Creates a var `Position` that is a callable constructor function.
+   Call it to create standalone instances: (Position {:x 1.0 :y 2.0})
+   Use (comp-descriptor Position) to get the descriptor for registration.
+
    The component name will be namespace-qualified and mangled for Flecs
    (e.g., \"vybe_type__Position\" for vybe.type/Position).
    Register with a world using: (register-comp! world Position)
@@ -863,6 +1078,7 @@ bool vybe_get_bool_at(const void* base, int32_t offset) {
      :string         - string (char*)
      :entity         - entity reference"
   [sym fields]
-  `(def ~sym (make-comp ~(mangle-name *ns* sym) ~fields)))
+  `(def ~sym
+     (make-comp-constructor (make-comp ~(mangle-name *ns* sym) ~fields))))
 
 (defn -main [& args])

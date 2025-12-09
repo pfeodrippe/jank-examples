@@ -51,11 +51,14 @@
 
 (deftest defcomp-test
   (testing "defcomp creates var with correct descriptor"
-    (is (= "vybe_type_test__Position" (:name Position)))
-    (is (= 2 (count (:fields Position))))
-    (is (= "vybe_type_test__Velocity" (:name Velocity)))
-    (is (= "vybe_type_test__Health" (:name Health)))
-    (is (= 1 (count (:fields Health))))))
+    (let [pos-desc (vt/comp-descriptor Position)
+          vel-desc (vt/comp-descriptor Velocity)
+          health-desc (vt/comp-descriptor Health)]
+      (is (= "vybe_type_test__Position" (:name pos-desc)))
+      (is (= 2 (count (:fields pos-desc))))
+      (is (= "vybe_type_test__Velocity" (:name vel-desc)))
+      (is (= "vybe_type_test__Health" (:name health-desc)))
+      (is (= 1 (count (:fields health-desc)))))))
 
 ;; =============================================================================
 ;; register-comp! tests
@@ -235,6 +238,16 @@
       (is (= 0 (vt/field-offset TestComp "a")))
       (is (= 4 (vt/field-offset TestComp "b")))
       (is (= 8 (vt/comp-size TestComp))))))
+
+(deftest comp-test
+  (let [pos-1 (Position {:x 42.5 :y 99.25})
+        pos-2 (Position [42.5 99.25])]
+    (vt/merge! pos-1 {:x 99.0})
+    (vt/merge! pos-2 {:x 100.0})
+    (is (= 99.0 (:x @pos-1)))
+    (is (= 99.25 (:y @pos-1)))
+    (is (= 100.0 (:x @pos-2)))
+    (is (= 99.25 (:y @pos-2)))))
 
 (deftest get-field-direct-test
   (testing "get-field-direct reads individual fields with direct memory access"
