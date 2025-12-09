@@ -2,7 +2,12 @@
   (:require
    [clojure.test :refer [deftest testing is]]
    [vybe.flecs :as vf]
+   [vybe.type :as vt]
    ["flecs.h" :as fl :scope ""]))
+
+;; Define components for query tests
+(vt/defcomp Position [[:x :float] [:y :float]])
+(vt/defcomp Velocity [[:dx :float] [:dy :float]])
 
 ;; =============================================================================
 ;; Basic World Tests
@@ -94,25 +99,41 @@
       (is true))))
 
 (deftest with-query-test
-  (testing "with-query iterates over entities"
+  (testing "with-query iterates over entities with Position and Velocity"
     (let [w (vf/make-world)
-          ;; Create and name a tag so we can query for it
-          _ (fl/ecs_entity_init
-             (vf/world-ptr w)
-             (cpp/& (cpp/value "ecs_entity_desc_t{.name = \"TestTag\"}")))
-          ;; Create entities with the tag
-          e1 (fl/ecs_new (vf/world-ptr w))
-          e2 (fl/ecs_new (vf/world-ptr w))
-          tag-id (fl/ecs_lookup (vf/world-ptr w) "TestTag")]
-      ;; Add tag to entities
-      (fl/ecs_add_id (vf/world-ptr w) e1 tag-id)
-      (fl/ecs_add_id (vf/world-ptr w) e2 tag-id)
-      ;; Iterate using with-query - matches vybe interface: [_ "QueryTerm", e :vf/entity]
-      (let [entities (vf/with-query w [_ "TestTag", e :vf/entity]
-                       e)]
-        ;; Should have found 2 entities
-        (is (= 2 (count entities)))
-        (is (= #{e1 e2} (set entities))))
+          ;; Register components
+          _ (vt/register-comp! w Position)
+          _ (vt/register-comp! w Velocity)
+          ;; Create entities with Position and Velocity
+          e1 (vf/new-entity w)
+          e2 (vf/new-entity w)]
+      ;; Add components with initial values
+      (vt/add-comp! w e1 Position {:x 0.0 :y 0.0})
+      (vt/add-comp! w e1 Velocity {:dx 1.0 :dy 2.0})
+      (vt/add-comp! w e2 Position {:x 10.0 :y 20.0})
+      (vt/add-comp! w e2 Velocity {:dx 3.0 :dy 4.0})
+      ;; Iterate using with-query and update Position based on Velocity
+      ;; This is the jank equivalent of:
+      ;;   q.each([](flecs::entity e, Position& p, const Velocity& v) {
+      ;;       p.x += v.x;
+      ;;       p.y += v.y;
+      ;;   });
+      (vf/with-query w [p Position
+                        v Velocity
+                        e :vf/entity]
+        (println :p-before p)
+        (vt/merge! p {:x (+ (:x p) (:dx v))
+                      :y (+ (:y p) (:dy v))})
+        (println :p-after p))
+      ;; Verify Position was updated correctly
+      (let [pos1 (vt/get-comp w e1 Position)
+            pos2 (vt/get-comp w e2 Position)]
+        ;; e1: (0,0) + (1,2) = (1,2)
+        (is (= 1.0 (:x pos1)))
+        (is (= 2.0 (:y pos1)))
+        ;; e2: (10,20) + (3,4) = (13,24)
+        (is (= 13.0 (:x pos2)))
+        (is (= 24.0 (:y pos2))))
       (vf/destroy-world! w))))
 
 ;; =============================================================================

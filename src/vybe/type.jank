@@ -1038,6 +1038,21 @@ void vybe_free_comp(void* ptr) {
   [comp-fn]
   (get @comp-registry comp-fn))
 
+(defn comp-name
+  "Get the mangled component name (e.g. 'vybe_type__Position') from a component."
+  [comp]
+  (:name (resolve-descriptor comp)))
+
+(defn build-query-string
+  "Build a query string from a list of specs (strings or components).
+   Used by vybe.flecs/with-query to build query expressions."
+  [specs]
+  (apply str (interpose ", " (map (fn [spec]
+                                     (if (string? spec)
+                                       spec
+                                       (comp-name spec)))
+                                   specs))))
+
 ;; =============================================================================
 ;; defcomp - Macro to define components
 ;; =============================================================================

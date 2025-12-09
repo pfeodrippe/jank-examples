@@ -216,10 +216,31 @@ jank::runtime::object_ref vybe_query_entities(ecs_world_t* w, ecs_query_t* q) {
   }
   return result;
 }
+
+// Query entities using a runtime string (not compile-time literal)
+jank::runtime::object_ref vybe_query_entities_str(ecs_world_t* w, const char* query_str) {
+  ecs_query_desc_t desc = {};
+  desc.expr = query_str;
+  ecs_query_t* q = ecs_query_init(w, &desc);
+  if (!q) {
+    return jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  }
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  ecs_iter_t it = ecs_query_iter(w, q);
+  while (ecs_query_next(&it)) {
+    for (int i = 0; i < it.count; i++) {
+      ecs_entity_t entity = it.entities[i];
+      result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(entity)));
+    }
+  }
+  ecs_query_fini(q);
+  return result;
+}
 ")
 
 (defmacro query-entities
   "Return all entities matching a query string as a vector.
+   NOTE: query-string must be a compile-time literal.
 
    Example:
      (doseq [e (query-entities world \"TestTag\")]
@@ -228,39 +249,58 @@ jank::runtime::object_ref vybe_query_entities(ecs_world_t* w, ecs_query_t* q) {
   `(cpp/vybe_query_entities (world-ptr ~world)
                             (cpp/unbox (cpp/type "ecs_query_t*") (query-str ~world ~query-string))))
 
-;; with-query matches vybe's interface: (with-query world [_ "QueryTerm", e :vf/entity] body...)
-;; String values in bindings become query terms, :vf/entity binds the entity ID
+(defn query-entities-runtime
+  "Return all entities matching a query string as a vector.
+   Unlike query-entities, this accepts runtime-computed query strings."
+  [world query-string]
+  (cpp/vybe_query_entities_str (world-ptr world) query-string))
+
+;; with-query matches vybe's interface: (with-query world [p Position, v Velocity, e :vf/entity] body...)
+;; Component values in bindings become query terms and bind component data
+;; String values are query terms (for backward compat), :vf/entity binds the entity ID
 (defmacro with-query
-  "Iterate over query results. Matches vybe's with-query interface.
+  "Iterate over query results with automatic component binding.
 
    world    - the Flecs world
    bindings - pairs of [sym spec], where:
+              - Component (e.g. Position) becomes a query term and binds component data
               - String spec becomes a query term (use _ to ignore binding)
               - :vf/entity binds the entity ID
    body     - forms to execute for each matched entity
 
    Example:
-     (with-query world [_ \"Position\", _ \"Velocity\", e :vf/entity]
-       (println \"Entity:\" e))
+     (with-query world [p Position, v Velocity, e :vf/entity]
+       (vt/merge! p {:x (+ (:x p) (:dx v))}))
 
-   Multiple string terms are joined with ', ' to form the query expression."
+   This is the jank equivalent of:
+     q.each([](flecs::entity e, Position& p, const Velocity& v) { ... });"
   [world bindings & body]
   (let [binding-pairs (partition 2 bindings)
-        ;; Extract query terms from string values in bindings
+        ;; Identify component bindings (not string, not :vf/entity)
+        is-component? (fn [spec] (and (not (string? spec))
+                                      (not (= :vf/entity spec))))
+        ;; Extract component bindings for later get-comp calls
+        comp-bindings (->> binding-pairs
+                           (filter #(is-component? (second %))))
+        ;; Build query terms from strings and component names
+        ;; Components need vt/comp-name at runtime
         query-terms (->> binding-pairs
                          (map second)
-                         (filter string?))
-        query-string (apply str (interpose ", " query-terms))
+                         (filter #(or (string? %) (is-component? %))))
         ;; Extract entity binding (where value is :vf/entity)
         entity-binding (->> binding-pairs
                             (filter #(= :vf/entity (second %)))
                             first
-                            first)]
+                            first)
+        entity-sym (or entity-binding (gensym "entity__"))]
     (when (empty? query-terms)
-      (throw (ex-info "with-query requires at least one query term (string)" {:bindings bindings})))
-    `(let [entities# (query-entities ~world ~query-string)]
-       (mapv (fn [~(or entity-binding '_)]
-               ~@body)
+      (throw (ex-info "with-query requires at least one query term" {:bindings bindings})))
+    `(let [entities# (query-entities-runtime ~world (vybe.type/build-query-string [~@query-terms]))]
+       (mapv (fn [~entity-sym]
+               (let [~@(mapcat (fn [[sym comp]]
+                                 [sym `(vybe.type/get-comp ~world ~entity-sym ~comp)])
+                               comp-bindings)]
+                 ~@body))
              entities#))))
 
 ;; =============================================================================
