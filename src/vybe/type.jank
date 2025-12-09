@@ -498,15 +498,17 @@ void vybe_free_comp(void* ptr) {
 (defn resolve-descriptor
   "Resolve a component to its descriptor.
    Accepts either a descriptor map or a constructor function.
-   Falls back to name-based lookup using metadata if function lookup fails."
+   Prioritizes name-based lookup for stability across JIT recompilation."
   [comp]
   (cond
     (map? comp) comp  ; Already a descriptor
     :else
-    (or (get @comp-registry comp)  ; Look up constructor in registry
-        ;; Fallback: use metadata to find by name (handles reload case)
-        (when-let [comp-name (:vt/comp-name (meta comp))]
-          (resolve-descriptor-by-name comp-name)))))
+    ;; Prioritize name-based lookup (stable across JIT recompilation)
+    ;; Function identity can change when JIT recompiles, but the name is stable
+    (or (when-let [comp-name (:vt/comp-name (meta comp))]
+          (resolve-descriptor-by-name comp-name))
+        ;; Fallback to function identity lookup
+        (get @comp-registry comp))))
 
 ;; =============================================================================
 ;; register-comp! - Register component with Flecs world
@@ -1291,11 +1293,19 @@ int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
    that implement the map interface (supports :x pos, get, contains?, count).
    Also registers the function in comp-registry for descriptor lookup."
   [desc]
-  (let [constructor (with-meta (fn [values]
+  (let [comp-name (:name desc)
+        constructor (with-meta (fn [values]
                                  (create-user-type-instance desc values))
-                               {:vt/comp-name (:name desc)})]
-    ;; Register the constructor -> descriptor mapping
-    (swap! comp-registry assoc constructor desc)
+                               {:vt/comp-name comp-name})]
+    ;; Remove any existing entries with the same component name (handles reload case)
+    ;; This prevents stale function objects from accumulating in comp-registry
+    (swap! comp-registry (fn [reg]
+                           (let [;; Find keys (functions) that map to descriptors with same name
+                                 stale-keys (filter (fn [k]
+                                                      (= comp-name (:name (get reg k))))
+                                                    (keys reg))]
+                             ;; Remove stale entries, then add new one
+                             (assoc (apply dissoc reg stale-keys) constructor desc))))
     ;; Also register by name for lookup from entity components
     (register-descriptor-by-name desc)
     constructor))

@@ -922,7 +922,8 @@ jank::runtime::object_ref vybe_children_ids(ecs_world_t* w, ecs_entity_t parent)
       nil)
 
     ;; Component instance (has :vt/comp metadata)
-    (contains? item :vt/comp)
+    ;; Use `get` instead of `contains?` because user types may not implement contains reliably
+    (some? (get item :vt/comp))
     (vt/add-comp! world e-id (:vt/comp item) item)
 
     ;; Vector - treat as a pair (e.g. [:vf/child-of :parent])
