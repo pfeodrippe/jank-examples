@@ -121,9 +121,28 @@ This caused intermittent "invalid call with N args" errors when running multiple
     (factory {...})))
 ```
 
+## Auto-Registration of Components
+
+Modified `comp-id` to auto-register components if not already registered:
+```clojure
+(defn comp-id [world comp]
+  ...
+  ;; Not found - auto-register the component
+  (register-comp! world comp))
+```
+
+Now users can simply do:
+```clojure
+(def w (vf/make-world))
+(assoc w :bob [(Position {:x 10.0 :y 20.0})])  ;; auto-registers Position
+```
+
+No need to call `register-comp!` manually with the map interface.
+
 ## Notes
 
 - The component name registry is now in `vybe.type` and is the single source of truth
 - `type.jank` duplicates some simple helper functions to avoid the dependency
 - C++ helper function names are namespaced (`vybe_type_ptr_to_int64`) to avoid ODR violations
 - **Do NOT cache user type factories** - always create fresh to avoid stale JIT function references
+- Components are auto-registered on first use with a world

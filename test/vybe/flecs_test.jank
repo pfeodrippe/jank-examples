@@ -152,12 +152,9 @@
       (is (contains? w :vf/world-box)))))
 
 (deftest world-map-assoc-test
-  (testing "assoc creates entities with components"
+  (testing "assoc creates entities with components (auto-registers)"
     (let [w (vf/make-world)]
-      ;; Register components first
-      (vt/register-comp! w Position)
-      (vt/register-comp! w Velocity)
-
+      ;; No need to register-comp! - auto-registration happens on first use
       ;; Use assoc to add entities with tags and components
       (assoc w :bob [:walking (Position {:x 10.0 :y 20.0})])
       (assoc w :alice [(Position {:x 5.0 :y 15.0})])
@@ -173,10 +170,7 @@
 (deftest world-map-merge-test
   (testing "merge adds multiple entities"
     (let [w (vf/make-world)]
-      ;; Register components
-      (vt/register-comp! w Position)
-
-      ;; Merge multiple entities
+      ;; Merge multiple entities (auto-registers components)
       (merge w {:bob [:walking (Position {:x 10.0 :y 20.0})]
                 :alice [(Position {:x 5.0 :y 15.0})]})
 
@@ -186,10 +180,7 @@
 (deftest world-map-get-in-test
   (testing "get-in retrieves component and field values"
     (let [w (vf/make-world)]
-      ;; Register component
-      (vt/register-comp! w Position)
-
-      ;; Add entity with component
+      ;; Add entity with component (auto-registers)
       (assoc w :bob [(Position {:x 42.0 :y 99.0})])
 
       ;; Get the Position component
@@ -205,10 +196,7 @@
 (deftest entity-update-test
   (testing "update entity components"
     (let [w (vf/make-world)]
-      ;; Register component
-      (vt/register-comp! w Position)
-
-      ;; Add entity
+      ;; Add entity (auto-registers component)
       (assoc w :bob [(Position {:x 10.0 :y 20.0})])
 
       ;; Update via remove-id! (remove tag)
@@ -222,10 +210,7 @@
 (deftest entity-update-test-2
   (testing "update entity components"
     (let [w (vf/make-world)]
-      ;; Register component
-      (vt/register-comp! w Position)
-
-      ;; Add entity
+      ;; Add entity (auto-registers component)
       (assoc w :bob [(Position {:x 10.0 :y 20.0})])
 
       ;; Update via remove-id! (remove tag)
@@ -236,26 +221,9 @@
         ;; Note: remove-id! is mutable, so alice should no longer have :walking
         (is (not (contains? alice :walking)))))))
 
-(comment
-
-  (let [w (vf/make-world)]
-    ;; Register component
-    (vt/register-comp! w Position)
-
-    ;; Add entity
-    (assoc w :bob [(Position {:x 10.0 :y 20.0})])
-
-    ;; Update via remove-id! (remove tag)
-    (assoc w :alice [:walking])
-    (select-keys w [:alice
-                    :bob]))
-
-  ())
-
 (deftest entity-type-str-test
   (testing "type-str returns component/tag information"
     (let [w (vf/make-world)]
-      (vt/register-comp! w Position)
       (assoc w :bob [:walking (Position {:x 1.0 :y 2.0})])
       (let [bob (get w :bob)
             ts (vf/type-str bob)]

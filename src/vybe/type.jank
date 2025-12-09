@@ -565,7 +565,7 @@ int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
 
 (defn comp-id
   "Get the registered entity ID for a component descriptor.
-   The component must have been registered with register-comp! first."
+   Auto-registers the component if not already registered with this world."
   [world comp]
   (let [desc (resolve-descriptor comp)
         w-id (get-world-identity world)
@@ -573,12 +573,13 @@ int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
         cached-cid (get-in @comp-id-cache [w-id (:name desc)])]
     (if cached-cid
       cached-cid
-      ;; Fallback to lookup
+      ;; Not in cache - try lookup, then auto-register if needed
       (let [w (-world-ptr world)
             cid (fl/ecs_lookup w (:name desc))]
         (if (> cid 0)
           cid
-          (fl/ecs_lookup_symbol w (:name desc) (cpp/bool. true) (cpp/bool. false)))))))
+          ;; Not found - auto-register the component
+          (register-comp! world comp))))))
 
 (defn has-comp?
   "Check if an entity has a component.
