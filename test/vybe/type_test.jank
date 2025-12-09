@@ -122,16 +122,19 @@
         (is (= 60.0 (:y pos))))
       (vf/destroy-world! world))))
 
-(deftest get-comp-returns-map-test
-  (testing "get-comp returns component data as a map"
+(deftest get-comp-returns-instance-test
+  (testing "get-comp returns a user-type instance with map interface"
     (let [world (vf/make-world)
           _ (vt/register-comp! world Position)
           e (vf/new-entity world)]
       (vt/add-comp! world e Position {:x 1.0 :y 2.0})
       (let [pos (vt/get-comp world e Position)]
-        (is (map? pos))
+        ;; User-type instances support keyword access (map interface)
         (is (= 1.0 (:x pos)))
-        (is (= 2.0 (:y pos))))
+        (is (= 2.0 (:y pos)))
+        ;; And contains?
+        (is (contains? pos :x))
+        (is (contains? pos :y)))
       (vf/destroy-world! world))))
 
 (deftest set-comp-partial-update-test
@@ -178,21 +181,22 @@
 ;; ComponentRef and merge! tests
 ;; =============================================================================
 
-(deftest comp-ref-test
-  (testing "get-comp returns a ComponentRef with metadata"
+(deftest get-comp-instance-test
+  (testing "get-comp returns a user-type instance backed by entity memory"
     (let [world (vf/make-world)
           _ (vt/register-comp! world Position)
           e (vf/new-entity world)]
       (vt/add-comp! world e Position {:x 5.0 :y 10.0})
       (let [pos (vt/get-comp world e Position)]
-        ;; It should be a comp-ref
-        (is (vt/comp-ref? pos))
-        ;; It should have the metadata keys
-        (is (contains? pos :vt/world-box))
-        (is (contains? pos :vt/entity))
+        ;; It should have internal metadata for updates
+        (is (contains? pos :vt/ptr-box))
         (is (contains? pos :vt/comp))
         ;; Data fields should work
         (is (= 5.0 (:x pos)))
+        (is (= 10.0 (:y pos)))
+        ;; merge should update the native memory
+        (merge pos {:x 99.0})
+        (is (= 99.0 (:x pos)))
         (is (= 10.0 (:y pos))))
       (vf/destroy-world! world))))
 

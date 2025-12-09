@@ -122,8 +122,8 @@
                         v Velocity
                         e :vf/entity]
         (println :p-before p)
-        (vt/merge! p {:x (+ (:x p) (:dx v))
-                      :y (+ (:y p) (:dy v))})
+        (merge p {:x (+ (:x p) (:dx v))
+                  :y (+ (:y p) (:dy v))})
         (println :p-after p))
       ;; Verify Position was updated correctly
       (let [pos1 (vt/get-comp w e1 Position)

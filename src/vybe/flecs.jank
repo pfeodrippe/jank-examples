@@ -270,7 +270,10 @@ jank::runtime::object_ref vybe_query_entities_str(ecs_world_t* w, const char* qu
 
    Example:
      (with-query world [p Position, v Velocity, e :vf/entity]
-       (vt/merge! p {:x (+ (:x p) (:dx v))}))
+       (merge p {:x (+ (:x p) (:dx v))}))
+
+   Within the body, `merge` is shadowed to automatically handle component refs,
+   updating native memory when merging into component bindings.
 
    This is the jank equivalent of:
      q.each([](flecs::entity e, Position& p, const Velocity& v) { ... });"

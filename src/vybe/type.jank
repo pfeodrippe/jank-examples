@@ -3,6 +3,9 @@
    ["flecs.h" :as fl :scope ""]
    [vybe.flecs :as vf]))
 
+;; Forward declarations for functions used before they're defined
+(declare create-comp-user-type)
+
 ;; =============================================================================
 ;; Name mangling - convert Clojure namespaced names to Flecs-safe identifiers
 ;; =============================================================================
@@ -569,49 +572,32 @@ void vybe_free_comp(void* ptr) {
               (cpp/vybe_set_field_bool wb entity cid field-name value))))))))
 
 (defn get-comp
-  "Get component data from an entity as a ComponentRef.
-   Returns a map-like object that can be read with keywords and updated with merge!.
+  "Get component data from an entity as a user-type instance.
+   Returns an instance that supports the map interface and merge for updates.
 
    Usage:
      (get-comp world entity Position)
-     ;; => {:x 10.0 :y 20.0 :vt/world-box ... :vt/entity ... :vt/comp ...}
+     ;; => #vybe_type__Position{:x 10.0, :y 20.0}
 
      (let [pos (get-comp world entity Position)]
        (:x pos)              ; read field
-       (merge! pos {:x 5}))  ; update field"
+       (merge pos {:x 5}))   ; update field (native merge!)"
   [world entity comp]
   (let [desc (resolve-descriptor comp)
         w (vf/world-ptr world)
-        w-box (cpp/box w)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
-      ;; Build the component ref with metadata for later updates
-      (let [field-values (into {}
-                               (map (fn [field]
-                                      (let [field-name (:name field)
-                                            field-type (:type field)
-                                            wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)
-                                            value (cond
-                                                    (is-float-type? field-type)
-                                                    (cpp/vybe_get_field_float wb entity cid field-name)
-
-                                                    (is-int-type? field-type)
-                                                    (cpp/vybe_get_field_int wb entity cid field-name)
-
-                                                    (is-uint-type? field-type)
-                                                    (cpp/vybe_get_field_uint wb entity cid field-name)
-
-                                                    (= field-type :bool)
-                                                    (cpp/vybe_get_field_bool wb entity cid field-name)
-
-                                                    :else nil)]
-                                        [(keyword field-name) value]))
-                                    (:fields desc)))]
-        ;; Return map with component ref metadata embedded
-        (assoc field-values
-               :vt/world-box w-box
-               :vt/entity entity
-               :vt/comp desc)))))
+      ;; Ensure metadata is initialized for this component
+      (when-not (get-comp-meta desc)
+        (init-comp-meta! desc))
+      ;; Get mutable pointer to the entity's component memory
+      (let [ptr (cpp/vybe_get_comp_ptr w entity cid)
+            ptr-box (cpp/box ptr)
+            ;; Get factory from descriptor or create it lazily
+            ut-factory (or (:vt/ut-factory desc)
+                           (create-comp-user-type desc))]
+        ;; Return user-type instance backed by entity's component memory
+        (ut-factory {:ptr-box ptr-box :comp desc})))))
 
 (defn comp-ref?
   "Check if x is a ComponentRef (returned by get-comp)."
