@@ -137,7 +137,63 @@ jank::runtime::object_ref vybe_all_named_entities(ecs_world_t* w) {
 int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
   return reinterpret_cast<int64_t>(ptr);
 }
+
+// Create a pair from two entity IDs
+ecs_entity_t vybe_ecs_pair(ecs_entity_t first, ecs_entity_t second) {
+  return ecs_pair(first, second);
+}
+
+// Get EcsChildOf constant
+ecs_entity_t vybe_EcsChildOf() {
+  return EcsChildOf;
+}
+
+// Get children iterator for an entity
+jank::runtime::object_ref vybe_children_ids(ecs_world_t* w, ecs_entity_t parent) {
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  ecs_iter_t it = ecs_children(w, parent);
+  while (ecs_children_next(&it)) {
+    for (int i = 0; i < it.count; i++) {
+      ecs_entity_t child = it.entities[i];
+      result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(child)));
+    }
+  }
+  return result;
+}
 ")
+
+;; =============================================================================
+;; Builtin Flecs entity IDs
+;; =============================================================================
+
+(def EcsChildOf
+  "The EcsChildOf builtin relationship entity ID."
+  (cpp/vybe_EcsChildOf))
+
+;; Builtin entities map for keyword -> ID lookup
+(def builtin-entities
+  "Map of builtin Flecs entities."
+  {:vf/child-of EcsChildOf})
+
+;; =============================================================================
+;; Path function for hierarchical entity names
+;; =============================================================================
+
+(defn path
+  "Builds a path string from a sequence of entity names/ids.
+   Uses '#id.name' format for numeric parent IDs.
+   E.g. (path [:sun :mercury]) => \"sun.mercury\"
+        (path [123 :mercury]) => \"#123.mercury\""
+  [ks]
+  (apply str
+    (interpose "."
+      (map (fn [v]
+             (cond
+               (int? v) (str "#" v)
+               (keyword? v) (vt/mangle-keyword v)
+               (string? v) v
+               :else (str v)))
+           ks))))
 
 ;; =============================================================================
 ;; defn* macro - for functions that return native C++ types
@@ -212,26 +268,63 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
 
 ;; Entity management
 (defn eid
-  "Get or create entity ID from keyword/string name.
-   Auto-registers the entity if it doesn't exist.
-   Keywords are mangled (e.g. :my-tag -> \"my_tag\")."
-  [world e]
-  (cond
-    (int? e) e
-    (keyword? e)
-    (let [w (world-ptr world)
-          tag-name (vt/mangle-keyword e)
-          existing-id (fl/ecs_lookup w tag-name)]
-      (if (> existing-id 0)
-        existing-id
-        (cpp/vybe_create_entity_with_name w tag-name)))
-    (string? e)
-    (let [w (world-ptr world)
-          existing-id (fl/ecs_lookup w e)]
-      (if (> existing-id 0)
-        existing-id
-        (cpp/vybe_create_entity_with_name w e)))
-    :else (throw (ex-info "Unsupported entity type" {:e e}))))
+  "Get entity ID from various entity representations.
+
+   Single arity (VybeFlecsEntity only):
+     (eid entity) - extracts :vf/entity-id from entity
+
+   Two arity (world + entity designator):
+     (eid world e) - resolves e to an entity ID, auto-creating if needed
+
+   Supported entity designators:
+   - Integer: returned as-is
+   - VybeFlecsEntity: extracts :vf/entity-id
+   - Keyword: mangled and looked up/created (e.g. :my-tag -> \"my_tag\")
+   - String: looked up/created by name
+   - Vector pair: creates a Flecs pair (e.g. [:vf/child-of :parent])"
+  ([e]
+   ;; Single arity - only works for VybeFlecsEntity or integers
+   (cond
+     (int? e) e
+     (some? (get e :vf/entity-id)) (get e :vf/entity-id)
+     :else (throw (ex-info "Single-arity eid requires VybeFlecsEntity or integer" {:e e}))))
+  ([world e]
+   (cond
+     (int? e) e
+
+     ;; VybeFlecsEntity user type - extract entity ID directly
+     ;; Use `get` instead of `contains?` because user types may not implement contains properly
+     (some? (get e :vf/entity-id))
+     (get e :vf/entity-id)
+
+     ;; Vector - treat as a pair (e.g. [:vf/child-of :parent])
+     (vector? e)
+     (let [first-elem (first e)
+           second-elem (second e)
+           first-id (eid world first-elem)
+           second-id (eid world second-elem)]
+       (cpp/vybe_ecs_pair first-id second-id))
+
+     ;; Keyword - check builtins first, then lookup/create
+     (keyword? e)
+     (if-let [builtin-id (get builtin-entities e)]
+       builtin-id
+       (let [w (world-ptr world)
+             tag-name (vt/mangle-keyword e)
+             existing-id (fl/ecs_lookup w tag-name)]
+         (if (> existing-id 0)
+           existing-id
+           (cpp/vybe_create_entity_with_name w tag-name))))
+
+     ;; String - lookup/create by name
+     (string? e)
+     (let [w (world-ptr world)
+           existing-id (fl/ecs_lookup w e)]
+       (if (> existing-id 0)
+         existing-id
+         (cpp/vybe_create_entity_with_name w e)))
+
+     :else (throw (ex-info "Unsupported entity type" {:e e})))))
 
 (defn new-entity
   "Create a new entity in the world."
@@ -500,6 +593,11 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
   [world]
   (cpp/vybe_all_named_entities (world-ptr world)))
 
+(defn children-ids
+  "Get all child entity IDs for a given parent entity."
+  [world parent-entity-id]
+  (cpp/vybe_children_ids (world-ptr world) parent-entity-id))
+
 (defn is-tag?
   "Check if an ID represents a tag (no data)."
   [world id]
@@ -762,7 +860,12 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
     (str "#VybeFlecsWorld{:entity-count " count "}")))
 
 (defn- -world-get-entity
-  "Get or create an entity wrapper for a name/id."
+  "Get or create an entity wrapper for a name/id.
+   Supports:
+   - Entity user type (passed through)
+   - Integer entity ID
+   - Keyword or string (lookup by name)
+   - Vector path (e.g. [:sun :mercury] -> lookup 'sun.mercury')"
   [world w-box e-name-or-id]
   (let [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
     (cond
@@ -775,6 +878,13 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
       (when (cpp/vybe_entity_alive w e-name-or-id)
         (-create-vybe-flecs-entity world w-box e-name-or-id))
 
+      ;; Vector path - lookup by hierarchical name (e.g. [:sun :mercury] -> "sun.mercury")
+      (vector? e-name-or-id)
+      (let [path-str (path e-name-or-id)
+            e-id (fl/ecs_lookup w path-str)]
+        (when (> e-id 0)
+          (-create-vybe-flecs-entity world w-box e-id)))
+
       ;; Keyword or string - lookup by name
       (or (keyword? e-name-or-id) (string? e-name-or-id))
       (let [name-str (if (keyword? e-name-or-id) (name e-name-or-id) e-name-or-id)
@@ -784,14 +894,22 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
 
       :else nil)))
 
+(declare -world-set-entity!)
+
 (defn- -add-item-to-entity!
-  "Add a single component/tag to an entity. Helper to avoid closure issues."
+  "Add a single component/tag to an entity. Helper to avoid closure issues.
+   Handles:
+   - nil: ignored
+   - keyword: tag
+   - component instance (has :vt/comp): component data
+   - vector pair (e.g. [:vf/child-of :parent]): add relationship pair
+   - map: nested children definitions"
   [world w-box e-id item]
   (cond
     (nil? item) nil
+
+    ;; Keyword - add as tag
     (keyword? item)
-    ;; For tags, create the entity if it doesn't exist, then add to target
-    ;; Use mangled name for consistency with query lookups
     (let* [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)
            tag-name (vt/mangle-keyword item)
            ;; First try to look up existing tag entity
@@ -802,8 +920,35 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
                     (cpp/vybe_create_entity_with_name w tag-name))
            _ (fl/ecs_add_id w e-id tag-id)]
       nil)
+
+    ;; Component instance (has :vt/comp metadata)
     (contains? item :vt/comp)
     (vt/add-comp! world e-id (:vt/comp item) item)
+
+    ;; Vector - treat as a pair (e.g. [:vf/child-of :parent])
+    (vector? item)
+    (let* [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+           pair-id (eid world item)
+           _ (fl/ecs_add_id w e-id pair-id)]
+      nil)
+
+    ;; Map - nested children definitions
+    ;; {:mercury [:planet (Position {:x 1})] :venus [:planet]}
+    (map? item)
+    (doall
+      (map (fn [[child-name child-components]]
+             ;; Create child entity with path name (e.g. "sun.mercury")
+             ;; and add ChildOf relationship
+             (let* [child-path-str (path [e-id child-name])
+                    child-id (-world-set-entity! world w-box child-path-str
+                               ;; Prepend ChildOf relationship to child's components
+                               (vec (cons [:vf/child-of e-id]
+                                          (if (vector? child-components)
+                                            child-components
+                                            [child-components]))))]
+               child-id))
+           item))
+
     :else nil))
 
 (defn- -world-set-entity!

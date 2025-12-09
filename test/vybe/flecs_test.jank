@@ -243,8 +243,6 @@
 
   (repeat 100 300)
 
-  (require ' cider.nrepl.pprint)
-
   ())
 
 (deftest entity-type-str-test
@@ -264,6 +262,55 @@
       (let [bob (get w :bob)
             rep (vf/get-rep bob)]
         (is (= :bob rep))))))
+
+;; =============================================================================
+;; Parent/Child Hierarchy Tests
+;; =============================================================================
+
+(deftest children-test
+  (testing "parent/child relationships via nested maps"
+    (let [w (vf/make-world)]
+      ;; Create a hierarchy: sun with children mercury and venus
+      ;; venus has a child moon
+      (merge w {:sun [:star (Position {:x 1.0 :y 1.0})
+                      ;; Children are defined as a map
+                      {:mercury [:planet (Position {:x 1.0 :y 1.0})]
+                       :venus [:planet (Position {:x 2.0 :y 2.0})
+                               ;; Nested child
+                               {:moon [:moon (Position {:x 0.1 :y 0.1})]}]}]})
+
+      ;; Verify parent exists
+      (is (contains? w :sun))
+      (is (= 1.0 (get-in w [:sun Position :x])))
+
+      ;; Verify children exist and have correct positions
+      ;; Children should be accessible via path [:parent :child]
+      (is (some? (get w [:sun :mercury])))
+      (is (some? (get w [:sun :venus])))
+
+      ;; Check nested child
+      (is (some? (get w [:sun :venus :moon])))
+
+      ;; Verify eid works on VybeFlecsEntity (single-arity, no world needed)
+      (let [mercury (get w [:sun :mercury])
+            moon (get w [:sun :venus :moon])]
+        (is (> (vf/eid mercury) 0))
+        (is (> (vf/eid moon) 0))
+        ;; eid should return same value as :vf/entity-id
+        (is (= (vf/eid mercury) (get mercury :vf/entity-id)))))))
+
+(deftest child-of-test
+  (testing ":vf/child-of relationship"
+    (let [w (vf/make-world)]
+      ;; Create parent first
+      (assoc w :sun [:star (Position {:x 1.0 :y 1.0})])
+
+      ;; Create child using :vf/child-of
+      (assoc w :earth [:planet (Position {:x 3.0 :y 3.0}) [:vf/child-of :sun]])
+
+      ;; Verify parent-child relationship
+      (is (contains? w :sun))
+      (is (some? (get w [:sun :earth]))))))
 
 ;; =============================================================================
 ;; Run all tests
