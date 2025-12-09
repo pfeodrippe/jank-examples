@@ -240,14 +240,20 @@
       (is (= 8 (vt/comp-size TestComp))))))
 
 (deftest comp-test
-  (let [pos-1 (Position {:x 42.5 :y 99.25})
-        pos-2 (Position [42.5 99.25])]
-    (vt/merge! pos-1 {:x 99.0})
-    (vt/merge! pos-2 {:x 100.0})
-    (is (= 99.0 (:x @pos-1)))
-    (is (= 99.25 (:y @pos-1)))
-    (is (= 100.0 (:x @pos-2)))
-    (is (= 99.25 (:y @pos-2)))))
+  (testing "standalone instances work without @ and support vget for fresh reads"
+    (let [pos-1 (Position {:x 42.5 :y 99.25})
+          pos-2 (Position [42.5 99.25])]
+      ;; Initial values accessible via keyword (snapshot)
+      (is (= 42.5 (:x pos-1)))
+      (is (= 99.25 (:y pos-1)))
+      ;; After merge!, native memory is updated
+      (vt/merge! pos-1 {:x 99.0})
+      (vt/merge! pos-2 {:x 100.0})
+      ;; vget reads fresh values from native memory
+      (is (= 99.0 (vt/vget pos-1 :x)))
+      (is (= 99.25 (vt/vget pos-1 :y)))
+      (is (= 100.0 (vt/vget pos-2 :x)))
+      (is (= 99.25 (vt/vget pos-2 :y))))))
 
 (deftest get-field-direct-test
   (testing "get-field-direct reads individual fields with direct memory access"

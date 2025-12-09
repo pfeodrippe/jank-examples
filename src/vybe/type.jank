@@ -618,6 +618,51 @@ void vybe_free_comp(void* ptr) {
   [x]
   (and (map? x) (contains? x :vt/comp)))
 
+;; Type predicates for field types
+(defn- is-f32-type? [t]
+  (or (= t :float) (= t :f32)))
+
+(defn- is-f64-type? [t]
+  (or (= t :double) (= t :f64)))
+
+(defn- is-i32-type? [t]
+  (or (= t :i32) (= t :int) (= t :i8) (= t :i16)))
+
+(defn- is-i64-type? [t]
+  (or (= t :i64) (= t :long)))
+
+(defn- is-u32-type? [t]
+  (or (= t :u32) (= t :u8) (= t :u16)))
+
+(defn- is-u64-type? [t]
+  (= t :u64))
+
+(defn- write-field-to-ptr!
+  "Write a field value to native memory at the given offset."
+  [ptr-box field-type offset value]
+  (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
+    (cond
+      (is-f32-type? field-type)
+      (cpp/vybe_set_float_at ptr offset (cpp/double. value))
+
+      (is-f64-type? field-type)
+      (cpp/vybe_set_double_at ptr offset (cpp/double. value))
+
+      (is-i32-type? field-type)
+      (cpp/vybe_set_i32_at ptr offset (cpp/long. value))
+
+      (is-i64-type? field-type)
+      (cpp/vybe_set_i64_at ptr offset (cpp/long. value))
+
+      (is-u32-type? field-type)
+      (cpp/vybe_set_u32_at ptr offset (cpp/long. value))
+
+      (is-u64-type? field-type)
+      (cpp/vybe_set_u64_at ptr offset (cpp/long. value))
+
+      (= field-type :bool)
+      (cpp/vybe_set_bool_at ptr offset value))))
+
 (defn merge!
   "Update component fields. Works with:
    1. A standalone instance: (merge! pos {:x 5})
@@ -633,14 +678,12 @@ void vybe_free_comp(void* ptr) {
 
      (merge! world entity Position {:x 5.0})  ; explicit form"
   ([instance-or-ref values]
-   ;; Check if it's a standalone instance (has :vt/ptr-box after deref)
-   ;; Note: standalone instances are atoms, ComponentRefs are plain maps
-   (if (and (not (map? instance-or-ref))
-            (contains? (deref instance-or-ref) :vt/ptr-box))
-     ;; Standalone instance: use direct update
-     (let [data @instance-or-ref
-           comp (:vt/comp data)
-           ptr-box (:vt/ptr-box data)]
+   ;; Check if it's a standalone instance (map with :vt/ptr-box)
+   ;; or a ComponentRef (map with :vt/world-box)
+   (if (contains? instance-or-ref :vt/ptr-box)
+     ;; Standalone instance: write directly to native pointer
+     (let [comp (:vt/comp instance-or-ref)
+           ptr-box (:vt/ptr-box instance-or-ref)]
        ;; Write values to native memory
        (doseq [[field-kw value] values]
          (let [field-name (name field-kw)
@@ -648,24 +691,8 @@ void vybe_free_comp(void* ptr) {
                field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
                                 (:fields comp))]
            (when offset
-             (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
-               (cond
-                 ;; Float types (f32, f64)
-                 (is-float-type? field-type)
-                 (cpp/vybe_set_float_at ptr offset (cpp/double. value))
-
-                 ;; Int types (i8, i16, i32, i64)
-                 (is-int-type? field-type)
-                 (cpp/vybe_set_i32_at ptr offset (cpp/long. value))
-
-                 ;; Uint types (u8, u16, u32, u64)
-                 (is-uint-type? field-type)
-                 (cpp/vybe_set_u32_at ptr offset (cpp/long. value))
-
-                 (= field-type :bool)
-                 (cpp/vybe_set_bool_at ptr offset value))))))
-       ;; Update the atom's map so keyword access works
-       (swap! instance-or-ref merge values)
+             (write-field-to-ptr! ptr-box field-type offset value))))
+       ;; Return the instance (native memory has been updated)
        instance-or-ref)
      ;; ComponentRef form: (merge! pos {:x 5})
      (let [comp-ref instance-or-ref
@@ -726,24 +753,6 @@ void vybe_free_comp(void* ptr) {
 ;; =============================================================================
 ;; Direct memory access - O(1) field access using cached offsets
 ;; =============================================================================
-
-(defn- is-f32-type? [t]
-  (or (= t :float) (= t :f32)))
-
-(defn- is-f64-type? [t]
-  (or (= t :double) (= t :f64)))
-
-(defn- is-i32-type? [t]
-  (or (= t :i32) (= t :int) (= t :i8) (= t :i16)))
-
-(defn- is-i64-type? [t]
-  (or (= t :i64) (= t :long)))
-
-(defn- is-u32-type? [t]
-  (or (= t :u32) (= t :u8) (= t :u16)))
-
-(defn- is-u64-type? [t]
-  (= t :u64))
 
 (defn get-field-direct
   "Get a single field value using direct memory access (O(1)).
@@ -913,36 +922,10 @@ void vybe_free_comp(void* ptr) {
 ;; Standalone component instances - native memory-backed mutable structs
 ;; =============================================================================
 
-(defn- write-field-to-ptr!
-  "Write a field value to native memory at the given offset."
-  [ptr-box field-type offset value]
-  (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
-    (cond
-      (is-f32-type? field-type)
-      (cpp/vybe_set_float_at ptr offset (cpp/double. value))
-
-      (is-f64-type? field-type)
-      (cpp/vybe_set_double_at ptr offset (cpp/double. value))
-
-      (is-i32-type? field-type)
-      (cpp/vybe_set_i32_at ptr offset (cpp/long. value))
-
-      (is-i64-type? field-type)
-      (cpp/vybe_set_i64_at ptr offset (cpp/long. value))
-
-      (is-u32-type? field-type)
-      (cpp/vybe_set_u32_at ptr offset (cpp/long. value))
-
-      (is-u64-type? field-type)
-      (cpp/vybe_set_u64_at ptr offset (cpp/long. value))
-
-      (= field-type :bool)
-      (cpp/vybe_set_bool_at ptr offset value))))
-
 (defn- read-field-from-ptr
   "Read a field value from native memory at the given offset."
   [ptr-box field-type offset]
-  (let [ptr (cpp/unbox (cpp/type "const void*") ptr-box)]
+  (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
     (cond
       (is-f32-type? field-type)
       (cpp/vybe_get_float_at ptr offset)
@@ -967,8 +950,10 @@ void vybe_free_comp(void* ptr) {
 
 (defn- create-standalone-instance
   "Create a standalone component instance backed by native memory.
-   Returns an atom wrapping a map with :vt/comp, :vt/ptr-box, and field values.
-   The atom allows mutation while the pointer provides native memory storage."
+   Returns a function that when called:
+   - (instance :x) - reads field :x from native memory (live read)
+   - (instance) - returns a snapshot map of all fields
+   The function also carries metadata for merge! to work."
   [comp values]
   ;; Ensure metadata is initialized
   (when-not (get-comp-meta comp)
@@ -981,7 +966,10 @@ void vybe_free_comp(void* ptr) {
         value-map (if (vector? values)
                     (zipmap (map (fn [f] (keyword (:name f))) (:fields comp))
                             values)
-                    values)]
+                    values)
+        ;; Store metadata in an atom so the function can access it
+        meta-data {:vt/comp comp
+                   :vt/ptr-box ptr-box}]
     ;; Write initial values to native memory
     (doseq [[field-kw value] value-map]
       (let [field-name (name field-kw)
@@ -990,37 +978,47 @@ void vybe_free_comp(void* ptr) {
                              (:fields comp))]
         (when offset
           (write-field-to-ptr! ptr-box field-type offset value))))
-    ;; Return atom wrapping map with pointer and field values
-    (atom (merge value-map
-                 {:vt/comp comp
-                  :vt/ptr-box ptr-box}))))
+    ;; Return a callable function with metadata attached
+    (with-meta
+      (fn
+        ;; 0-arity: return snapshot of all fields
+        ([]
+         (into {}
+               (map (fn [field]
+                      (let [field-name (:name field)
+                            field-type (:type field)
+                            offset (field-offset comp field-name)]
+                        [(keyword field-name)
+                         (read-field-from-ptr ptr-box field-type offset)]))
+                    (:fields comp))))
+        ;; 1-arity: read a field from native memory
+        ([field-kw]
+         (let [field-name (name field-kw)
+               offset (field-offset comp field-name)
+               field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                                (:fields comp))]
+           (when offset
+             (read-field-from-ptr ptr-box field-type offset)))))
+      meta-data)))
 
 (defn standalone-instance?
-  "Check if x is a standalone component instance (atom wrapping pointer-backed map)."
+  "Check if x is a standalone component instance (function with :vt/ptr-box in metadata)."
   [x]
-  (and (not (map? x))
-       (contains? (deref x) :vt/ptr-box)))
+  (and (fn? x) (contains? (meta x) :vt/ptr-box)))
 
 (defn standalone-get
-  "Get a field value from a standalone instance by reading from native memory."
+  "Get a field value from a standalone instance by reading from native memory.
+   Just calls the instance function with the field keyword."
   [instance field-kw]
-  (let [data @instance
-        comp (:vt/comp data)
-        ptr-box (:vt/ptr-box data)
-        field-name (name field-kw)
-        offset (field-offset comp field-name)
-        field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
-                         (:fields comp))]
-    (when offset
-      (read-field-from-ptr ptr-box field-type offset))))
+  (instance field-kw))
 
 (defn standalone-merge!
   "Update fields in a standalone instance by writing to native memory.
-   Also updates the atom's map so keyword access reflects changes."
+   Returns the instance unchanged (the native memory is updated in-place)."
   [instance values]
-  (let [data @instance
-        comp (:vt/comp data)
-        ptr-box (:vt/ptr-box data)]
+  (let [m (meta instance)
+        comp (:vt/comp m)
+        ptr-box (:vt/ptr-box m)]
     ;; Write values to native memory
     (doseq [[field-kw value] values]
       (let [field-name (name field-kw)
@@ -1029,9 +1027,42 @@ void vybe_free_comp(void* ptr) {
                              (:fields comp))]
         (when offset
           (write-field-to-ptr! ptr-box field-type offset value))))
-    ;; Update the atom's map so keyword access works
-    (swap! instance merge values)
+    ;; Return the instance (native memory has been updated)
     instance))
+
+(defn vget
+  "Get a field value from native memory. Works with both standalone instances and ComponentRefs.
+   Unlike keyword access (which returns a snapshot), this always reads fresh values from memory.
+
+   Usage:
+     (let [pos (Position {:x 1.0 :y 2.0})]
+       (vt/merge! pos {:x 99.0})
+       (vt/vget pos :x))  ;; => 99.0 (reads from native memory)"
+  [instance-or-ref field-kw]
+  (if (contains? instance-or-ref :vt/ptr-box)
+    ;; Standalone instance: read from pointer
+    (standalone-get instance-or-ref field-kw)
+    ;; ComponentRef: read from Flecs world
+    (let [w-box (:vt/world-box instance-or-ref)
+          entity (:vt/entity instance-or-ref)
+          comp (:vt/comp instance-or-ref)
+          cid (fl/ecs_lookup (cpp/unbox (cpp/type "ecs_world_t*") w-box) (:name comp))
+          field-name (name field-kw)
+          field-type (some (fn [f] (when (= (:name f) field-name) (:type f)))
+                           (:fields comp))
+          wb (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+      (cond
+        (is-float-type? field-type)
+        (cpp/vybe_get_field_float wb entity cid field-name)
+
+        (is-int-type? field-type)
+        (cpp/vybe_get_field_int wb entity cid field-name)
+
+        (is-uint-type? field-type)
+        (cpp/vybe_get_field_uint wb entity cid field-name)
+
+        (= field-type :bool)
+        (cpp/vybe_get_field_bool wb entity cid field-name)))))
 
 (defn comp-descriptor
   "Get the component descriptor from a component constructor function."
