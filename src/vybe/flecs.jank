@@ -4,6 +4,142 @@
    [vybe.type :as vt]))
 
 ;; =============================================================================
+;; C++ helpers for Flecs operations
+;; IMPORTANT: Keep all cpp/raw in one block per namespace, at the top of the file
+;; =============================================================================
+(cpp/raw "
+// Create entity with a name (symbol) - used by eid function
+ecs_entity_t vybe_create_entity_with_name(ecs_world_t* w, jank::runtime::object_ref name_obj) {
+  auto name_str = jank::runtime::to_string(name_obj);
+  ecs_entity_desc_t desc = {};
+  desc.name = name_str.c_str();
+  ecs_entity_t e = ecs_entity_init(w, &desc);
+  // Also set symbol for lookup
+  if (e > 0) {
+    ecs_set_symbol(w, e, name_str.c_str());
+  }
+  return e;
+}
+
+jank::runtime::object_ref vybe_query_entities(ecs_world_t* w, ecs_query_t* q) {
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  ecs_iter_t it = ecs_query_iter(w, q);
+  while (ecs_query_next(&it)) {
+    for (int i = 0; i < it.count; i++) {
+      ecs_entity_t entity = it.entities[i];
+      result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(entity)));
+    }
+  }
+  return result;
+}
+
+// Query entities using a runtime string (not compile-time literal)
+jank::runtime::object_ref vybe_query_entities_str(ecs_world_t* w, const char* query_str) {
+  ecs_query_desc_t desc = {};
+  desc.expr = query_str;
+  ecs_query_t* q = ecs_query_init(w, &desc);
+  if (!q) {
+    return jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  }
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  ecs_iter_t it = ecs_query_iter(w, q);
+  while (ecs_query_next(&it)) {
+    for (int i = 0; i < it.count; i++) {
+      ecs_entity_t entity = it.entities[i];
+      result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(entity)));
+    }
+  }
+  ecs_query_fini(q);
+  return result;
+}
+
+// =============================================================================
+// World/Entity helpers for map interface
+// =============================================================================
+
+// Check if entity is alive
+bool vybe_entity_alive(ecs_world_t* w, ecs_entity_t e) {
+  return ecs_is_alive(w, e);
+}
+
+// Get entity name (symbol)
+const char* vybe_entity_name(ecs_world_t* w, ecs_entity_t e) {
+  const char* name = ecs_get_symbol(w, e);
+  return name ? name : \"\";
+}
+
+// Get entity type string (all components/tags)
+const char* vybe_type_str(ecs_world_t* w, ecs_entity_t e) {
+  const ecs_type_t* type = ecs_get_type(w, e);
+  if (!type) return \"\";
+  return ecs_type_str(w, type);
+}
+
+// Check if entity has a component/tag
+bool vybe_has_id(ecs_world_t* w, ecs_entity_t e, ecs_entity_t id) {
+  return ecs_has_id(w, e, id);
+}
+
+// Check if an ID is a tag (no data, just a marker)
+bool vybe_is_tag(ecs_world_t* w, ecs_entity_t id) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, id);
+  return ti == nullptr || ti->size == 0;
+}
+
+// Remove component/tag from entity
+void vybe_remove_id(ecs_world_t* w, ecs_entity_t e, ecs_entity_t id) {
+  ecs_remove_id(w, e, id);
+}
+
+// Delete entity
+void vybe_delete_entity(ecs_world_t* w, ecs_entity_t e) {
+  ecs_delete(w, e);
+}
+
+// Get all entity IDs (components/tags) as a vector
+jank::runtime::object_ref vybe_entity_ids(ecs_world_t* w, ecs_entity_t e) {
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  const ecs_type_t* type = ecs_get_type(w, e);
+  if (!type) return result;
+
+  for (int i = 0; i < type->count; i++) {
+    ecs_entity_t id = type->array[i];
+    result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(id)));
+  }
+  return result;
+}
+
+// Get all named entities in the world
+jank::runtime::object_ref vybe_all_named_entities(ecs_world_t* w) {
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  // Query for entities that have names (EcsIdentifier)
+  ecs_query_desc_t desc = {};
+  desc.expr = \"$this != 0\";  // Match all entities
+  ecs_query_t* q = ecs_query_init(w, &desc);
+  if (!q) return result;
+
+  ecs_iter_t it = ecs_query_iter(w, q);
+  while (ecs_query_next(&it)) {
+    for (int i = 0; i < it.count; i++) {
+      ecs_entity_t e = it.entities[i];
+      // Only include entities with a symbol (user-created with names)
+      const char* sym = ecs_get_symbol(w, e);
+      if (sym && sym[0] != '\\0') {
+        result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(e)));
+      }
+    }
+  }
+  ecs_query_fini(q);
+  return result;
+}
+
+// Convert a pointer to int64 for use as a stable cache key
+int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
+  return reinterpret_cast<int64_t>(ptr);
+}
+")
+
+;; =============================================================================
 ;; defn* macro - for functions that return native C++ types
 ;; =============================================================================
 
@@ -76,12 +212,25 @@
 
 ;; Entity management
 (defn eid
-  "Create or get entity ID from keyword/string name."
+  "Get or create entity ID from keyword/string name.
+   Auto-registers the entity if it doesn't exist.
+   Keywords are mangled (e.g. :my-tag -> \"my_tag\")."
   [world e]
   (cond
     (int? e) e
-    (keyword? e) (fl/ecs_lookup (world-ptr world) (name e))
-    (string? e) (fl/ecs_lookup (world-ptr world) e)
+    (keyword? e)
+    (let [w (world-ptr world)
+          tag-name (vt/mangle-keyword e)
+          existing-id (fl/ecs_lookup w tag-name)]
+      (if (> existing-id 0)
+        existing-id
+        (cpp/vybe_create_entity_with_name w tag-name)))
+    (string? e)
+    (let [w (world-ptr world)
+          existing-id (fl/ecs_lookup w e)]
+      (if (> existing-id 0)
+        existing-id
+        (cpp/vybe_create_entity_with_name w e)))
     :else (throw (ex-info "Unsupported entity type" {:e e}))))
 
 (defn new-entity
@@ -208,142 +357,8 @@
   `(cpp/aget (iter-entities ~iter) (cpp/int. ~idx)))
 
 ;; =============================================================================
-;; with-system macro
-;; Creates a Flecs system that calls a jank function for each matched entity
+;; Query helpers
 ;; =============================================================================
-
-;; Define a C++ helper to collect query entities
-(cpp/raw "
-jank::runtime::object_ref vybe_query_entities(ecs_world_t* w, ecs_query_t* q) {
-  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
-  ecs_iter_t it = ecs_query_iter(w, q);
-  while (ecs_query_next(&it)) {
-    for (int i = 0; i < it.count; i++) {
-      ecs_entity_t entity = it.entities[i];
-      result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(entity)));
-    }
-  }
-  return result;
-}
-
-// Query entities using a runtime string (not compile-time literal)
-jank::runtime::object_ref vybe_query_entities_str(ecs_world_t* w, const char* query_str) {
-  ecs_query_desc_t desc = {};
-  desc.expr = query_str;
-  ecs_query_t* q = ecs_query_init(w, &desc);
-  if (!q) {
-    return jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
-  }
-  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
-  ecs_iter_t it = ecs_query_iter(w, q);
-  while (ecs_query_next(&it)) {
-    for (int i = 0; i < it.count; i++) {
-      ecs_entity_t entity = it.entities[i];
-      result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(entity)));
-    }
-  }
-  ecs_query_fini(q);
-  return result;
-}
-
-// =============================================================================
-// World/Entity helpers for map interface
-// =============================================================================
-
-// Check if entity is alive
-bool vybe_entity_alive(ecs_world_t* w, ecs_entity_t e) {
-  return ecs_is_alive(w, e);
-}
-
-// Get entity name (symbol)
-const char* vybe_entity_name(ecs_world_t* w, ecs_entity_t e) {
-  const char* name = ecs_get_symbol(w, e);
-  return name ? name : \"\";
-}
-
-// Get entity type string (all components/tags)
-const char* vybe_type_str(ecs_world_t* w, ecs_entity_t e) {
-  const ecs_type_t* type = ecs_get_type(w, e);
-  if (!type) return \"\";
-  return ecs_type_str(w, type);
-}
-
-// Check if entity has a component/tag
-bool vybe_has_id(ecs_world_t* w, ecs_entity_t e, ecs_entity_t id) {
-  return ecs_has_id(w, e, id);
-}
-
-// Check if an ID is a tag (no data, just a marker)
-bool vybe_is_tag(ecs_world_t* w, ecs_entity_t id) {
-  const ecs_type_info_t* ti = ecs_get_type_info(w, id);
-  return ti == nullptr || ti->size == 0;
-}
-
-// Remove component/tag from entity
-void vybe_remove_id(ecs_world_t* w, ecs_entity_t e, ecs_entity_t id) {
-  ecs_remove_id(w, e, id);
-}
-
-// Delete entity
-void vybe_delete_entity(ecs_world_t* w, ecs_entity_t e) {
-  ecs_delete(w, e);
-}
-
-// Get all entity IDs (components/tags) as a vector
-jank::runtime::object_ref vybe_entity_ids(ecs_world_t* w, ecs_entity_t e) {
-  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
-  const ecs_type_t* type = ecs_get_type(w, e);
-  if (!type) return result;
-
-  for (int i = 0; i < type->count; i++) {
-    ecs_entity_t id = type->array[i];
-    result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(id)));
-  }
-  return result;
-}
-
-// Get all named entities in the world
-jank::runtime::object_ref vybe_all_named_entities(ecs_world_t* w) {
-  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
-  // Query for entities that have names (EcsIdentifier)
-  ecs_query_desc_t desc = {};
-  desc.expr = \"$this != 0\";  // Match all entities
-  ecs_query_t* q = ecs_query_init(w, &desc);
-  if (!q) return result;
-
-  ecs_iter_t it = ecs_query_iter(w, q);
-  while (ecs_query_next(&it)) {
-    for (int i = 0; i < it.count; i++) {
-      ecs_entity_t e = it.entities[i];
-      // Only include entities with a symbol (user-created with names)
-      const char* sym = ecs_get_symbol(w, e);
-      if (sym && sym[0] != '\\0') {
-        result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(e)));
-      }
-    }
-  }
-  ecs_query_fini(q);
-  return result;
-}
-
-// Create entity with a name (symbol)
-ecs_entity_t vybe_create_entity_with_name(ecs_world_t* w, jank::runtime::object_ref name_obj) {
-  auto name_str = jank::runtime::to_string(name_obj);
-  ecs_entity_desc_t desc = {};
-  desc.name = name_str.c_str();
-  ecs_entity_t e = ecs_entity_init(w, &desc);
-  // Also set symbol for lookup
-  if (e > 0) {
-    ecs_set_symbol(w, e, name_str.c_str());
-  }
-  return e;
-}
-
-// Convert a pointer to int64 for use as a stable cache key
-int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
-  return reinterpret_cast<int64_t>(ptr);
-}
-")
 
 (defmacro query-entities
   "Return all entities matching a query string as a vector.
@@ -386,17 +401,23 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
      q.each([](flecs::entity e, Position& p, const Velocity& v) { ... });"
   [world bindings & body]
   (let [binding-pairs (partition 2 bindings)
-        ;; Identify component bindings (not string, not :vf/entity)
+        ;; Identify component bindings (not string, not keyword, not :vf/entity)
         is-component? (fn [spec] (and (not (string? spec))
-                                      (not (= :vf/entity spec))))
+                                      (not (keyword? spec))))
+        ;; Identify tag bindings (keywords that are not :vf/entity)
+        is-tag? (fn [spec] (and (keyword? spec)
+                                (not (= :vf/entity spec))))
+        ;; Extract tag keywords for auto-registration
+        tag-keywords (->> binding-pairs
+                          (map second)
+                          (filter is-tag?))
         ;; Extract component bindings for later get-comp calls
         comp-bindings (->> binding-pairs
                            (filter #(is-component? (second %))))
-        ;; Build query terms from strings and component names
-        ;; Components need vt/comp-name at runtime
+        ;; Build query terms from strings, keywords (tags), and component names
         query-terms (->> binding-pairs
                          (map second)
-                         (filter #(or (string? %) (is-component? %))))
+                         (filter #(or (string? %) (is-tag? %) (is-component? %))))
         ;; Extract entity binding (where value is :vf/entity)
         entity-binding (->> binding-pairs
                             (filter #(= :vf/entity (second %)))
@@ -405,13 +426,16 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
         entity-sym (or entity-binding (gensym "entity__"))]
     (when (empty? query-terms)
       (throw (ex-info "with-query requires at least one query term" {:bindings bindings})))
-    `(let [entities# (query-entities-runtime ~world (vybe.type/build-query-string [~@query-terms]))]
-       (mapv (fn [~entity-sym]
-               (let [~@(mapcat (fn [[sym comp]]
-                                 [sym `(vt/get-comp ~world ~entity-sym ~comp)])
-                               comp-bindings)]
-                 ~@body))
-             entities#))))
+    `(do
+       ;; Ensure all tag keywords exist as entities before querying (using eid for auto-registration)
+       ~@(map (fn [kw] `(eid ~world ~kw)) tag-keywords)
+       (let [entities# (query-entities-runtime ~world (vybe.type/build-query-string [~@query-terms]))]
+         (mapv (fn [~entity-sym]
+                 (let [~@(mapcat (fn [[sym comp]]
+                                   [sym `(vt/get-comp ~world ~entity-sym ~comp)])
+                                 comp-bindings)]
+                   ~@body))
+               entities#)))))
 
 ;; =============================================================================
 ;; Component field access helpers
@@ -767,13 +791,15 @@ int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
     (nil? item) nil
     (keyword? item)
     ;; For tags, create the entity if it doesn't exist, then add to target
+    ;; Use mangled name for consistency with query lookups
     (let* [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+           tag-name (vt/mangle-keyword item)
            ;; First try to look up existing tag entity
-           existing-id (fl/ecs_lookup w (name item))
+           existing-id (fl/ecs_lookup w tag-name)
            ;; If not found, create it using our helper
            tag-id (if (> existing-id 0)
                     existing-id
-                    (cpp/vybe_create_entity_with_name w (name item)))
+                    (cpp/vybe_create_entity_with_name w tag-name))
            _ (fl/ecs_add_id w e-id tag-id)]
       nil)
     (contains? item :vt/comp)

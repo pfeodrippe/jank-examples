@@ -194,32 +194,58 @@
       (is (= 99.0 (get-in w [:bob Position :y]))))))
 
 (deftest entity-update-test
-  (testing "update entity components"
-    (let [w (vf/make-world)]
-      ;; Add entity (auto-registers component)
-      (assoc w :bob [(Position {:x 10.0 :y 20.0})])
+  (testing "update entity components and verify with query"
+    (let [w (vf/make-world)
+          query-results (atom [])]
+      ;; Add entities with Position component (auto-registers)
+      ;; Only bob has :walking tag
+      (assoc w :bob [:walking (Position {:x 10.0 :y 20.0})])
+      (assoc w :alice [(Position {:x 5.0 :y 15.0})])
 
-      ;; Update via remove-id! (remove tag)
-      (assoc w :alice [:walking])
-      (let [alice (get w :alice)]
-        (is (contains? alice :walking))
-        (vf/remove-id! alice :walking)
-        ;; Note: remove-id! is mutable, so alice should no longer have :walking
-        (is (not (contains? alice :walking)))))))
+      ;; Query with non-existent tag should return nothing
+      (vf/with-query w [p Position
+                        _ :inexistent]
+        (swap! query-results conj {:x (:x p) :y (:y p)}))
+      (is (= 0 (count @query-results)))
 
-(deftest entity-update-test-2
-  (testing "update entity components"
-    (let [w (vf/make-world)]
-      ;; Add entity (auto-registers component)
-      (assoc w :bob [(Position {:x 10.0 :y 20.0})])
+      ;; Query with :walking tag should return only bob
+      (reset! query-results [])
+      (vf/with-query w [p Position
+                        _ :walking]
+        (swap! query-results conj {:x (:x p) :y (:y p)}))
+      (is (= 1 (count @query-results)))
+      (is (some #(and (= 10.0 (:x %)) (= 20.0 (:y %))) @query-results))
 
-      ;; Update via remove-id! (remove tag)
-      (assoc w :alice [:walking])
-      (let [alice (get w :alice)]
-        (is (contains? alice :walking))
-        (vf/remove-id! alice :walking)
-        ;; Note: remove-id! is mutable, so alice should no longer have :walking
-        (is (not (contains? alice :walking)))))))
+      ;; Query with only Position should return both entities
+      (reset! query-results [])
+      (vf/with-query w [p Position]
+        (swap! query-results conj {:x (:x p) :y (:y p)}))
+      (is (= 2 (count @query-results)))
+      (is (some #(and (= 10.0 (:x %)) (= 20.0 (:y %))) @query-results))
+      (is (some #(and (= 5.0 (:x %)) (= 15.0 (:y %))) @query-results)))))
+
+;; Leave this comment here.
+(comment
+
+  (let [w (vf/make-world)
+        query-results (atom [])]
+    ;; Add entities with Position component (auto-registers)
+    (assoc w :bob [:walking (Position {:x 10.0 :y 20.0})])
+    (assoc w :alice [(Position {:x 5.0 :y 15.0})])
+
+    ;; Use with-query to collect all Position data
+    (vf/with-query w [p Position
+                      _ "walking"]
+      (swap! query-results conj {:x (:x p) :y (:y p)}))
+
+    ;; Verify query found both entities
+    @query-results)
+
+  (repeat 100 300)
+
+  (require ' cider.nrepl.pprint)
+
+  ())
 
 (deftest entity-type-str-test
   (testing "type-str returns component/tag information"

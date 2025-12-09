@@ -26,7 +26,7 @@
   (cpp/box (fl/ecs_init)))
 
 ;; Component name registry for lookup by mangled name
-(def ^:private -comp-name-registry (atom {}))
+(defonce ^:private -comp-name-registry (atom {}))
 
 (defn register-descriptor-by-name
   "Register a component descriptor by its mangled name for lookup."
@@ -62,6 +62,19 @@
   [ns-str sym-str]
   (let [mangled-ns (apply str (map mangle-char (str ns-str)))]
     (str mangled-ns "__" sym-str)))
+
+(defn mangle-keyword
+  "Convert a keyword to a Flecs-safe identifier.
+   For qualified keywords: :foo.bar/baz -> foo_bar__baz
+   For simple keywords: :my-tag -> my_tag"
+  [kw]
+  (let [ns-part (namespace kw)
+        name-part (name kw)
+        mangled-name (apply str (map mangle-char name-part))]
+    (if ns-part
+      (let [mangled-ns (apply str (map mangle-char ns-part))]
+        (str mangled-ns "__" mangled-name))
+      mangled-name)))
 
 ;; =============================================================================
 ;; make-comp - Pure function to create component descriptors
@@ -421,10 +434,10 @@ void vybe_free_comp(void* ptr) {
 ;; =============================================================================
 
 ;; Global cache: component-name -> {:offsets {field-name offset} :sizes {field-name size} :comp-size size}
-(def ^:private comp-meta-cache (atom {}))
+(defonce ^:private comp-meta-cache (atom {}))
 
 ;; Global registry: maps component constructor functions to their descriptors
-(def ^:private comp-registry (atom {}))
+(defonce ^:private comp-registry (atom {}))
 
 (defn- cache-comp-meta!
   "Cache field offsets and sizes for a component after registration."
@@ -484,11 +497,16 @@ void vybe_free_comp(void* ptr) {
 
 (defn resolve-descriptor
   "Resolve a component to its descriptor.
-   Accepts either a descriptor map or a constructor function."
+   Accepts either a descriptor map or a constructor function.
+   Falls back to name-based lookup using metadata if function lookup fails."
   [comp]
-  (if (map? comp)
-    comp  ; Already a descriptor
-    (get @comp-registry comp)))  ; Look up constructor in registry
+  (cond
+    (map? comp) comp  ; Already a descriptor
+    :else
+    (or (get @comp-registry comp)  ; Look up constructor in registry
+        ;; Fallback: use metadata to find by name (handles reload case)
+        (when-let [comp-name (:vt/comp-name (meta comp))]
+          (resolve-descriptor-by-name comp-name)))))
 
 ;; =============================================================================
 ;; register-comp! - Register component with Flecs world
@@ -503,7 +521,7 @@ int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
 ")
 
 ;; Cache for registered component IDs: {world-identity -> {comp-name -> cid}}
-(def ^:private comp-id-cache (atom {}))
+(defonce ^:private comp-id-cache (atom {}))
 
 (defn- get-world-identity
   "Get a unique identity for a world (using the pointer address as integer)."
@@ -1252,13 +1270,15 @@ int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
 
 
 (defn build-query-string
-  "Build a query string from a list of specs (strings or components).
-   Used by vybe.flecs/with-query to build query expressions."
+  "Build a query string from a list of specs (strings, keywords, or components).
+   Used by vybe.flecs/with-query to build query expressions.
+   Keywords are mangled (e.g. :my-tag -> \"my_tag\", :foo/bar -> \"foo__bar\")."
   [specs]
   (apply str (interpose ", " (map (fn [spec]
-                                     (if (string? spec)
-                                       spec
-                                       (comp-name spec)))
+                                     (cond
+                                       (string? spec) spec
+                                       (keyword? spec) (mangle-keyword spec)
+                                       :else (comp-name spec)))
                                    specs))))
 
 ;; =============================================================================
@@ -1271,8 +1291,9 @@ int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
    that implement the map interface (supports :x pos, get, contains?, count).
    Also registers the function in comp-registry for descriptor lookup."
   [desc]
-  (let [constructor (fn [values]
-                      (create-user-type-instance desc values))]
+  (let [constructor (with-meta (fn [values]
+                                 (create-user-type-instance desc values))
+                               {:vt/comp-name (:name desc)})]
     ;; Register the constructor -> descriptor mapping
     (swap! comp-registry assoc constructor desc)
     ;; Also register by name for lookup from entity components
