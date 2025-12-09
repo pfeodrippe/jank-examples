@@ -1,6 +1,7 @@
 (ns vybe.flecs
   (:require
-   ["flecs.h" :as fl :scope ""]))
+   ["flecs.h" :as fl :scope ""]
+   [vybe.type :as vt]))
 
 ;; =============================================================================
 ;; defn* macro - for functions that return native C++ types
@@ -42,9 +43,8 @@
 ;; =============================================================================
 
 ;; World management
-(defn ^{:tag "ecs_world_t*"} make-world
-  "Create a new Flecs world using ecs_init (full world with addons).
-   Returns a boxed ecs_world_t* - use (cpp/unbox (make-world)) to get raw pointer."
+(defn- ^{:tag "ecs_world_t*"} -make-world
+  "Create a new Flecs world (internal, returns boxed pointer)."
   []
   (cpp/box (fl/ecs_init)))
 
@@ -54,16 +54,25 @@
   []
   (cpp/box (fl/ecs_mini)))
 
+(defn get-world-box
+  "Get the boxed world pointer from a world (either raw box or user type)."
+  [world]
+  ;; Try to get :vf/world-box - if it returns non-nil, use that, otherwise assume world is already a box
+  (let [wb (get world :vf/world-box)]
+    (if wb
+      wb
+      world)))
+
 (defn destroy-world!
   "Destroy a Flecs world."
   [world]
-  (fl/ecs_fini (cpp/unbox (cpp/type "ecs_world_t*") world))
+  (fl/ecs_fini (cpp/unbox (cpp/type "ecs_world_t*") (get-world-box world)))
   nil)
 
-(defn* ^{:tag "ecs_world_t*"} world-ptr
+(defmacro world-ptr
   "Extract ecs_world_t* from boxed world. Returns raw pointer for use in C calls."
   [world]
-  world)
+  `(cpp/unbox (cpp/type "ecs_world_t*") (get-world-box ~world)))
 
 ;; Entity management
 (defn eid
@@ -236,6 +245,104 @@ jank::runtime::object_ref vybe_query_entities_str(ecs_world_t* w, const char* qu
   ecs_query_fini(q);
   return result;
 }
+
+// =============================================================================
+// World/Entity helpers for map interface
+// =============================================================================
+
+// Check if entity is alive
+bool vybe_entity_alive(ecs_world_t* w, ecs_entity_t e) {
+  return ecs_is_alive(w, e);
+}
+
+// Get entity name (symbol)
+const char* vybe_entity_name(ecs_world_t* w, ecs_entity_t e) {
+  const char* name = ecs_get_symbol(w, e);
+  return name ? name : \"\";
+}
+
+// Get entity type string (all components/tags)
+const char* vybe_type_str(ecs_world_t* w, ecs_entity_t e) {
+  const ecs_type_t* type = ecs_get_type(w, e);
+  if (!type) return \"\";
+  return ecs_type_str(w, type);
+}
+
+// Check if entity has a component/tag
+bool vybe_has_id(ecs_world_t* w, ecs_entity_t e, ecs_entity_t id) {
+  return ecs_has_id(w, e, id);
+}
+
+// Check if an ID is a tag (no data, just a marker)
+bool vybe_is_tag(ecs_world_t* w, ecs_entity_t id) {
+  const ecs_type_info_t* ti = ecs_get_type_info(w, id);
+  return ti == nullptr || ti->size == 0;
+}
+
+// Remove component/tag from entity
+void vybe_remove_id(ecs_world_t* w, ecs_entity_t e, ecs_entity_t id) {
+  ecs_remove_id(w, e, id);
+}
+
+// Delete entity
+void vybe_delete_entity(ecs_world_t* w, ecs_entity_t e) {
+  ecs_delete(w, e);
+}
+
+// Get all entity IDs (components/tags) as a vector
+jank::runtime::object_ref vybe_entity_ids(ecs_world_t* w, ecs_entity_t e) {
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  const ecs_type_t* type = ecs_get_type(w, e);
+  if (!type) return result;
+
+  for (int i = 0; i < type->count; i++) {
+    ecs_entity_t id = type->array[i];
+    result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(id)));
+  }
+  return result;
+}
+
+// Get all named entities in the world
+jank::runtime::object_ref vybe_all_named_entities(ecs_world_t* w) {
+  jank::runtime::object_ref result = jank::runtime::make_box<jank::runtime::obj::persistent_vector>();
+  // Query for entities that have names (EcsIdentifier)
+  ecs_query_desc_t desc = {};
+  desc.expr = \"$this != 0\";  // Match all entities
+  ecs_query_t* q = ecs_query_init(w, &desc);
+  if (!q) return result;
+
+  ecs_iter_t it = ecs_query_iter(w, q);
+  while (ecs_query_next(&it)) {
+    for (int i = 0; i < it.count; i++) {
+      ecs_entity_t e = it.entities[i];
+      // Only include entities with a symbol (user-created with names)
+      const char* sym = ecs_get_symbol(w, e);
+      if (sym && sym[0] != '\\0') {
+        result = jank::runtime::conj(result, jank::runtime::make_box(static_cast<int64_t>(e)));
+      }
+    }
+  }
+  ecs_query_fini(q);
+  return result;
+}
+
+// Create entity with a name (symbol)
+ecs_entity_t vybe_create_entity_with_name(ecs_world_t* w, jank::runtime::object_ref name_obj) {
+  auto name_str = jank::runtime::to_string(name_obj);
+  ecs_entity_desc_t desc = {};
+  desc.name = name_str.c_str();
+  ecs_entity_t e = ecs_entity_init(w, &desc);
+  // Also set symbol for lookup
+  if (e > 0) {
+    ecs_set_symbol(w, e, name_str.c_str());
+  }
+  return e;
+}
+
+// Convert a pointer to int64 for use as a stable cache key
+int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
+  return reinterpret_cast<int64_t>(ptr);
+}
 ")
 
 (defmacro query-entities
@@ -301,7 +408,7 @@ jank::runtime::object_ref vybe_query_entities_str(ecs_world_t* w, const char* qu
     `(let [entities# (query-entities-runtime ~world (vybe.type/build-query-string [~@query-terms]))]
        (mapv (fn [~entity-sym]
                (let [~@(mapcat (fn [[sym comp]]
-                                 [sym `(vybe.type/get-comp ~world ~entity-sym ~comp)])
+                                 [sym `(vt/get-comp ~world ~entity-sym ~comp)])
                                comp-bindings)]
                  ~@body))
              entities#))))
@@ -322,5 +429,498 @@ jank::runtime::object_ref vybe_query_entities_str(ecs_world_t* w, const char* qu
   [iter field-index size idx]
   `(let [base-ptr# (field-ptr ~iter ~field-index ~size)]
      (cpp/+ base-ptr# (cpp/* (cpp/size_t. ~idx) (cpp/size_t. ~size)))))
+
+;; =============================================================================
+;; VybeFlecsWorld and VybeFlecsEntity - Map interface for Flecs
+;; =============================================================================
+
+;; Forward declarations
+(declare -create-vybe-flecs-entity)
+(declare --set-entity-component)
+(declare -world-get-entity)
+
+;; Helper functions for entity management
+(defn type-str
+  "Get the type string showing all components/tags of an entity."
+  [entity-or-world-entity]
+  (if (contains? entity-or-world-entity :vf/world-box)
+    ;; It's an entity user type
+    (let [w-box (:vf/world-box entity-or-world-entity)
+          e-id (:vf/entity-id entity-or-world-entity)]
+      (cpp/vybe_type_str (cpp/unbox (cpp/type "ecs_world_t*") w-box) e-id))
+    ;; Assume it's a world and entity pair
+    entity-or-world-entity))
+
+(defn get-rep
+  "Get the keyword representation of an entity."
+  [entity]
+  (when (contains? entity :vf/world-box)
+    (let [w-box (:vf/world-box entity)
+          e-id (:vf/entity-id entity)
+          name-str (cpp/vybe_entity_name (cpp/unbox (cpp/type "ecs_world_t*") w-box) e-id)]
+      (when (and name-str (not= name-str ""))
+        (keyword name-str)))))
+
+(defn entity-alive?
+  "Check if an entity is alive."
+  [world entity-id]
+  (cpp/vybe_entity_alive (world-ptr world) entity-id))
+
+(defn entity-ids
+  "Get all component/tag IDs for an entity as a vector."
+  [world entity-id]
+  (cpp/vybe_entity_ids (world-ptr world) entity-id))
+
+(defn all-named-entities
+  "Get all named entities in the world."
+  [world]
+  (cpp/vybe_all_named_entities (world-ptr world)))
+
+(defn is-tag?
+  "Check if an ID represents a tag (no data)."
+  [world id]
+  (cpp/vybe_is_tag (world-ptr world) id))
+
+(defn has-id?
+  "Check if an entity has a component/tag ID."
+  [world entity-id comp-id]
+  (cpp/vybe_has_id (world-ptr world) entity-id comp-id))
+
+(defn remove-id!
+  "Remove a component or tag from an entity.
+   entity can be a VybeFlecsEntity user type or entity ID.
+   tag-or-comp can be a keyword (tag name) or component ID."
+  [entity tag-or-comp]
+  (let [w-box (:vf/world-box entity)
+        e-id (:vf/entity-id entity)
+        w (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+    (cond
+      (keyword? tag-or-comp)
+      (let [c-id (fl/ecs_lookup w (name tag-or-comp))]
+        (when (> c-id 0)
+          (cpp/vybe_remove_id w e-id c-id)))
+
+      (int? tag-or-comp)
+      (cpp/vybe_remove_id w e-id tag-or-comp)
+
+      :else nil)
+    entity))
+
+;; -----------------------------------------------------------------------------
+;; VybeFlecsEntity User Type
+;; Represents an entity in the world, acts like a set of components/tags
+;; -----------------------------------------------------------------------------
+
+(defn- --entity-to-string
+  "Create string representation of entity for printing."
+  [w-box e-id]
+  (let [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+        name-str (cpp/vybe_entity_name w e-id)
+        type-str-val (cpp/vybe_type_str w e-id)]
+    (str "#{" (if (and name-str (not= name-str ""))
+                (str ":" name-str " ")
+                "")
+         type-str-val "}")))
+
+(defn- --entity-seq
+  "Get all components/tags as a sequence."
+  [world w-box e-id]
+  (let [ids (entity-ids world e-id)]
+    (mapv (fn [id]
+            (let [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+                  name-str (cpp/vybe_entity_name w id)]
+              (if (and name-str (not= name-str ""))
+                (if (is-tag? world id)
+                  ;; Tag - return as keyword
+                  (keyword name-str)
+                  ;; Component - return component instance with name
+                  (let [comp-desc (vt/resolve-descriptor-by-name name-str)]
+                    (if comp-desc
+                      ;; Known component - return the component map
+                      (vt/get-comp world e-id comp-desc)
+                      ;; Unknown - just return keyword
+                      (keyword name-str))))
+                ;; No name - return raw ID
+                id)))
+          ids)))
+
+(defn- -create-vybe-flecs-entity-user-type
+  "Create the user type factory for VybeFlecsEntity."
+  []
+  (cpp/jank.runtime.make_user_type
+   "VybeFlecsEntity"
+   (fn [{:keys [world-box entity-id get-world-fn]}]
+     {:get (fn [this k]
+             (cond
+               ;; Internal metadata access
+               (= k :vf/world-box) world-box
+               (= k :vf/entity-id) entity-id
+               (= k :vf/id) entity-id
+
+               ;; Component/tag lookup
+               :else
+               (let [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)
+                     world (get-world-fn)]
+                 (cond
+                   ;; Keyword - could be a tag or lookup by name
+                   (keyword? k)
+                   (let [c-id (fl/ecs_lookup w (name k))]
+                     (when (and (> c-id 0) (cpp/vybe_has_id w entity-id c-id))
+                       (if (cpp/vybe_is_tag w c-id)
+                         k  ; It's a tag, return the keyword
+                         ;; It's a component, get its value
+                         (let [comp-desc (vt/resolve-descriptor-by-name (name k))]
+                           (if comp-desc
+                             (vt/get-comp world entity-id comp-desc)
+                             k)))))
+
+                   ;; Integer - raw component ID
+                   (int? k)
+                   (when (cpp/vybe_has_id w entity-id k)
+                     (if (cpp/vybe_is_tag w k)
+                       (let [name-str (cpp/vybe_entity_name w k)]
+                         (if (and name-str (not= name-str ""))
+                           (keyword name-str)
+                           k))
+                       ;; Component - try to get value
+                       (let [name-str (cpp/vybe_entity_name w k)
+                             comp-desc (when (and name-str (not= name-str ""))
+                                         (vt/resolve-descriptor-by-name name-str))]
+                         (if comp-desc
+                           (vt/get-comp world entity-id comp-desc)
+                           k))))
+
+                   ;; Component constructor function
+                   :else
+                   (let [comp-desc (vt/resolve-descriptor k)]
+                     (when comp-desc
+                       (let [c-id (fl/ecs_lookup w (:name comp-desc))]
+                         (when (and (> c-id 0) (cpp/vybe_has_id w entity-id c-id))
+                           (vt/get-comp world entity-id comp-desc)))))))))
+
+      :contains (fn [this k]
+                  (cond
+                    (or (= k :vf/world-box) (= k :vf/entity-id) (= k :vf/id)) true
+                    :else
+                    (let [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)]
+                      (cond
+                        (keyword? k)
+                        (let [c-id (fl/ecs_lookup w (name k))]
+                          (and (> c-id 0) (cpp/vybe_has_id w entity-id c-id)))
+
+                        (int? k)
+                        (cpp/vybe_has_id w entity-id k)
+
+                        :else
+                        (let [comp-desc (vt/resolve-descriptor k)]
+                          (when comp-desc
+                            (let [c-id (fl/ecs_lookup w (:name comp-desc))]
+                              (and (> c-id 0) (cpp/vybe_has_id w entity-id c-id)))))))))
+
+      :count (fn [this]
+               (count (entity-ids (get-world-fn) entity-id)))
+
+      :to-string (fn [this]
+                   (--entity-to-string world-box entity-id))
+
+      ;; assoc - set a component on the entity
+      :assoc (fn [this k v]
+               (let [world (get-world-fn)]
+                 (--set-entity-component world entity-id k v))
+               this)
+
+      ;; conj - add a tag or component (for set-like behavior)
+      :conj (fn [this entry]
+              (let [world (get-world-fn)]
+                (cond
+                  ;; Keyword tag
+                  (keyword? entry)
+                  (let* [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)
+                         tag-id (eid world entry)
+                         _ (fl/ecs_add_id w entity-id tag-id)]
+                    nil)
+
+                  ;; Component instance (user type with :vt/comp)
+                  (contains? entry :vt/comp)
+                  (let [comp-desc (:vt/comp entry)]
+                    ;; Copy component data to entity
+                    (vt/add-comp! world entity-id comp-desc entry))
+
+                  ;; Vector [component value-or-tag] or just [tags...]
+                  (vector? entry)
+                  (doall
+                    (map (fn [item]
+                           (cond
+                             (nil? item) nil  ; Skip nil entries
+                             (keyword? item)
+                             (let* [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)
+                                    tag-id (eid world item)
+                                    _ (fl/ecs_add_id w entity-id tag-id)]
+                               nil)
+                             (contains? item :vt/comp)
+                             (vt/add-comp! world entity-id (:vt/comp item) item)
+                             :else nil))
+                         entry))
+
+                  :else nil))
+              this)
+
+      ;; disj - remove a tag or component (for disj)
+      :disj (fn [this k]
+                 (let [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)]
+                   (cond
+                     (keyword? k)
+                     (let [c-id (fl/ecs_lookup w (name k))]
+                       (when (> c-id 0)
+                         (cpp/vybe_remove_id w entity-id c-id)))
+
+                     (int? k)
+                     (cpp/vybe_remove_id w entity-id k)
+
+                     :else
+                     (let [comp-desc (vt/resolve-descriptor k)]
+                       (when comp-desc
+                         (let [c-id (fl/ecs_lookup w (:name comp-desc))]
+                           (when (> c-id 0)
+                             (cpp/vybe_remove_id w entity-id c-id)))))))
+                 this)
+
+      ;; seq - iterate over components/tags
+      :seq (fn [this]
+             (--entity-seq (get-world-fn) world-box entity-id))})))
+
+(defn- -create-vybe-flecs-entity
+  "Create a VybeFlecsEntity user type instance."
+  [world w-box entity-id]
+  ;; Create fresh factory each time to avoid stale JIT function references
+  (let [factory (-create-vybe-flecs-entity-user-type)]
+    (factory {:world-box w-box
+              :entity-id entity-id
+              :get-world-fn (fn [] world)})))
+
+;; Helper for entity set operations
+(defn- --set-entity-component
+  "Set a component value on an entity."
+  [world entity-id comp-or-key value]
+  (let [w (world-ptr world)]
+    (cond
+      ;; Keyword tag (no value or value is the key itself)
+      (and (keyword? comp-or-key) (keyword? value))
+      (let* [tag-id (fl/ecs_lookup w (name value))
+             _ (when (= tag-id 0)
+                 ;; Create new tag entity
+                 (fl/ecs_entity_init w (cpp/& (cpp/value "ecs_entity_desc_t{}"))))
+             _ (fl/ecs_add_id w entity-id (eid world value))]
+        nil)
+
+      ;; Component instance (user type)
+      (contains? value :vt/comp)
+      (vt/add-comp! world entity-id (:vt/comp value) value)
+
+      ;; Component descriptor + map values
+      (map? value)
+      (let [comp-desc (vt/resolve-descriptor comp-or-key)]
+        (when comp-desc
+          (vt/add-comp! world entity-id comp-desc value)))
+
+      :else nil)))
+
+;; -----------------------------------------------------------------------------
+;; VybeFlecsWorld User Type
+;; Represents a Flecs world, acts like a map of entity-name -> entity
+;; -----------------------------------------------------------------------------
+
+(defn- -world-to-string
+  "Create string representation of world for printing."
+  [w-box]
+  (let [entities (cpp/vybe_all_named_entities (cpp/unbox (cpp/type "ecs_world_t*") w-box))
+        count (count entities)]
+    (str "#VybeFlecsWorld{:entity-count " count "}")))
+
+(defn- -world-get-entity
+  "Get or create an entity wrapper for a name/id."
+  [world w-box e-name-or-id]
+  (let [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)]
+    (cond
+      ;; Already an entity user type
+      (contains? e-name-or-id :vf/entity-id)
+      e-name-or-id
+
+      ;; Integer entity ID
+      (int? e-name-or-id)
+      (when (cpp/vybe_entity_alive w e-name-or-id)
+        (-create-vybe-flecs-entity world w-box e-name-or-id))
+
+      ;; Keyword or string - lookup by name
+      (or (keyword? e-name-or-id) (string? e-name-or-id))
+      (let [name-str (if (keyword? e-name-or-id) (name e-name-or-id) e-name-or-id)
+            e-id (fl/ecs_lookup_symbol w name-str (cpp/bool. true) (cpp/bool. false))]
+        (when (> e-id 0)
+          (-create-vybe-flecs-entity world w-box e-id)))
+
+      :else nil)))
+
+(defn- -add-item-to-entity!
+  "Add a single component/tag to an entity. Helper to avoid closure issues."
+  [world w-box e-id item]
+  (cond
+    (nil? item) nil
+    (keyword? item)
+    ;; For tags, create the entity if it doesn't exist, then add to target
+    (let* [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+           ;; First try to look up existing tag entity
+           existing-id (fl/ecs_lookup w (name item))
+           ;; If not found, create it using our helper
+           tag-id (if (> existing-id 0)
+                    existing-id
+                    (cpp/vybe_create_entity_with_name w (name item)))
+           _ (fl/ecs_add_id w e-id tag-id)]
+      nil)
+    (contains? item :vt/comp)
+    (vt/add-comp! world e-id (:vt/comp item) item)
+    :else nil))
+
+(defn- -world-set-entity!
+  "Set components/tags on an entity (creating if needed)."
+  [world w-box e-name components]
+  (let* [w (cpp/unbox (cpp/type "ecs_world_t*") w-box)
+         ;; Get or create entity
+         name-str (cond
+                    (keyword? e-name) (name e-name)
+                    (string? e-name) e-name
+                    (contains? e-name :vf/entity-id) nil  ; Already an entity
+                    :else nil)
+         e-id (if name-str
+                ;; Named entity - lookup or create
+                (let [existing-id (fl/ecs_lookup_symbol w name-str (cpp/bool. true) (cpp/bool. false))]
+                  (if (> existing-id 0)
+                    existing-id
+                    ;; Create new entity with name using C++ helper
+                    (cpp/vybe_create_entity_with_name w name-str)))
+                ;; Entity reference - get ID
+                (if (contains? e-name :vf/entity-id)
+                  (:vf/entity-id e-name)
+                  e-name))]
+    ;; Add components/tags
+    (when (and (> e-id 0) components)
+      (cond
+        ;; Vector of components/tags
+        (vector? components)
+        (doall (map (fn [item] (-add-item-to-entity! world w-box e-id item)) components))
+
+        ;; Single keyword tag
+        (keyword? components)
+        (-add-item-to-entity! world w-box e-id components)
+
+        ;; Component instance
+        (contains? components :vt/comp)
+        (vt/add-comp! world e-id (:vt/comp components) components)
+
+        :else nil))
+    e-id))
+
+(defn- -create-vybe-flecs-world-user-type
+  "Create the user type factory for VybeFlecsWorld."
+  []
+  (cpp/jank.runtime.make_user_type
+   "VybeFlecsWorld"
+   (fn [{:keys [world-box]}]
+     (let [get-self (fn [] nil)]  ; Will be replaced with actual reference
+       {:get (fn [this k]
+               (cond
+                 ;; Internal metadata access - both return boxed values
+                 (= k :vf/world-box) world-box
+                 (= k :vf/world-ptr) world-box  ; Return boxed ptr, caller can unbox
+                 ;; Entity lookup
+                 :else
+                 (-world-get-entity this world-box k)))
+
+        :contains (fn [this k]
+                    (cond
+                      (or (= k :vf/world-box) (= k :vf/world-ptr)) true
+                      :else
+                      (let [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)]
+                        (cond
+                          (int? k)
+                          (cpp/vybe_entity_alive w k)
+
+                          (or (keyword? k) (string? k))
+                          (let [name-str (if (keyword? k) (name k) k)
+                                e-id (fl/ecs_lookup_symbol w name-str (cpp/bool. true) (cpp/bool. false))]
+                            (> e-id 0))
+
+                          :else false))))
+
+        :count (fn [this]
+                 (count (cpp/vybe_all_named_entities (cpp/unbox (cpp/type "ecs_world_t*") world-box))))
+
+        :to-string (fn [this]
+                     (-world-to-string world-box))
+
+        ;; assoc - set entity with components
+        :assoc (fn [this k v]
+                 (-world-set-entity! this world-box k v)
+                 this)
+
+        ;; conj - for merge support (takes a map entry or map)
+        :conj (fn [this entry]
+                (if (map? entry)
+                  ;; merge calls conj with a map - iterate entries
+                  (doseq [[k v] entry]
+                    (-world-set-entity! this world-box k v))
+                  ;; Single [k v] pair
+                  (let [[k v] entry]
+                    (-world-set-entity! this world-box k v)))
+                this)
+
+        ;; dissoc - delete entity
+        :dissoc (fn [this k]
+                  (let [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)
+                        e-id (cond
+                               (int? k) k
+                               (or (keyword? k) (string? k))
+                               (let [name-str (if (keyword? k) (name k) k)]
+                                 (fl/ecs_lookup_symbol w name-str (cpp/bool. true) (cpp/bool. false)))
+                               :else 0)]
+                    (when (> e-id 0)
+                      (cpp/vybe_delete_entity w e-id)))
+                  this)
+
+        ;; keys - all named entities
+        :keys (fn [this]
+                (let [entities (cpp/vybe_all_named_entities (cpp/unbox (cpp/type "ecs_world_t*") world-box))]
+                  (mapv (fn [e-id]
+                          (let [w (cpp/unbox (cpp/type "ecs_world_t*") world-box)
+                                name-str (cpp/vybe_entity_name w e-id)]
+                            (if (and name-str (not= name-str ""))
+                              (keyword name-str)
+                              e-id)))
+                        entities)))}))))
+
+(defn -create-vybe-flecs-world
+  "Create a VybeFlecsWorld user type instance."
+  [w-box]  ; Already boxed when passed as function arg
+  ;; Create fresh factory each time to avoid stale JIT function references
+  (let [factory (-create-vybe-flecs-world-user-type)]
+    (factory {:world-box w-box})))
+
+;; =============================================================================
+;; Updated make-world to return user type
+;; =============================================================================
+
+(defn make-world
+  "Create a new Flecs world wrapped as a VybeFlecsWorld user type.
+   This world supports the map interface:
+   - (get w :entity-name) -> VybeFlecsEntity
+   - (assoc w :entity-name [:tag (Component {:field val})]) -> w
+   - (merge w {:e1 [:tag] :e2 [:other]}) -> w
+   - (get-in w [:entity Position]) -> component instance
+   - (get-in w [:entity Position :x]) -> field value
+
+   Returns a VybeFlecsWorld user type - use (cpp/unbox ...) or world-ptr for raw pointer."
+  []
+  (let* [w-ptr (fl/ecs_init)
+         w-box (cpp/box w-ptr)]
+    (-create-vybe-flecs-world w-box)))
 
 (defn -main [& args])

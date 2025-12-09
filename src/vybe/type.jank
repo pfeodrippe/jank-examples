@@ -1,7 +1,44 @@
 (ns vybe.type
   (:require
-   ["flecs.h" :as fl :scope ""]
-   [vybe.flecs :as vf]))
+   ["flecs.h" :as fl :scope ""]))
+
+;; =============================================================================
+;; Local helpers (duplicated from vybe.flecs to avoid circular dependency)
+;; =============================================================================
+
+(defn- -get-world-box
+  "Get the boxed world pointer from a world (either raw box or user type).
+   Works with both make-world (returns opaque box) and make-world-map (returns user type)."
+  [world]
+  (let [wb (get world :vf/world-box)]
+    (if wb
+      wb
+      world)))
+
+(defmacro -world-ptr
+  "Extract ecs_world_t* from boxed world. Returns raw pointer for use in C calls."
+  [world]
+  `(cpp/unbox (cpp/type "ecs_world_t*") (-get-world-box ~world)))
+
+(defn- -make-world
+  "Create a new Flecs world (internal use only for type registration)."
+  []
+  (cpp/box (fl/ecs_init)))
+
+;; Component name registry for lookup by mangled name
+(def ^:private -comp-name-registry (atom {}))
+
+(defn register-descriptor-by-name
+  "Register a component descriptor by its mangled name for lookup."
+  [desc]
+  (when desc
+    (swap! -comp-name-registry assoc (:name desc) desc)))
+
+(defn resolve-descriptor-by-name
+  "Resolve a component descriptor by its mangled name string.
+   Returns nil if not found."
+  [name-str]
+  (get @-comp-name-registry name-str))
 
 ;; Forward declarations for functions used before they're defined
 (declare create-comp-user-type)
@@ -392,7 +429,7 @@ void vybe_free_comp(void* ptr) {
 (defn- cache-comp-meta!
   "Cache field offsets and sizes for a component after registration."
   [world comp cid]
-  (let [w (vf/world-ptr world)
+  (let [w (-world-ptr world)
         w-box (cpp/box w)
         member-count (cpp/vybe_get_member_count w cid)
         comp-size (cpp/vybe_get_comp_size w cid)]
@@ -457,6 +494,23 @@ void vybe_free_comp(void* ptr) {
 ;; register-comp! - Register component with Flecs world
 ;; =============================================================================
 
+;; C++ helper for pointer to int64 conversion (duplicated from flecs.jank)
+(cpp/raw "
+// Convert a pointer to int64 for use as a stable cache key
+int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
+  return reinterpret_cast<int64_t>(ptr);
+}
+")
+
+;; Cache for registered component IDs: {world-identity -> {comp-name -> cid}}
+(def ^:private comp-id-cache (atom {}))
+
+(defn- get-world-identity
+  "Get a unique identity for a world (using the pointer address as integer)."
+  [world]
+  ;; Convert pointer to integer for stable identity
+  (cpp/vybe_type_ptr_to_int64 (-world-ptr world)))
+
 (defn register-comp!
   "Register a component descriptor with a Flecs world using ecs_struct.
    Returns the Flecs entity ID for the component. Supports up to 32 fields.
@@ -467,14 +521,17 @@ void vybe_free_comp(void* ptr) {
      (register-comp! world Position)"
   [world comp]
   (let [desc (resolve-descriptor comp)
-        w (vf/world-ptr world)
+        w (-world-ptr world)
         builder (cpp/box (cpp/vybe_struct_begin w (:name desc)))]
     (doseq [field (:fields desc)]
       (cpp/vybe_struct_add_member
        (cpp/unbox (cpp/type "VybeStructBuilder*") builder)
        (:name field)
        (flecs-type-id (:type field))))
-    (let [cid (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))]
+    (let [cid (cpp/vybe_struct_end (cpp/unbox (cpp/type "VybeStructBuilder*") builder))
+          w-id (get-world-identity world)]
+      ;; Cache the component ID for lookup
+      (swap! comp-id-cache assoc-in [w-id (:name desc)] cid)
       ;; Cache the field metadata for direct memory access
       (cache-comp-meta! world desc cid)
       cid)))
@@ -498,7 +555,7 @@ void vybe_free_comp(void* ptr) {
      ;; Now field-offset and comp-size work without a real world"
   [comp]
   (let [desc (resolve-descriptor comp)
-        temp-world (vf/make-world)]
+        temp-world (-make-world)]
     (register-comp! temp-world desc))
   nil)
 
@@ -510,8 +567,18 @@ void vybe_free_comp(void* ptr) {
   "Get the registered entity ID for a component descriptor.
    The component must have been registered with register-comp! first."
   [world comp]
-  (let [desc (resolve-descriptor comp)]
-    (fl/ecs_lookup (vf/world-ptr world) (:name desc))))
+  (let [desc (resolve-descriptor comp)
+        w-id (get-world-identity world)
+        ;; Try cache first
+        cached-cid (get-in @comp-id-cache [w-id (:name desc)])]
+    (if cached-cid
+      cached-cid
+      ;; Fallback to lookup
+      (let [w (-world-ptr world)
+            cid (fl/ecs_lookup w (:name desc))]
+        (if (> cid 0)
+          cid
+          (fl/ecs_lookup_symbol w (:name desc) (cpp/bool. true) (cpp/bool. false)))))))
 
 (defn has-comp?
   "Check if an entity has a component.
@@ -519,7 +586,7 @@ void vybe_free_comp(void* ptr) {
    Usage:
      (has-comp? world entity Position)"
   [world entity comp]
-  (let [w (vf/world-ptr world)
+  (let [w (-world-ptr world)
         cid (comp-id world comp)]
     (fl/ecs_has_id w entity cid)))
 
@@ -538,19 +605,36 @@ void vybe_free_comp(void* ptr) {
    Usage:
      (add-comp! world entity Position)                    ; zero-initialized
      (add-comp! world entity Position {:x 10.0 :y 20.0})  ; with map
-     (add-comp! world entity Position 10.0 20.0)          ; positional args"
+     (add-comp! world entity Position 10.0 20.0)          ; positional args
+     (add-comp! world entity Position instance)           ; from component instance"
   [world entity comp & args]
   (let [desc (resolve-descriptor comp)
-        w (vf/world-ptr world)
+        w (-world-ptr world)
         w-box (cpp/box w)
         cid (comp-id world comp)]
     ;; Add the component
     (cpp/vybe_add_comp w entity cid)
     ;; Set initial values if provided
     (when (seq args)
-      (let [values (if (map? (first args))
-                     (first args)  ; {:x 10 :y 20}
-                     ;; positional args: convert to map using field order
+      (let [first-arg (first args)
+            ;; Extract values from different input forms
+            values (cond
+                     ;; Component instance (user type with :vt/comp)
+                     (contains? first-arg :vt/comp)
+                     (let [instance-desc (:vt/comp first-arg)]
+                       ;; Read all field values from the instance
+                       (into {}
+                             (map (fn [f]
+                                    (let [field-kw (keyword (:name f))]
+                                      [field-kw (get first-arg field-kw)]))
+                                  (:fields instance-desc))))
+
+                     ;; Plain map {:x 10 :y 20}
+                     (map? first-arg)
+                     first-arg
+
+                     ;; Positional args: convert to map using field order
+                     :else
                      (zipmap (map (fn [f] (keyword (:name f))) (:fields desc))
                              args))]
         (doseq [[field-kw value] values]
@@ -584,7 +668,7 @@ void vybe_free_comp(void* ptr) {
        (merge pos {:x 5}))   ; update field (native merge!)"
   [world entity comp]
   (let [desc (resolve-descriptor comp)
-        w (vf/world-ptr world)
+        w (-world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       ;; Ensure metadata is initialized for this component
@@ -732,7 +816,7 @@ void vybe_free_comp(void* ptr) {
   ([world entity comp values]
    ;; Explicit form: (merge! world entity Position {:x 5})
    (let [desc (resolve-descriptor comp)
-         w (vf/world-ptr world)
+         w (-world-ptr world)
          w-box (cpp/box w)
          cid (comp-id world comp)]
      (doseq [[field-kw value] values]
@@ -774,7 +858,7 @@ void vybe_free_comp(void* ptr) {
      (get-field-direct world entity Position :x)"
   [world entity comp field-kw]
   (let [desc (resolve-descriptor comp)
-        w (vf/world-ptr world)
+        w (-world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr_const w entity cid)
@@ -813,7 +897,7 @@ void vybe_free_comp(void* ptr) {
      (set-field-direct! world entity Position :x 42.0)"
   [world entity comp field-kw value]
   (let [desc (resolve-descriptor comp)
-        w (vf/world-ptr world)
+        w (-world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr w entity cid)
@@ -853,7 +937,7 @@ void vybe_free_comp(void* ptr) {
      ;; => {:x 10.0 :y 20.0}"
   [world entity comp]
   (let [desc (resolve-descriptor comp)
-        w (vf/world-ptr world)
+        w (-world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr_const w entity cid)
@@ -896,7 +980,7 @@ void vybe_free_comp(void* ptr) {
      (set-comp-direct! world entity Position {:x 10.0 :y 20.0})"
   [world entity comp values]
   (let [desc (resolve-descriptor comp)
-        w (vf/world-ptr world)
+        w (-world-ptr world)
         cid (comp-id world comp)]
     (when (fl/ecs_has_id w entity cid)
       (let [ptr (cpp/vybe_get_comp_ptr w entity cid)
@@ -934,7 +1018,7 @@ void vybe_free_comp(void* ptr) {
 ;; User-type based component instances - implements map interface
 ;; =============================================================================
 
-(defn- make-user-type [type-name constructor-fn]
+(defn make-user-type [type-name constructor-fn]
   (cpp/jank.runtime.make_user_type type-name constructor-fn))
 
 (defn- create-comp-user-type
@@ -1165,6 +1249,7 @@ void vybe_free_comp(void* ptr) {
   [comp]
   (:name (resolve-descriptor comp)))
 
+
 (defn build-query-string
   "Build a query string from a list of specs (strings or components).
    Used by vybe.flecs/with-query to build query expressions."
@@ -1189,6 +1274,8 @@ void vybe_free_comp(void* ptr) {
                       (create-user-type-instance desc values))]
     ;; Register the constructor -> descriptor mapping
     (swap! comp-registry assoc constructor desc)
+    ;; Also register by name for lookup from entity components
+    (register-descriptor-by-name desc)
     constructor))
 
 (defmacro defcomp

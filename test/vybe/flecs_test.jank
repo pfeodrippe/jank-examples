@@ -137,6 +137,141 @@
       (vf/destroy-world! w))))
 
 ;; =============================================================================
+;; World Map Interface Tests
+;; =============================================================================
+
+(defn ->edn
+  "Convert to EDN-like representation for comparison."
+  [x]
+  x)  ;; Placeholder for now
+
+(deftest world-map-basic-test
+  (testing "make-world-map creates user type world"
+    (let [w (vf/make-world)]
+      (is (some? w))
+      (is (contains? w :vf/world-box)))))
+
+(deftest world-map-assoc-test
+  (testing "assoc creates entities with components"
+    (let [w (vf/make-world)]
+      ;; Register components first
+      (vt/register-comp! w Position)
+      (vt/register-comp! w Velocity)
+
+      ;; Use assoc to add entities with tags and components
+      (assoc w :bob [:walking (Position {:x 10.0 :y 20.0})])
+      (assoc w :alice [(Position {:x 5.0 :y 15.0})])
+
+      ;; Check entities exist
+      (is (contains? w :bob))
+      (is (contains? w :alice))
+
+      ;; Check we can get entity
+      (is (some? (get w :bob)))
+      (is (some? (get w :alice))))))
+
+(deftest world-map-merge-test
+  (testing "merge adds multiple entities"
+    (let [w (vf/make-world)]
+      ;; Register components
+      (vt/register-comp! w Position)
+
+      ;; Merge multiple entities
+      (merge w {:bob [:walking (Position {:x 10.0 :y 20.0})]
+                :alice [(Position {:x 5.0 :y 15.0})]})
+
+      (is (contains? w :bob))
+      (is (contains? w :alice)))))
+
+(deftest world-map-get-in-test
+  (testing "get-in retrieves component and field values"
+    (let [w (vf/make-world)]
+      ;; Register component
+      (vt/register-comp! w Position)
+
+      ;; Add entity with component
+      (assoc w :bob [(Position {:x 42.0 :y 99.0})])
+
+      ;; Get the Position component
+      (let [pos (get-in w [:bob Position])]
+        (is (some? pos))
+        (is (= 42.0 (:x pos)))
+        (is (= 99.0 (:y pos))))
+
+      ;; Get a specific field value
+      (is (= 42.0 (get-in w [:bob Position :x])))
+      (is (= 99.0 (get-in w [:bob Position :y]))))))
+
+(deftest entity-update-test
+  (testing "update entity components"
+    (let [w (vf/make-world)]
+      ;; Register component
+      (vt/register-comp! w Position)
+
+      ;; Add entity
+      (assoc w :bob [(Position {:x 10.0 :y 20.0})])
+
+      ;; Update via remove-id! (remove tag)
+      (assoc w :alice [:walking])
+      (let [alice (get w :alice)]
+        (is (contains? alice :walking))
+        (vf/remove-id! alice :walking)
+        ;; Note: remove-id! is mutable, so alice should no longer have :walking
+        (is (not (contains? alice :walking)))))))
+
+(deftest entity-update-test-2
+  (testing "update entity components"
+    (let [w (vf/make-world)]
+      ;; Register component
+      (vt/register-comp! w Position)
+
+      ;; Add entity
+      (assoc w :bob [(Position {:x 10.0 :y 20.0})])
+
+      ;; Update via remove-id! (remove tag)
+      (assoc w :alice [:walking])
+      (let [alice (get w :alice)]
+        (is (contains? alice :walking))
+        (vf/remove-id! alice :walking)
+        ;; Note: remove-id! is mutable, so alice should no longer have :walking
+        (is (not (contains? alice :walking)))))))
+
+(comment
+
+  (let [w (vf/make-world)]
+    ;; Register component
+    (vt/register-comp! w Position)
+
+    ;; Add entity
+    (assoc w :bob [(Position {:x 10.0 :y 20.0})])
+
+    ;; Update via remove-id! (remove tag)
+    (assoc w :alice [:walking])
+    (select-keys w [:alice
+                    :bob]))
+
+  ())
+
+(deftest entity-type-str-test
+  (testing "type-str returns component/tag information"
+    (let [w (vf/make-world)]
+      (vt/register-comp! w Position)
+      (assoc w :bob [:walking (Position {:x 1.0 :y 2.0})])
+      (let [bob (get w :bob)
+            ts (vf/type-str bob)]
+        (is (string? ts))
+        ;; Should contain Position in the type string
+        (is (> (count ts) 0))))))
+
+(deftest entity-get-rep-test
+  (testing "get-rep returns keyword representation"
+    (let [w (vf/make-world)]
+      (assoc w :bob [:walking])
+      (let [bob (get w :bob)
+            rep (vf/get-rep bob)]
+        (is (= :bob rep))))))
+
+;; =============================================================================
 ;; Run all tests
 ;; =============================================================================
 
