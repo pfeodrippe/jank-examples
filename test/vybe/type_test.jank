@@ -1,6 +1,7 @@
 (ns vybe.type-test
   (:require
    [clojure.test :refer [deftest is testing]]
+   [clojure.string :as str]
    [vybe.type :as vt]
    [vybe.flecs :as vf]))
 
@@ -240,20 +241,55 @@
       (is (= 8 (vt/comp-size TestComp))))))
 
 (deftest comp-test
-  (testing "standalone instances work without @ and support vget for fresh reads"
+  (testing "standalone instances implement map interface"
     (let [pos-1 (Position {:x 42.5 :y 99.25})
-          pos-2 (Position [42.5 99.25])]
-      ;; Initial values accessible via keyword (snapshot)
+          pos-2 (Position [10.0 20.0])]
+      ;; Keyword as function (map interface via user-type)
       (is (= 42.5 (:x pos-1)))
       (is (= 99.25 (:y pos-1)))
-      ;; After merge!, native memory is updated
-      (vt/merge! pos-1 {:x 99.0})
-      (vt/merge! pos-2 {:x 100.0})
-      ;; vget reads fresh values from native memory
-      (is (= 99.0 (vt/vget pos-1 :x)))
-      (is (= 99.25 (vt/vget pos-1 :y)))
-      (is (= 100.0 (vt/vget pos-2 :x)))
-      (is (= 99.25 (vt/vget pos-2 :y))))))
+      ;; pos-2 created with vector args
+      (is (= 10.0 (:x pos-2)))
+      (is (= 20.0 (:y pos-2)))
+      ;; get function works
+      (is (= 42.5 (get pos-1 :x)))
+      (is (= 20.0 (get pos-2 :y)))
+      ;; contains? works
+      (is (contains? pos-1 :x))
+      (is (contains? pos-2 :y))
+      (is (not (contains? pos-1 :z)))
+      ;; count works
+      (is (= 2 (count pos-1)))
+      (is (= 2 (count pos-2)))
+      ;; nil for non-existent field
+      (is (nil? (get pos-1 :z)))
+      (is (nil? (:z pos-2)))
+      ;; to-string shows actual values
+      (is (= "#vybe_type_test__Position{:x 42.500000, :y 99.250000}" (str pos-1)))))
+
+  (testing "merge updates values and reads reflect changes"
+    (let [pos-1 (Position {:x 1.0 :y 2.0})
+          pos-2 (Position [5.0 6.0])]
+      ;; Initial values
+      (is (= 1.0 (:x pos-1)))
+      (is (= 2.0 (:y pos-1)))
+      (is (= 5.0 (:x pos-2)))
+      (is (= 6.0 (:y pos-2)))
+      ;; Update with merge (uses :assoc/:conj behind the scenes)
+      (merge pos-1 {:x 99.0})
+      (vt/merge! pos-2 {:x 100.0 :y 200.0})
+      ;; Reads should return updated values (live from native memory)
+      (is (= 99.0 (:x pos-1)))
+      (is (= 2.0 (:y pos-1)))           ; unchanged
+      (is (= 100.0 (:x pos-2)))
+      (is (= 200.0 (:y pos-2))))))
+
+(comment
+
+  (let [{:keys [x y] :as b} (Position {:x 42.5 :y 99.25})]
+    (merge b {:x 10.0 :y 50.0})
+    (str b))
+
+  ())
 
 (deftest get-field-direct-test
   (testing "get-field-direct reads individual fields with direct memory access"
@@ -266,7 +302,7 @@
       (is (= 99.25 (vt/get-field-direct world e Position :y)))
       (vf/destroy-world! world))))
 
-(defn -main [& args]
+(defn -main [& _args]
   (let [results (clojure.test/run-tests 'vybe.type-test)]
     (when-not (clojure.test/successful? results)
       (throw (ex-info "Tests failed!" results)))))

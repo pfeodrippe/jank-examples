@@ -663,6 +663,32 @@ void vybe_free_comp(void* ptr) {
       (= field-type :bool)
       (cpp/vybe_set_bool_at ptr offset value))))
 
+(defn- read-field-from-ptr
+  "Read a field value from native memory at the given offset."
+  [ptr-box field-type offset]
+  (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
+    (cond
+      (is-f32-type? field-type)
+      (cpp/vybe_get_float_at ptr offset)
+
+      (is-f64-type? field-type)
+      (cpp/vybe_get_double_at ptr offset)
+
+      (is-i32-type? field-type)
+      (cpp/vybe_get_i32_at ptr offset)
+
+      (is-i64-type? field-type)
+      (cpp/vybe_get_i64_at ptr offset)
+
+      (is-u32-type? field-type)
+      (cpp/vybe_get_u32_at ptr offset)
+
+      (is-u64-type? field-type)
+      (cpp/vybe_get_u64_at ptr offset)
+
+      (= field-type :bool)
+      (cpp/vybe_get_bool_at ptr offset))))
+
 (defn merge!
   "Update component fields. Works with:
    1. A standalone instance: (merge! pos {:x 5})
@@ -919,34 +945,113 @@ void vybe_free_comp(void* ptr) {
                 (cpp/vybe_set_bool_at p offset value)))))))))
 
 ;; =============================================================================
-;; Standalone component instances - native memory-backed mutable structs
+;; User-type based component instances - implements map interface
 ;; =============================================================================
 
-(defn- read-field-from-ptr
-  "Read a field value from native memory at the given offset."
-  [ptr-box field-type offset]
-  (let [ptr (cpp/unbox (cpp/type "void*") ptr-box)]
-    (cond
-      (is-f32-type? field-type)
-      (cpp/vybe_get_float_at ptr offset)
+(defn- make-user-type [type-name constructor-fn]
+  (cpp/jank.runtime.make_user_type type-name constructor-fn))
 
-      (is-f64-type? field-type)
-      (cpp/vybe_get_double_at ptr offset)
+(defn- create-comp-user-type
+  "Create a user-type factory for a component descriptor."
+  [comp]
+  (let [comp-name (:name comp)
+        field-names (set (map (fn [f] (keyword (:name f))) (:fields comp)))
+        field-types (into {} (map (fn [f] [(keyword (:name f)) (:type f)]) (:fields comp)))]
+    (make-user-type
+     comp-name
+     (fn [{:keys [ptr-box comp]}]
+       {:get (fn [this k]
+               (cond
+                 ;; Expose metadata for merge! compatibility
+                 (= k :vt/ptr-box) ptr-box
+                 (= k :vt/comp) comp
+                 ;; Field access
+                 (contains? field-names k)
+                 (let [offset (field-offset comp (name k))
+                       field-type (get field-types k)]
+                   (when offset
+                     (read-field-from-ptr ptr-box field-type offset)))))
+        :contains (fn [this k]
+                    (or (= k :vt/ptr-box)
+                        (= k :vt/comp)
+                        (contains? field-names k)))
+        :count (fn [this]
+                 (count (:fields comp)))
+        :to-string (fn [this]
+                     (let [field-strs (map (fn [f]
+                                             (let [k (keyword (:name f))
+                                                   offset (field-offset comp (:name f))
+                                                   field-type (get field-types k)
+                                                   v (read-field-from-ptr ptr-box field-type offset)]
+                                               (str k " " v)))
+                                           (:fields comp))]
+                       (str "#" comp-name "{" (apply str (interpose ", " field-strs)) "}")))
+        ;; assoc - writes to native memory and returns this (mutable update)
+        :assoc (fn [this k v]
+                 (when (contains? field-names k)
+                   (let [offset (field-offset comp (name k))
+                         field-type (get field-types k)]
+                     (when offset
+                       (write-field-to-ptr! ptr-box field-type offset v))))
+                 this)
+        ;; conj - handles both [k v] pairs and maps (for merge support)
+        :conj (fn [this entry]
+                (if (map? entry)
+                  ;; merge calls (conj m1 m2) with a map
+                  (doseq [[k v] entry]
+                    (when (contains? field-names k)
+                      (let [offset (field-offset comp (name k))
+                            field-type (get field-types k)]
+                        (when offset
+                          (write-field-to-ptr! ptr-box field-type offset v)))))
+                  ;; single [k v] entry
+                  (let [k (first entry)
+                        v (second entry)]
+                    (when (contains? field-names k)
+                      (let [offset (field-offset comp (name k))
+                            field-type (get field-types k)]
+                        (when offset
+                          (write-field-to-ptr! ptr-box field-type offset v))))))
+                this)}))))
 
-      (is-i32-type? field-type)
-      (cpp/vybe_get_i32_at ptr offset)
+;; Store factory directly on descriptor via :vt/ut-factory key
+(defn- get-ut-factory
+  "Get or create user-type factory for a descriptor."
+  [comp]
+  (if-let [factory (:vt/ut-factory comp)]
+    factory
+    (create-comp-user-type comp)))
 
-      (is-i64-type? field-type)
-      (cpp/vybe_get_i64_at ptr offset)
+(defn create-user-type-instance
+  "Create a user-type component instance backed by native memory.
+   This instance implements the map interface, so you can use:
+   - (:x pos) or (get pos :x) - read field
+   - (contains? pos :x) - check field exists
+   - (count pos) - get number of fields"
+  [comp values]
+  ;; Ensure metadata is initialized
+  (when-not (get-comp-meta comp)
+    (init-comp-meta! comp))
+  (let [size (comp-size comp)
+        ptr (cpp/vybe_alloc_comp size)
+        ptr-box (cpp/box ptr)
+        value-map (if (vector? values)
+                    (zipmap (map (fn [f] (keyword (:name f))) (:fields comp)) values)
+                    values)
+        ut-factory (get-ut-factory comp)
+        field-types (into {} (map (fn [f] [(:name f) (:type f)]) (:fields comp)))]
+    ;; Write initial values
+    (doseq [[field-kw value] value-map]
+      (let [field-name (name field-kw)
+            offset (field-offset comp field-name)
+            field-type (get field-types field-name)]
+        (when offset
+          (write-field-to-ptr! ptr-box field-type offset value))))
+    (ut-factory {:ptr-box ptr-box :comp comp})))
 
-      (is-u32-type? field-type)
-      (cpp/vybe_get_u32_at ptr offset)
-
-      (is-u64-type? field-type)
-      (cpp/vybe_get_u64_at ptr offset)
-
-      (= field-type :bool)
-      (cpp/vybe_get_bool_at ptr offset))))
+;; =============================================================================
+;; Standalone component instances - native memory-backed mutable structs
+;; =============================================================================
 
 (defn- create-standalone-instance
   "Create a standalone component instance backed by native memory.
@@ -1090,11 +1195,12 @@ void vybe_free_comp(void* ptr) {
 
 (defn make-comp-constructor
   "Create a component constructor function from a descriptor.
-   The constructor can be called with a map or vector to create standalone instances.
+   The constructor can be called with a map or vector to create user-type instances
+   that implement the map interface (supports :x pos, get, contains?, count).
    Also registers the function in comp-registry for descriptor lookup."
   [desc]
   (let [constructor (fn [values]
-                      (create-standalone-instance desc values))]
+                      (create-user-type-instance desc values))]
     ;; Register the constructor -> descriptor mapping
     (swap! comp-registry assoc constructor desc)
     constructor))
@@ -1106,7 +1212,14 @@ void vybe_free_comp(void* ptr) {
      (defcomp Position [[:x :float] [:y :float]])
 
    Creates a var `Position` that is a callable constructor function.
-   Call it to create standalone instances: (Position {:x 1.0 :y 2.0})
+   Call it to create instances that implement the map interface:
+
+     (def pos (Position {:x 1.0 :y 2.0}))
+     (:x pos)          ;; => 1.0 (keyword as function)
+     (get pos :y)      ;; => 2.0
+     (contains? pos :x) ;; => true
+     (count pos)        ;; => 2
+
    Use (comp-descriptor Position) to get the descriptor for registration.
 
    The component name will be namespace-qualified and mangled for Flecs
