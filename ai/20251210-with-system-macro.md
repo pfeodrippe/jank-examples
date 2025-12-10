@@ -104,6 +104,47 @@ This allows:
 (vf/with-system w [:vf/name :my-system, ...] body2)
 ```
 
+## defsystem Macro
+
+Added `defsystem` macro similar to vybe's implementation:
+
+```clojure
+(vf/defsystem gravity-system w
+  [p Position
+   e :vf/entity]
+  ;; Apply gravity - decrease y by 1
+  (merge p {:y (- (:y p) 1.0)}))
+
+;; Register system by calling the function
+(gravity-system w)
+
+;; Run it
+(vf/system-run w :vybe.flecs-test/gravity-system)
+```
+
+The macro:
+1. Takes a name, world parameter, bindings, and body
+2. Generates a `defn` that wraps `with-system`
+3. Auto-generates system name as `:<ns>/<name>` (e.g., `:vybe.flecs-test/gravity-system`)
+4. Supports redefinition - calling the function again replaces the system
+
+**IMPORTANT**: `defsystem` must be used at top-level only (not inside let/do blocks) because it expands to `defn`.
+
+### Tests Added for defsystem
+- `defsystem-test` - basic system registration via function call (top-level definition)
+
+## Final Test Results
+
+All 23 tests pass:
+- 4 with-system tests (including redefinition in `with-system-with-velocity-test`)
+- 1 defsystem test
+- 18 other flecs tests
+
+```
+Ran 23 tests containing 61 assertions.
+0 failures, 0 errors.
+```
+
 ## What's Next
 - Consider adding more options like `:vf/phase`, `:vf/always`, `:vf/disabled`
 - Add `with-observer` macro for Flecs observers

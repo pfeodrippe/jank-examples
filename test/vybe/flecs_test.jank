@@ -435,6 +435,41 @@
       (vf/destroy-world! w))))
 
 ;; =============================================================================
+;; defsystem Tests
+;; =============================================================================
+
+;; Define a system outside of tests using defsystem
+(vf/defsystem gravity-system w
+  [p Position
+   e :vf/entity]
+  ;; Apply gravity - decrease y by 1
+  (merge p {:y (- (:y p) 1.0)}))
+
+(deftest defsystem-test
+  (testing "defsystem creates a function that registers a system"
+    (let [w (vf/make-world)]
+      ;; Create entity with Position
+      (assoc w :falling-object [(Position {:x 0.0 :y 100.0})])
+
+      ;; Register the system by calling the generated function
+      (gravity-system w)
+
+      ;; Verify initial position
+      (is (= 100.0 (get-in w [:falling-object Position :y])))
+
+      ;; Run the system (uses auto-generated name from ns/function)
+      (vf/system-run w :vybe.flecs-test/gravity-system)
+
+      ;; Position should be updated (gravity applied)
+      (is (= 99.0 (get-in w [:falling-object Position :y])))
+
+      ;; Run again
+      (vf/system-run w :vybe.flecs-test/gravity-system)
+      (is (= 98.0 (get-in w [:falling-object Position :y])))
+
+      (vf/destroy-world! w))))
+
+;; =============================================================================
 ;; Run all tests
 ;; =============================================================================
 

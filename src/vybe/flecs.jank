@@ -786,6 +786,39 @@ jank::runtime::object_ref vybe_children_ids(ecs_world_t* w, ecs_entity_t parent)
          (register-system-callback! system-id# callback-fn#)
          system-id#))))
 
+(defmacro defsystem
+  "Define a named system registration function.
+
+   Arguments:
+     - name     : symbol for the generated function
+     - w        : world parameter name used in the generated function
+     - bindings : `with-system` binding vector (the macro injects a generated
+                  `:vf/name` of `:<ns>/<name>` automatically)
+     - body     : system body executed per match
+
+   Expands to a one-argument function that registers a Flecs system entity
+   using `with-system`. The system name is automatically derived from the
+   namespace and function name.
+
+   Example:
+
+     (vf/defsystem move-system w
+       [pos Position
+        vel Velocity]
+       (merge pos {:x (+ (:x pos) (:dx vel))
+                   :y (+ (:y pos) (:dy vel))}))
+
+     ;; Call it with a world to register the system
+     (move-system my-world)
+
+     ;; System runs on progress or system-run
+     (vf/progress my-world)"
+  [name w bindings & body]
+  (let [sys-name (keyword (str *ns* "/" name))]
+    `(defn ~name [~w]
+       (with-system ~w [:vf/name ~sys-name ~@bindings]
+         ~@body))))
+
 ;; =============================================================================
 ;; Component field access helpers
 ;; =============================================================================
