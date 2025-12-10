@@ -318,6 +318,123 @@
       (is (some? (get w [:sun :earth]))))))
 
 ;; =============================================================================
+;; with-system Tests
+;; =============================================================================
+
+(deftest with-system-basic-test
+  (testing "with-system registers a system that can be run with system-run"
+    (let [w (vf/make-world)
+          *acc (atom [])
+          ;; Define a system - it won't run immediately
+          system-id (vf/with-system w [:vf/name :my-test-system
+                                        p Position
+                                        e :vf/entity]
+                      (swap! *acc conj {:entity e :x (:x p) :y (:y p)}))]
+      ;; Create entities with Position
+      (assoc w :bob [(Position {:x 10.0 :y 20.0})])
+      (assoc w :alice [(Position {:x 5.0 :y 15.0})])
+
+      ;; System has not run yet
+      (is (= 0 (count @*acc)))
+
+      ;; Run the system explicitly
+      (vf/system-run w :my-test-system)
+
+      ;; System should have run and collected entities
+      (is (= 2 (count @*acc)))
+      (is (some #(and (= 10.0 (:x %)) (= 20.0 (:y %))) @*acc))
+      (is (some #(and (= 5.0 (:x %)) (= 15.0 (:y %))) @*acc))
+
+      (vf/destroy-world! w))))
+
+(deftest with-system-with-velocity-test
+  (testing "with-system can update components (like a movement system)"
+    (let [w (vf/make-world)
+          ;; Define a movement system that updates Position based on Velocity
+          _ (vf/with-system w [:vf/name ::movement-system
+                               p Position
+                               v Velocity
+                               e :vf/entity]
+              ;; Update position based on velocity
+              (merge p {:x (+ (:x p) (:dx v))
+                        :y (+ (:y p) (:dy v))}))]
+      ;; Create entity with both Position and Velocity
+      (assoc w :moving-entity [(Position {:x 0.0 :y 0.0})
+                               (Velocity {:dx 1.0 :dy 2.0})])
+
+      ;; Verify initial position
+      (is (= 0.0 (get-in w [:moving-entity Position :x])))
+      (is (= 0.0 (get-in w [:moving-entity Position :y])))
+
+      ;; Run the movement system
+      (vf/system-run w ::movement-system)
+
+      ;; Position should be updated
+      (is (= 1.0 (get-in w [:moving-entity Position :x])))
+      (is (= 2.0 (get-in w [:moving-entity Position :y])))
+
+      ;; Run again
+      (vf/system-run w ::movement-system)
+
+      ;; Position should be updated again
+      (is (= 2.0 (get-in w [:moving-entity Position :x])))
+      (is (= 4.0 (get-in w [:moving-entity Position :y])))
+
+      (vf/with-system w [:vf/name ::movement-system
+                         p Position
+                         v Velocity
+                         e :vf/entity]
+        (merge p {:x (+ (:x p) (* 2 (:dx v)))
+                  :y (+ (:y p) (:dy v))}))
+
+      (vf/system-run w ::movement-system)
+
+      (is (= 4.0 (get-in w [:moving-entity Position :x])))
+      (is (= 6.0 (get-in w [:moving-entity Position :y])))
+
+      (vf/destroy-world! w))))
+
+(deftest with-system-progress-test
+  (testing "with-system runs during progress"
+    (let [w (vf/make-world)
+          *run-count (atom 0)
+          _ (vf/with-system w [:vf/name :progress-test-system
+                                p Position]
+              (swap! *run-count inc))]
+      ;; Create entity
+      (assoc w :test-entity [(Position {:x 1.0 :y 1.0})])
+
+      ;; Progress should run the system
+      (vf/progress w)
+
+      ;; System should have run at least once
+      (is (>= @*run-count 1))
+
+      (vf/destroy-world! w))))
+
+(deftest with-system-with-tag-test
+  (testing "with-system can filter by tags"
+    (let [w (vf/make-world)
+          *acc (atom [])
+          _ (vf/with-system w [:vf/name :tagged-system
+                                p Position
+                                _ :special-tag
+                                e :vf/entity]
+              (swap! *acc conj (vf/get-rep (get w e))))]
+      ;; Create two entities, only one with the tag
+      (assoc w :tagged-entity [:special-tag (Position {:x 1.0 :y 2.0})])
+      (assoc w :untagged-entity [(Position {:x 3.0 :y 4.0})])
+
+      ;; Run the system
+      (vf/system-run w :tagged-system)
+
+      ;; Only the tagged entity should be processed
+      (is (= 1 (count @*acc)))
+      (is (= :tagged-entity (first @*acc)))
+
+      (vf/destroy-world! w))))
+
+;; =============================================================================
 ;; Run all tests
 ;; =============================================================================
 

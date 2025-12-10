@@ -8,6 +8,97 @@
 ;; IMPORTANT: Keep all cpp/raw in one block per namespace, at the top of the file
 ;; =============================================================================
 (cpp/raw "
+// =============================================================================
+// System callback infrastructure for jank
+// =============================================================================
+
+// Global registry mapping system entity IDs to jank callback functions
+// This uses a simple std::unordered_map since we don't need thread safety
+// for the use case of registering systems at startup
+#include <unordered_map>
+#include <functional>
+
+static std::unordered_map<ecs_entity_t, jank::runtime::object_ref> vybe_system_callbacks;
+
+// Register a jank callback for a system entity ID
+void vybe_register_system_callback(ecs_entity_t system_id, jank::runtime::object_ref callback) {
+  vybe_system_callbacks[system_id] = callback;
+}
+
+// Unregister a system callback
+void vybe_unregister_system_callback(ecs_entity_t system_id) {
+  vybe_system_callbacks.erase(system_id);
+}
+
+// The C callback that Flecs will call - dispatches to jank
+void vybe_system_dispatcher(ecs_iter_t* it) {
+  // Get the system entity from the iterator
+  ecs_entity_t system_id = it->system;
+
+  // Look up the jank callback
+  auto callback_it = vybe_system_callbacks.find(system_id);
+  if (callback_it == vybe_system_callbacks.end()) {
+    return; // No callback registered
+  }
+
+  // Call the jank callback with the iterator
+  jank::runtime::object_ref callback = callback_it->second;
+
+  // Pass pointers as integers (int64_t) which jank can handle
+  auto iter_int = jank::runtime::make_box<jank::runtime::obj::integer>(
+    reinterpret_cast<int64_t>(it));
+  auto world_int = jank::runtime::make_box<jank::runtime::obj::integer>(
+    reinterpret_cast<int64_t>(it->world));
+
+  // Build args vector and call with apply_to
+  auto args = jank::runtime::make_box<jank::runtime::obj::persistent_vector>(
+    std::in_place, world_int, iter_int);
+  jank::runtime::apply_to(callback, args);
+}
+
+// Check if an entity is a system
+bool vybe_is_system(ecs_world_t* w, ecs_entity_t e) {
+  return ecs_has_id(w, e, EcsSystem);
+}
+
+// Delete a system and unregister its callback
+void vybe_delete_system(ecs_world_t* w, ecs_entity_t e) {
+  // Unregister the jank callback first
+  vybe_system_callbacks.erase(e);
+  // Then delete the entity
+  ecs_delete(w, e);
+}
+
+// Create a system with the dispatcher callback
+// If a system with the same name exists, delete it first
+ecs_entity_t vybe_create_system(ecs_world_t* w, const char* name, const char* query_expr) {
+  // Check if entity with this name already exists
+  ecs_entity_t existing = ecs_lookup(w, name);
+  if (existing != 0 && vybe_is_system(w, existing)) {
+    // Delete the existing system
+    vybe_delete_system(w, existing);
+  }
+
+  ecs_system_desc_t desc = {};
+
+  // Create entity for system with name and add to OnUpdate phase
+  ecs_entity_desc_t edesc = {};
+  edesc.name = name;
+  desc.entity = ecs_entity_init(w, &edesc);
+
+  // Add to OnUpdate phase
+  ecs_add_pair(w, desc.entity, EcsDependsOn, EcsOnUpdate);
+  ecs_add_id(w, desc.entity, EcsOnUpdate);
+
+  // Set query expression
+  desc.query.expr = query_expr;
+
+  // Use our dispatcher as the callback
+  desc.callback = vybe_system_dispatcher;
+
+  return ecs_system_init(w, &desc);
+}
+
 // Create entity with a name (symbol) - used by eid function
 ecs_entity_t vybe_create_entity_with_name(ecs_world_t* w, jank::runtime::object_ref name_obj) {
   auto name_str = jank::runtime::to_string(name_obj);
@@ -136,6 +227,40 @@ jank::runtime::object_ref vybe_all_named_entities(ecs_world_t* w) {
 // Convert a pointer to int64 for use as a stable cache key
 int64_t vybe_ptr_to_int64(ecs_world_t* ptr) {
   return reinterpret_cast<int64_t>(ptr);
+}
+
+// =============================================================================
+// Iterator helpers for system callbacks
+// =============================================================================
+
+// Get the number of entities in the current iterator table
+int32_t vybe_iter_count(ecs_iter_t* it) {
+  return it->count;
+}
+
+// Get entity ID at index from iterator
+ecs_entity_t vybe_iter_entity(ecs_iter_t* it, int32_t idx) {
+  return it->entities[idx];
+}
+
+// Get field data pointer for a given field index and entity index
+// field_index is 0-based (first component in query = 0)
+void* vybe_iter_field_ptr(ecs_iter_t* it, int32_t field_index, size_t field_size, int32_t entity_idx) {
+  void* base = ecs_field_w_size(it, field_size, field_index);
+  if (!base) return nullptr;
+  return static_cast<char*>(base) + (entity_idx * field_size);
+}
+
+// Helpers that take integer (pointer address) instead of pointer
+// This allows passing pointers from jank as integers
+int32_t vybe_iter_count_int(int64_t it_addr) {
+  ecs_iter_t* it = reinterpret_cast<ecs_iter_t*>(it_addr);
+  return it->count;
+}
+
+ecs_entity_t vybe_iter_entity_int(int64_t it_addr, int32_t idx) {
+  ecs_iter_t* it = reinterpret_cast<ecs_iter_t*>(it_addr);
+  return it->entities[idx];
 }
 
 // Create a pair from two entity IDs
@@ -470,6 +595,66 @@ jank::runtime::object_ref vybe_children_ids(ecs_world_t* w, ecs_entity_t parent)
   [world query-string]
   (cpp/vybe_query_entities_str (world-ptr world) query-string))
 
+;; =============================================================================
+;; Shared parsing logic for with-query and with-system
+;; =============================================================================
+
+(defn- parse-query-bindings
+  "Parse query bindings to extract components, tags, entity binding, and query terms.
+   Returns a map with:
+   - :binding-pairs - all binding pairs
+   - :comp-bindings - component bindings [(sym comp) ...]
+   - :tag-keywords  - tag keywords for auto-registration
+   - :query-terms   - terms for building query string
+   - :entity-sym    - symbol for entity binding (or generated one)"
+  [bindings]
+  (let [binding-pairs (mapv vec (partition 2 bindings))
+        ;; Identify component bindings (not string, not keyword)
+        is-component? (fn [spec] (and (not (string? spec))
+                                      (not (keyword? spec))))
+        ;; Identify tag bindings (keywords that are not special :vf/ keys)
+        is-tag? (fn [spec] (and (keyword? spec)
+                                (not (= :vf/entity spec))
+                                (not (= :vf/name spec))))
+        ;; Extract tag keywords for auto-registration
+        tag-keywords (->> binding-pairs
+                          (map second)
+                          (filter is-tag?))
+        ;; Extract component bindings for later get-comp calls
+        comp-bindings (->> binding-pairs
+                           (filter #(is-component? (second %))))
+        ;; Build query terms from strings, keywords (tags), and component names
+        query-terms (->> binding-pairs
+                         (map second)
+                         (filter #(or (string? %) (is-tag? %) (is-component? %))))
+        ;; Extract entity binding (where value is :vf/entity)
+        entity-binding (->> binding-pairs
+                            (filter #(= :vf/entity (second %)))
+                            first
+                            first)
+        entity-sym (or entity-binding (gensym "entity__"))]
+    {:binding-pairs binding-pairs
+     :comp-bindings comp-bindings
+     :tag-keywords tag-keywords
+     :query-terms query-terms
+     :entity-sym entity-sym}))
+
+(defn- gen-ensure-tags-and-comps
+  "Generate code to ensure tags and components are registered."
+  [world tag-keywords comp-bindings]
+  (concat
+   ;; Ensure tags exist
+   (map (fn [kw] `(eid ~world ~kw)) tag-keywords)
+   ;; Ensure components are registered
+   (map (fn [[_ comp]] `(vt/comp-id ~world ~comp)) comp-bindings)))
+
+(defn- gen-entity-body-bindings
+  "Generate let bindings for components within the entity loop body."
+  [world entity-sym comp-bindings]
+  (mapcat (fn [[sym comp]]
+            [sym `(vt/get-comp ~world ~entity-sym ~comp)])
+          comp-bindings))
+
 ;; with-query matches vybe's interface: (with-query world [p Position, v Velocity, e :vf/entity] body...)
 ;; Component values in bindings become query terms and bind component data
 ;; String values are query terms (for backward compat), :vf/entity binds the entity ID
@@ -493,42 +678,113 @@ jank::runtime::object_ref vybe_children_ids(ecs_world_t* w, ecs_entity_t parent)
    This is the jank equivalent of:
      q.each([](flecs::entity e, Position& p, const Velocity& v) { ... });"
   [world bindings & body]
-  (let [binding-pairs (partition 2 bindings)
-        ;; Identify component bindings (not string, not keyword, not :vf/entity)
-        is-component? (fn [spec] (and (not (string? spec))
-                                      (not (keyword? spec))))
-        ;; Identify tag bindings (keywords that are not :vf/entity)
-        is-tag? (fn [spec] (and (keyword? spec)
-                                (not (= :vf/entity spec))))
-        ;; Extract tag keywords for auto-registration
-        tag-keywords (->> binding-pairs
-                          (map second)
-                          (filter is-tag?))
-        ;; Extract component bindings for later get-comp calls
-        comp-bindings (->> binding-pairs
-                           (filter #(is-component? (second %))))
-        ;; Build query terms from strings, keywords (tags), and component names
-        query-terms (->> binding-pairs
-                         (map second)
-                         (filter #(or (string? %) (is-tag? %) (is-component? %))))
-        ;; Extract entity binding (where value is :vf/entity)
-        entity-binding (->> binding-pairs
-                            (filter #(= :vf/entity (second %)))
-                            first
-                            first)
-        entity-sym (or entity-binding (gensym "entity__"))]
+  (let [{:keys [comp-bindings tag-keywords query-terms entity-sym]}
+        (parse-query-bindings bindings)]
     (when (empty? query-terms)
       (throw (ex-info "with-query requires at least one query term" {:bindings bindings})))
     `(do
-       ;; Ensure all tag keywords exist as entities before querying (using eid for auto-registration)
-       ~@(map (fn [kw] `(eid ~world ~kw)) tag-keywords)
+       ;; Ensure all tags and components are registered
+       ~@(gen-ensure-tags-and-comps world tag-keywords comp-bindings)
        (let [entities# (query-entities-runtime ~world (vybe.type/build-query-string [~@query-terms]))]
          (mapv (fn [~entity-sym]
-                 (let [~@(mapcat (fn [[sym comp]]
-                                   [sym `(vt/get-comp ~world ~entity-sym ~comp)])
-                                 comp-bindings)]
+                 (let [~@(gen-entity-body-bindings world entity-sym comp-bindings)]
                    ~@body))
                entities#)))))
+
+;; =============================================================================
+;; System registration and callback handling
+;; =============================================================================
+
+;; Cache for system callbacks: {system-id -> callback-fn}
+(defonce ^:private system-callbacks (atom {}))
+
+(defn register-system-callback!
+  "Register a jank callback for a system entity ID.
+   The callback will be called by the C++ dispatcher when the system runs."
+  [system-id callback-fn]
+  (swap! system-callbacks assoc system-id callback-fn)
+  (cpp/vybe_register_system_callback system-id callback-fn)
+  nil)
+
+(defn unregister-system-callback!
+  "Unregister a system callback."
+  [system-id]
+  (swap! system-callbacks dissoc system-id)
+  (cpp/vybe_unregister_system_callback system-id)
+  nil)
+
+(defn create-system
+  "Create a Flecs system with the given name and query expression.
+   Returns the system entity ID.
+   The system will use the vybe dispatcher callback."
+  [world system-name query-expr]
+  (let [w (world-ptr world)
+        name-str (if (keyword? system-name)
+                   (vt/mangle-keyword system-name)
+                   (str system-name))]
+    (cpp/vybe_create_system w name-str query-expr)))
+
+(defmacro with-system
+  "Define and register a Flecs system with automatic component binding.
+
+   world    - the Flecs world
+   bindings - pairs of [sym spec], where:
+              - :vf/name keyword - REQUIRED, the system's name
+              - Component (e.g. Position) becomes a query term and binds component data
+              - Keyword spec (e.g. :walking) becomes a tag query term
+              - :vf/entity binds the entity ID
+   body     - forms to execute for each matched entity when the system runs
+
+   Example:
+     (with-system world [:vf/name :my-movement-system
+                         p Position
+                         v Velocity
+                         e :vf/entity]
+       (merge p {:x (+ (:x p) (:dx v))
+                 :y (+ (:y p) (:dy v))}))
+
+   The system is registered with Flecs and will run when:
+   - (progress world) is called (runs all systems in pipeline)
+   - (system-run world :my-movement-system) is called explicitly
+
+   Returns the system entity ID."
+  [world bindings & body]
+  (let [;; Extract system name first (required)
+        bindings-map (into {} (map vec (partition 2 bindings)))
+        system-name (:vf/name bindings-map)
+        _ (when-not system-name
+            (throw (ex-info "`with-system` requires a :vf/name" {:bindings bindings})))
+        ;; Filter out the :vf/name binding, then use shared parsing
+        query-bindings (vec (mapcat identity
+                                    (remove #(= :vf/name (first %))
+                                            (partition 2 bindings))))
+        {:keys [comp-bindings tag-keywords query-terms entity-sym]}
+        (parse-query-bindings query-bindings)]
+    (when (empty? query-terms)
+      (throw (ex-info "with-system requires at least one query term" {:bindings bindings})))
+    `(do
+       ;; Ensure all tags and components are registered
+       ~@(gen-ensure-tags-and-comps world tag-keywords comp-bindings)
+       (let [world# ~world
+             ;; Build query string
+             query-str# (vt/build-query-string [~@query-terms])
+             ;; Create the system
+             system-id# (create-system world# ~system-name query-str#)
+             ;; Create the callback function that processes each iteration
+             ;; Arguments are passed as integers (pointer addresses) from C++
+             callback-fn# (fn [w-int# iter-int#]
+                            (let [count# (cpp/vybe_iter_count_int iter-int#)]
+                              ;; Loop over all entities in this table using mapv
+                              ;; Use mapv instead of doseq to avoid closure capture issues
+                              (mapv (fn [idx#]
+                                      (let [~entity-sym (cpp/vybe_iter_entity_int iter-int# idx#)
+                                            ;; Bind each component using get-comp
+                                            ~@(gen-entity-body-bindings world entity-sym comp-bindings)]
+                                        ~@body))
+                                    (range count#))))]
+         ;; Register the callback
+         (register-system-callback! system-id# callback-fn#)
+         system-id#))))
 
 ;; =============================================================================
 ;; Component field access helpers
