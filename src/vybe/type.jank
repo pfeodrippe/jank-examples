@@ -223,6 +223,12 @@ void vybe_set_field_bool(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, cons
   ecs_meta_set_bool(&cur, value);
 }
 
+// Check if a component is registered in the given world
+bool vybe_has_type_info(ecs_world_t* w, ecs_entity_t comp) {
+  if (!w || !comp) return false;
+  return ecs_get_type_info(w, comp) != nullptr;
+}
+
 // Get a float field from a component
 double vybe_get_field_float(ecs_world_t* w, ecs_entity_t e, ecs_entity_t comp, const char* field_name) {
   if (!w || !e || !comp || !field_name) return 0.0;
@@ -588,14 +594,24 @@ int64_t vybe_type_ptr_to_int64(ecs_world_t* ptr) {
    Auto-registers the component if not already registered with this world."
   [world comp]
   (let [desc (resolve-descriptor comp)
+      w (-world-ptr world)
         w-id (get-world-identity world)
         ;; Try cache first
-        cached-cid (get-in @comp-id-cache [w-id (:name desc)])]
-    (if cached-cid
+      cached-cid (get-in @comp-id-cache [w-id (:name desc)])
+      cached-valid? (and cached-cid (cpp/vybe_has_type_info w cached-cid))]
+    (cond
+      cached-valid?
       cached-cid
+
+      ;; Cached but invalid (e.g. world pointer reused) - re-register and refresh cache
+      cached-cid
+      (do
+        (swap! comp-id-cache update w-id dissoc (:name desc))
+        (register-comp! world comp))
+
+      :else
       ;; Not in cache - try lookup, then auto-register if needed
-      (let [w (-world-ptr world)
-            cid (fl/ecs_lookup w (:name desc))]
+      (let [cid (fl/ecs_lookup w (:name desc))]
         (if (> cid 0)
           cid
           ;; Not found - auto-register the component
