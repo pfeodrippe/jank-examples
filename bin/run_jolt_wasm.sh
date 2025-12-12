@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # Build WASM if needed
 if [ ! -f "vendor/jolt_wasm.o" ]; then
     echo "Building Jolt WASM..."
-    bash build_jolt_wasm.sh
+    bash ./build_jolt_wasm.sh
 fi
 
 echo "Running JoltPhysics WASM demo..."

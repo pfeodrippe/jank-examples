@@ -3,6 +3,299 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Parse arguments
+STANDALONE=false
+OUTPUT_NAME="sdf-viewer"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --standalone)
+            STANDALONE=true
+            shift
+            ;;
+        -o|--output)
+            OUTPUT_NAME="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--standalone] [-o|--output <name>]"
+            exit 1
+            ;;
+    esac
+done
+
+# jank installation paths
+JANK_DIR="/Users/pfeodrippe/dev/jank/compiler+runtime/build"
+JANK_LIB_DIR="$JANK_DIR/llvm-install/usr/local/lib"
+
+# ============================================================================
+# macOS App Bundle Creation
+# ============================================================================
+create_macos_app_bundle() {
+    local EXECUTABLE="$1"
+    local APP_NAME="$2"
+    local APP_BUNDLE="${APP_NAME}.app"
+
+    echo ""
+    echo "============================================"
+    echo "Creating macOS App Bundle: $APP_BUNDLE"
+    echo "============================================"
+
+    # Clean and create bundle structure
+    rm -rf "$APP_BUNDLE"
+    mkdir -p "$APP_BUNDLE/Contents/MacOS"
+    mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+    mkdir -p "$APP_BUNDLE/Contents/Resources"
+
+    # Copy executable (as the real binary)
+    cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/${APP_NAME}-bin"
+
+    # Create launcher script that sets up environment
+    cat > "$APP_BUNDLE/Contents/MacOS/$APP_NAME" << LAUNCHER
+#!/bin/bash
+# Launcher script for $APP_NAME
+DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+RESOURCES="\$(cd "\$DIR/../Resources" && pwd)"
+
+# Set Vulkan ICD path to bundled MoltenVK
+export VK_ICD_FILENAMES="\$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"
+
+# Set C/C++ include paths for JIT compilation at runtime
+# CPATH is used by clang to find headers during JIT compilation
+export CPATH="\$RESOURCES/include:\$RESOURCES/include/flecs:\$RESOURCES/include/imgui:\$RESOURCES/include/imgui/backends"
+
+# Set working directory to Resources for shader loading
+cd "\$RESOURCES"
+
+# Launch the actual binary
+exec "\$DIR/${APP_NAME}-bin" "\$@"
+LAUNCHER
+    chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+    # Copy shader resources
+    echo "Copying shader resources..."
+    cp -r vulkan_kim "$APP_BUNDLE/Contents/Resources/"
+
+    # Copy header files for JIT compilation at runtime
+    # CPATH in launcher script points to these directories
+    echo "Copying header files..."
+    mkdir -p "$APP_BUNDLE/Contents/Resources/include/vybe"
+    mkdir -p "$APP_BUNDLE/Contents/Resources/include/flecs"
+    mkdir -p "$APP_BUNDLE/Contents/Resources/include/imgui/backends"
+
+    # vybe headers
+    cp vendor/vybe/*.h "$APP_BUNDLE/Contents/Resources/include/vybe/" 2>/dev/null || true
+
+    # flecs headers
+    cp vendor/flecs/distr/flecs.h "$APP_BUNDLE/Contents/Resources/include/flecs/" 2>/dev/null || true
+
+    # imgui headers (main headers and backends)
+    cp vendor/imgui/*.h "$APP_BUNDLE/Contents/Resources/include/imgui/" 2>/dev/null || true
+    cp vendor/imgui/backends/*.h "$APP_BUNDLE/Contents/Resources/include/imgui/backends/" 2>/dev/null || true
+
+    # Copy MoltenVK ICD for Vulkan discovery
+    echo "Setting up Vulkan ICD..."
+    mkdir -p "$APP_BUNDLE/Contents/Resources/vulkan/icd.d"
+    # Create ICD manifest pointing to bundled MoltenVK (relative path)
+    cat > "$APP_BUNDLE/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json" << 'MOLTENVK_ICD'
+{
+    "file_format_version" : "1.0.0",
+    "ICD": {
+        "library_path": "../../../Frameworks/libMoltenVK.dylib",
+        "api_version" : "1.2.0"
+    }
+}
+MOLTENVK_ICD
+
+    # Collect all dylibs that need to be bundled
+    echo "Bundling dynamic libraries..."
+
+    # jank runtime libs
+    JANK_LIBS=(
+        "$JANK_LIB_DIR/libLLVM.dylib"
+        "$JANK_LIB_DIR/libclang-cpp.dylib"
+        "$JANK_LIB_DIR/libc++.1.dylib"
+        "$JANK_LIB_DIR/libunwind.1.dylib"
+    )
+
+    # Our project libs
+    PROJECT_LIBS=(
+        "vulkan/libsdf_deps.dylib"
+    )
+
+    # System/homebrew libs that jank depends on
+    EXTERNAL_LIBS=(
+        "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib"
+        "/opt/homebrew/opt/zstd/lib/libzstd.1.dylib"
+    )
+
+    # SDL3/Vulkan/shaderc libs for full portability
+    GRAPHICS_LIBS=(
+        "/opt/homebrew/lib/libSDL3.dylib"
+        "/opt/homebrew/lib/libvulkan.dylib"
+        "/opt/homebrew/lib/libshaderc_shared.dylib"
+        "/opt/homebrew/lib/libMoltenVK.dylib"
+    )
+
+    # Copy all libs to Frameworks
+    for lib in "${JANK_LIBS[@]}" "${PROJECT_LIBS[@]}" "${EXTERNAL_LIBS[@]}" "${GRAPHICS_LIBS[@]}"; do
+        if [ -f "$lib" ]; then
+            libname=$(basename "$lib")
+            echo "  Copying $libname"
+            cp "$lib" "$APP_BUNDLE/Contents/Frameworks/"
+        else
+            echo "  Warning: $lib not found"
+        fi
+    done
+
+    # Follow symlinks for versioned libs
+    for lib in "$APP_BUNDLE/Contents/Frameworks/"*.dylib; do
+        if [ -L "$lib" ]; then
+            target=$(readlink "$lib")
+            if [ -f "/opt/homebrew/lib/$target" ]; then
+                cp "/opt/homebrew/lib/$target" "$APP_BUNDLE/Contents/Frameworks/"
+            fi
+        fi
+    done
+
+    # Create versioned symlinks (executable may reference libSDL3.0.dylib, libvulkan.1.dylib, etc.)
+    echo "Creating versioned library symlinks..."
+    (cd "$APP_BUNDLE/Contents/Frameworks" && \
+        ln -sf libSDL3.dylib libSDL3.0.dylib && \
+        ln -sf libvulkan.dylib libvulkan.1.dylib && \
+        ln -sf libshaderc_shared.dylib libshaderc_shared.1.dylib)
+
+    # Fix library paths in the executable
+    echo "Fixing library paths..."
+    local EXEC_PATH="$APP_BUNDLE/Contents/MacOS/${APP_NAME}-bin"
+
+    # Fix @rpath references to point to Frameworks
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$EXEC_PATH" 2>/dev/null || true
+
+    # Fix hardcoded paths in executable
+    install_name_tool -change "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib" \
+        "@executable_path/../Frameworks/libcrypto.3.dylib" "$EXEC_PATH"
+    install_name_tool -change "/opt/homebrew/opt/zstd/lib/libzstd.1.dylib" \
+        "@executable_path/../Frameworks/libzstd.1.dylib" "$EXEC_PATH"
+    install_name_tool -change "vulkan/libsdf_deps.dylib" \
+        "@executable_path/../Frameworks/libsdf_deps.dylib" "$EXEC_PATH"
+
+    # Fix graphics library paths in executable (both versioned and unversioned)
+    install_name_tool -change "/opt/homebrew/lib/libSDL3.dylib" \
+        "@executable_path/../Frameworks/libSDL3.dylib" "$EXEC_PATH" 2>/dev/null || true
+    install_name_tool -change "/opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib" \
+        "@executable_path/../Frameworks/libSDL3.0.dylib" "$EXEC_PATH" 2>/dev/null || true
+    install_name_tool -change "/opt/homebrew/lib/libvulkan.dylib" \
+        "@executable_path/../Frameworks/libvulkan.dylib" "$EXEC_PATH" 2>/dev/null || true
+    install_name_tool -change "/opt/homebrew/opt/vulkan-loader/lib/libvulkan.1.dylib" \
+        "@executable_path/../Frameworks/libvulkan.1.dylib" "$EXEC_PATH" 2>/dev/null || true
+    install_name_tool -change "/opt/homebrew/lib/libshaderc_shared.dylib" \
+        "@executable_path/../Frameworks/libshaderc_shared.dylib" "$EXEC_PATH" 2>/dev/null || true
+    install_name_tool -change "/opt/homebrew/opt/shaderc/lib/libshaderc_shared.1.dylib" \
+        "@executable_path/../Frameworks/libshaderc_shared.1.dylib" "$EXEC_PATH" 2>/dev/null || true
+
+    # Fix library paths in the bundled dylibs themselves
+    for lib in "$APP_BUNDLE/Contents/Frameworks/"*.dylib; do
+        libname=$(basename "$lib")
+        echo "  Fixing paths in $libname"
+
+        # Update the library's own ID
+        install_name_tool -id "@executable_path/../Frameworks/$libname" "$lib" 2>/dev/null || true
+
+        # Fix references to other libs
+        install_name_tool -change "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib" \
+            "@executable_path/../Frameworks/libcrypto.3.dylib" "$lib" 2>/dev/null || true
+        install_name_tool -change "/opt/homebrew/opt/zstd/lib/libzstd.1.dylib" \
+            "@executable_path/../Frameworks/libzstd.1.dylib" "$lib" 2>/dev/null || true
+
+        # Fix graphics library references
+        install_name_tool -change "/opt/homebrew/lib/libSDL3.dylib" \
+            "@executable_path/../Frameworks/libSDL3.dylib" "$lib" 2>/dev/null || true
+        install_name_tool -change "/opt/homebrew/lib/libvulkan.dylib" \
+            "@executable_path/../Frameworks/libvulkan.dylib" "$lib" 2>/dev/null || true
+        install_name_tool -change "/opt/homebrew/lib/libshaderc_shared.dylib" \
+            "@executable_path/../Frameworks/libshaderc_shared.dylib" "$lib" 2>/dev/null || true
+        install_name_tool -change "/opt/homebrew/lib/libMoltenVK.dylib" \
+            "@executable_path/../Frameworks/libMoltenVK.dylib" "$lib" 2>/dev/null || true
+
+        # Fix versioned lib references (SDL3.0, vulkan.1, etc)
+        install_name_tool -change "/opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib" \
+            "@executable_path/../Frameworks/libSDL3.0.dylib" "$lib" 2>/dev/null || true
+        install_name_tool -change "/opt/homebrew/opt/vulkan-loader/lib/libvulkan.1.dylib" \
+            "@executable_path/../Frameworks/libvulkan.1.dylib" "$lib" 2>/dev/null || true
+        install_name_tool -change "/opt/homebrew/opt/shaderc/lib/libshaderc_shared.1.dylib" \
+            "@executable_path/../Frameworks/libshaderc_shared.1.dylib" "$lib" 2>/dev/null || true
+
+        # Fix jank lib cross-references
+        for jank_lib in "${JANK_LIBS[@]}"; do
+            jank_libname=$(basename "$jank_lib")
+            install_name_tool -change "$jank_lib" \
+                "@executable_path/../Frameworks/$jank_libname" "$lib" 2>/dev/null || true
+            install_name_tool -change "@rpath/$jank_libname" \
+                "@executable_path/../Frameworks/$jank_libname" "$lib" 2>/dev/null || true
+        done
+    done
+
+    # Create Info.plist
+    echo "Creating Info.plist..."
+    cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.vybe.$APP_NAME</string>
+    <key>CFBundleName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key>
+    <string>SDF Viewer</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+    # Create PkgInfo
+    echo "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
+
+    # Clean up the raw executable
+    rm -f "$EXECUTABLE"
+
+    # Re-sign all modified binaries (required after install_name_tool)
+    echo "Code signing..."
+    # Sign frameworks first
+    for lib in "$APP_BUNDLE/Contents/Frameworks/"*.dylib; do
+        codesign --force --sign - "$lib" 2>/dev/null || true
+    done
+    # Sign the main executable binary
+    codesign --force --sign - "$EXEC_PATH"
+    # Sign the whole bundle
+    codesign --force --sign - "$APP_BUNDLE"
+
+    echo ""
+    echo "============================================"
+    echo "App bundle created: $APP_BUNDLE"
+    echo "============================================"
+    echo ""
+    echo "Contents:"
+    du -sh "$APP_BUNDLE"
+    echo ""
+    echo "To run: open $APP_BUNDLE"
+    echo "Or:     $APP_BUNDLE/Contents/MacOS/$APP_NAME"
+}
+
 export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
 export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
 
@@ -17,7 +310,7 @@ if [ ! -f vulkan/imgui/imgui.o ]; then
 fi
 
 # Compile blit shaders if needed
-GLSLC=glslangValidator
+GLSLC=glslangValidator4
 if [ ! -f vulkan_kim/blit.vert.spv ] || [ vulkan_kim/blit.vert -nt vulkan_kim/blit.vert.spv ]; then
     echo "Compiling blit.vert..."
     $GLSLC -V vulkan_kim/blit.vert -o vulkan_kim/blit.vert.spv
@@ -27,31 +320,123 @@ if [ ! -f vulkan_kim/blit.frag.spv ] || [ vulkan_kim/blit.frag -nt vulkan_kim/bl
     $GLSLC -V vulkan_kim/blit.frag -o vulkan_kim/blit.frag.spv
 fi
 
-# Build jank arguments for SDF viewer
+# Build stb_impl.o if needed
+if [ ! -f vulkan/stb_impl.o ] || [ vulkan/stb_impl.c -nt vulkan/stb_impl.o ]; then
+    echo "Compiling stb_impl..."
+    clang -c vulkan/stb_impl.c -o vulkan/stb_impl.o
+fi
+
+# Build vybe_flecs_jank.o if needed (jank-runtime-dependent flecs helpers)
+if [ ! -f vendor/vybe/vybe_flecs_jank.o ] || [ vendor/vybe/vybe_flecs_jank.cpp -nt vendor/vybe/vybe_flecs_jank.o ]; then
+    echo "Compiling vybe_flecs_jank..."
+    JANK_SRC=/Users/pfeodrippe/dev/jank/compiler+runtime
+    /usr/bin/clang++ -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
+        -DIMMER_HAS_LIBGC=1 \
+        -I$JANK_SRC/include/cpp \
+        -I$JANK_SRC/third-party \
+        -I$JANK_SRC/third-party/bdwgc/include \
+        -I$JANK_SRC/third-party/immer \
+        -I$JANK_SRC/third-party/bpptree/include \
+        -I$JANK_SRC/third-party/folly \
+        -I$JANK_SRC/third-party/boost-multiprecision/include \
+        -I$JANK_SRC/third-party/boost-preprocessor/include \
+        -I$JANK_SRC/build/llvm-install/usr/local/include \
+        -Ivendor -Ivendor/flecs/distr \
+        -std=c++20 -fPIC
+fi
+
+# Object files needed for both JIT and linking
+OBJ_FILES=(
+    vulkan/imgui/imgui.o
+    vulkan/imgui/imgui_draw.o
+    vulkan/imgui/imgui_widgets.o
+    vulkan/imgui/imgui_tables.o
+    vulkan/imgui/imgui_impl_sdl3.o
+    vulkan/imgui/imgui_impl_vulkan.o
+    vulkan/stb_impl.o
+    vendor/flecs/distr/flecs.o
+    vendor/flecs/distr/flecs_jank_wrapper_native.o
+    vendor/vybe/vybe_flecs_jank.o
+)
+
+# Build jank arguments for SDF viewer (common args)
 JANK_ARGS=(
     -I/opt/homebrew/include
     -I/opt/homebrew/include/SDL3
     -I.
+    -Ivendor
     -Ivendor/imgui
     -Ivendor/imgui/backends
+    -Ivendor/flecs/distr
     -L/opt/homebrew/lib
-    -l/opt/homebrew/lib/libvulkan.dylib
-    -l/opt/homebrew/lib/libSDL3.dylib
-    -l/opt/homebrew/lib/libshaderc_shared.dylib
-    --obj vulkan/imgui/imgui.o
-    --obj vulkan/imgui/imgui_draw.o
-    --obj vulkan/imgui/imgui_widgets.o
-    --obj vulkan/imgui/imgui_tables.o
-    --obj vulkan/imgui/imgui_impl_sdl3.o
-    --obj vulkan/imgui/imgui_impl_vulkan.o
     --framework Cocoa
     --framework IOKit
     --framework IOSurface
     --framework Metal
     --framework QuartzCore
     --module-path src
-    run-main vybe.sdf -main
 )
 
-# Run SDF viewer
-jank "${JANK_ARGS[@]}"
+# Dynamic libraries - handled differently for JIT vs standalone
+DYLIBS=(
+    /opt/homebrew/lib/libvulkan.dylib
+    /opt/homebrew/lib/libSDL3.dylib
+    /opt/homebrew/lib/libshaderc_shared.dylib
+)
+
+if [ "$STANDALONE" = true ]; then
+    echo "Building standalone executable: $OUTPUT_NAME"
+
+    # Create a shared library from object files for JIT loading and AOT linking
+    SHARED_LIB="vulkan/libsdf_deps.dylib"
+    echo "Creating shared library..."
+    clang++ -dynamiclib -o "$SHARED_LIB" "${OBJ_FILES[@]}" \
+        -framework Cocoa -framework IOKit -framework IOSurface -framework Metal -framework QuartzCore \
+        -L/opt/homebrew/lib -lvulkan -lSDL3 -lshaderc_shared \
+        -Wl,-undefined,dynamic_lookup
+
+    # JIT needs dylibs (for symbol resolution during compilation)
+    for lib in "${DYLIBS[@]}"; do
+        JANK_ARGS+=(--jit-lib "$lib")
+    done
+    JANK_ARGS+=(--jit-lib "$PWD/$SHARED_LIB")
+
+    # JIT also needs object files for symbol resolution during compilation
+    for obj in "${OBJ_FILES[@]}"; do
+        JANK_ARGS+=(--obj "$obj")
+    done
+
+    # Dynamic libraries for AOT linker
+    for lib in "${DYLIBS[@]}"; do
+        JANK_ARGS+=(--link-lib "$lib")
+    done
+    JANK_ARGS+=(--link-lib "$PWD/$SHARED_LIB")
+
+    jank "${JANK_ARGS[@]}" compile -o "$OUTPUT_NAME" vybe.sdf
+
+    # Create platform-specific distribution
+    case "$(uname -s)" in
+        Darwin)
+            create_macos_app_bundle "$OUTPUT_NAME" "$OUTPUT_NAME"
+            ;;
+        Linux)
+            echo "Linux distribution: Creating AppImage structure..."
+            # TODO: Create AppImage or similar
+            mkdir -p "dist/$OUTPUT_NAME"
+            mv "$OUTPUT_NAME" "dist/$OUTPUT_NAME/"
+            echo "Executable at: dist/$OUTPUT_NAME/$OUTPUT_NAME"
+            ;;
+        *)
+            echo "Unknown platform, executable at: $OUTPUT_NAME"
+            ;;
+    esac
+else
+    # For JIT mode: use --obj and --lib (not -l which expects library names)
+    for obj in "${OBJ_FILES[@]}"; do
+        JANK_ARGS+=(--obj "$obj")
+    done
+    for lib in "${DYLIBS[@]}"; do
+        JANK_ARGS+=(--lib "$lib")
+    done
+    jank "${JANK_ARGS[@]}" run-main vybe.sdf -main
+fi

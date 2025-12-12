@@ -1,23 +1,9 @@
-(ns vybe.sdf.math)
+(ns vybe.sdf.math
+  (:refer-clojure :exclude [abs])
+  (:require
+   ["vybe/vybe_sdf_math.h" :as _ :scope ""]))
 
-;; Native math functions via C++ interop
-(cpp/raw "
-#include <cmath>
-
-static double sdf_sqrt(double x) { return std::sqrt(x); }
-static double sdf_pow(double x, double y) { return std::pow(x, y); }
-static double sdf_sin(double x) { return std::sin(x); }
-static double sdf_cos(double x) { return std::cos(x); }
-static double sdf_tan(double x) { return std::tan(x); }
-static double sdf_atan(double x) { return std::atan(x); }
-static double sdf_atan2(double y, double x) { return std::atan2(y, x); }
-static double sdf_floor(double x) { return std::floor(x); }
-static double sdf_ceil(double x) { return std::ceil(x); }
-static double sdf_fmod(double x, double y) { return std::fmod(x, y); }
-static double sdf_abs(double x) { return std::fabs(x); }
-static double sdf_log(double x) { return std::log(x); }
-static double sdf_exp(double x) { return std::exp(x); }
-")
+;; Native math functions defined in vendor/vybe/vybe_sdf_math.h
 
 ;; Helper to ensure double type
 (defn to-double [x] (+ 0.0 x))

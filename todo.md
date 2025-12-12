@@ -1,3 +1,4 @@
+- [ ] standalone sdf script
 - [ ] audio
   - [ ] most simple audio lib to use
     - [ ] miniaudio ?

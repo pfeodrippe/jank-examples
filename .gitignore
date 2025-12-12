@@ -16,3 +16,5 @@ jank.profile
 .jank-repl-history
 .nrepl-port
 *.png
+SDFViewer*
+sdf-viewer*

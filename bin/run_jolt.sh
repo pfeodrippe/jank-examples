@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
 
 # Build if needed
 if [ ! -f "vendor/jolt_wrapper.o" ]; then
     echo "Building Jolt wrapper..."
-    bash build_jolt.sh
+    bash ./build_jolt.sh
 fi
 
 # Collect all object files - wrapper first, then Jolt

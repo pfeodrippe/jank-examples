@@ -27,7 +27,7 @@
 #include <dirent.h>
 #include <algorithm>
 
-#define STB_IMAGE_WRITE_IMPLEMENTATION
+// stb_image_write implementation is in stb_impl.o
 #include "stb_image_write.h"
 
 namespace sdfx {

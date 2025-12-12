@@ -1,7 +1,9 @@
 (ns vybe.sdf
+  (:refer-clojure :exclude [run!])
   (:require
    [vybe.sdf.math :as m]
    [vybe.sdf.ui :as ui]
+   [vybe.flecs :as vf]
    [jank.nrepl-server.server :as server]))
 
 ;; Include the SDF Vulkan engine header

@@ -17,7 +17,8 @@ Integrated demo combining Raylib + ImGui + JoltPhysics + Flecs ECS using jank (C
 
 ## Running
 ```bash
-./run_integrated.sh  # Run the demo
+./bin/run_integrated.sh  # Run the demo
+./bin/run_sdf.sh         # Run SDF Vulkan viewer
 ```
 
 ## jank C++ Interop Patterns

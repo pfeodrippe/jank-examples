@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # Check for flags
 USE_LLDB=false
@@ -63,13 +63,13 @@ export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PA
 # Build ImGui if needed
 if [ ! -f "vendor/imgui/build/imgui.o" ]; then
     echo "Building ImGui..."
-    bash build_imgui.sh
+    bash ./build_imgui.sh
 fi
 
 # Build Jolt if needed
 if [ ! -f "vendor/jolt_wrapper.o" ]; then
     echo "Building Jolt wrapper..."
-    bash build_jolt.sh
+    bash ./build_jolt.sh
 fi
 
 echo "Running integrated demo (Raylib + ImGui + Jolt + Flecs) - Static Linking"
@@ -92,6 +92,7 @@ done
 # Add Flecs object files
 OBJ_ARGS="$OBJ_ARGS --obj vendor/flecs/distr/flecs.o"
 OBJ_ARGS="$OBJ_ARGS --obj vendor/flecs/distr/flecs_jank_wrapper_native.o"
+OBJ_ARGS="$OBJ_ARGS --obj vendor/vybe/vybe_flecs_jank.o"
 
 # Build jank arguments array
 JANK_ARGS=(

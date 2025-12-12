@@ -2,16 +2,16 @@
 
 ## After modifying integrated example
 
-**ALWAYS run `./run_integrated.sh` after modifying `src/my_integrated_demo.jank`** to verify changes work correctly.
+**ALWAYS run `./bin/run_integrated.sh` after modifying `src/my_integrated_demo.jank`** to verify changes work correctly.
 
 ```bash
-./run_integrated.sh
+./bin/run_integrated.sh
 ```
 
 If debugging is needed:
 ```bash
-./run_integrated.sh --lldb   # Shows jank source locations in stack traces
-./run_integrated.sh --debug  # Enable debug symbols
+./bin/run_integrated.sh --lldb   # Shows jank source locations in stack traces
+./bin/run_integrated.sh --debug  # Enable debug symbols
 ```
 
 ## Common issues

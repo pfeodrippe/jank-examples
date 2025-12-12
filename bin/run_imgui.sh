@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
 
 # Build ImGui if needed
 if [ ! -f "vendor/imgui/build/imgui.o" ]; then
     echo "Building ImGui..."
-    bash build_imgui.sh
+    bash ./build_imgui.sh
 fi
 
 # Collect object files

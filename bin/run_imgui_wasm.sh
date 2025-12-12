@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 JANK_DIR="/Users/pfeodrippe/dev/jank/compiler+runtime"
 SOMETHING_DIR="/Users/pfeodrippe/dev/something"
@@ -9,7 +9,7 @@ SOMETHING_DIR="/Users/pfeodrippe/dev/something"
 # Build ImGui for WASM if needed
 if [ ! -f "vendor/imgui/build-wasm/imgui.o" ]; then
     echo "Building ImGui for WASM..."
-    BUILD_WASM=1 bash build_imgui.sh
+    BUILD_WASM=1 bash ./build_imgui.sh
 fi
 
 cd "$JANK_DIR"
