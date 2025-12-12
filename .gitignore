@@ -5,6 +5,7 @@ pom.xml
 
 *.a
 *.o
+*.spv
 
 profile.txt
 jank.profile
@@ -14,3 +15,4 @@ jank.profile
 .clj-kondo/.lock
 .jank-repl-history
 .nrepl-port
+*.png

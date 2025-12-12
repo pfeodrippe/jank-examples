@@ -1,0 +1,16 @@
+(ns vybe.sdf.ui)
+
+;; Minimal ImGui wrapper for SDF viewer
+;; Only provides new-frame! and render! needed by vybe.sdf
+
+(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")
+
+(defn new-frame!
+  "Start a new ImGui frame. Call before any UI code."
+  []
+  (cpp/sdfx.imgui_new_frame))
+
+(defn render!
+  "Finalize ImGui rendering. Call after all UI code, before draw-frame!."
+  []
+  (cpp/sdfx.imgui_render))

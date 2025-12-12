@@ -1,0 +1,67 @@
+#version 450
+//
+// SDF SAMPLER - Generic SDF sampling compute shader
+// Used for mesh export via marching cubes
+//
+// This shader samples the current scene's SDF at a grid of points
+// for use in CPU-side marching cubes mesh generation.
+//
+
+layout(local_size_x = 64) in;
+
+// Input: grid of 3D points to sample
+layout(std430, binding = 0) readonly buffer InputPositions {
+    vec4 positions[];  // xyz = position, w = unused
+};
+
+// Output: SDF distances at each point
+layout(std430, binding = 1) writeonly buffer OutputDistances {
+    float distances[];
+};
+
+// Grid parameters
+layout(std140, binding = 2) uniform SamplerParams {
+    uint numPoints;     // Total number of points to sample
+    float time;         // Time value for animated SDFs (frozen at export time)
+    float padding2;
+    float padding3;
+};
+
+// Provide ubo-like struct for compatibility with extracted scene code
+struct UboCompat {
+    vec4 resolution;  // .z is time
+    vec4 lightDir;
+};
+UboCompat ubo;
+
+// ============================================================================
+// SCENE SDF - Extracted from main shader (primitives + boolean ops + scene)
+// ============================================================================
+
+// MARKER_SCENE_SDF_START
+// Default scene - a simple sphere (will be replaced by extracted code)
+float sdSphere(vec3 p, float r) {
+    return length(p) - r;
+}
+
+float sceneSDF(vec3 p) {
+    return sdSphere(p, 1.0);
+}
+// MARKER_SCENE_SDF_END
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    if (idx >= numPoints) return;
+
+    // Set up ubo compatibility (time in resolution.z)
+    ubo.resolution = vec4(1.0, 1.0, time, 1.0);
+    ubo.lightDir = vec4(0.5, 0.8, 0.6, 0.0);
+
+    vec3 p = positions[idx].xyz;
+    distances[idx] = sceneSDF(p);
+}

@@ -1,0 +1,796 @@
+#version 450
+//
+// KIM KITSURAGI - Disco Elysium Character Model
+// Modeled in SDF (Signed Distance Functions)
+//
+// ============================================================================
+// DESIGN NOTES - Why things are made this way
+// ============================================================================
+//
+// FACE SHAPE (sdKimHead):
+//   - Ellipsoid skull (0.08, 0.12, 0.095) - TALLER than wide to match
+//     Disco Elysium's elongated character proportions
+//   - Deep eye sockets using opSmoothSubtract - creates the heavy shadows
+//     around the eyes that are iconic to the DE art style
+//   - Angular cheekbones with rotated boxes - DE characters have very
+//     pronounced, almost skull-like facial structure
+//   - Temple hollows (subtractive spheres) - adds gauntness to the face
+//
+// GLASSES (sdKimGlasses):
+//   - ROUND torus frames, NOT rectangular - the reference shows circular
+//     spectacle-style glasses, not visor/wraparound style
+//   - Small lens radius (0.022) for that intellectual look
+//   - Thin frame (0.004 torus thickness) - not chunky
+//
+// SKIN TONE:
+//   - vec3(0.55, 0.42, 0.32) - darker olive/brown
+//   - Reference shows Kim has distinctly darker skin than typical Western
+//     game characters - he's Seolite (in-game ethnicity)
+//   - Previous version was too light (0.87, 0.75, 0.62)
+//
+// PAINTERLY EFFECTS:
+//   - posterize() with 8 levels - creates visible color banding like oil paint
+//   - brushStroke() - directional FBM noise aligned to surface normal
+//     simulates brush direction following form
+//   - Hatching in shadows (sin pattern) - mimics traditional hatching technique
+//   - fbm() for background - layered noise creates paint texture
+//
+// HALO:
+//   - Circular glow behind head - directly matches the reference portrait
+//   - Uses ray-to-point distance calculation for circular falloff
+//   - Warm cream color (0.95, 0.90, 0.82) - like old religious paintings
+//
+// LIGHTING:
+//   - Warm ambient (0.25, 0.18, 0.12) - DE has a warm, nostalgic color palette
+//   - Strong rim light - creates that painterly edge glow
+//   - Low specular (0.1) - DE characters look matte, not shiny
+//   - High shadow contrast (mix 0.4-1.0) - dramatic lighting
+//
+// Reference: /Users/pfeodrippe/dev/sdf-3d/references/kim/small/kim_wiki_portrait_small.png
+//
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+
+const int MAX_OBJECTS = 32;
+
+layout(std140, binding = 1) uniform UBO {
+    vec4 cameraPos;      // xyz = position, w = fov
+    vec4 cameraTarget;   // xyz = target
+    vec4 lightDir;       // xyz = direction (normalized)
+    vec4 resolution;     // xy = width/height, z = time
+    vec4 editMode;       // x = enabled, y = selectedObject, z = hoveredAxis, w = objectCount
+    vec4 gizmoPos;       // xyz = gizmo position
+    vec4 gizmoRot;       // xyz = selected object rotation (for preview)
+    vec4 objPositions[MAX_OBJECTS];
+    vec4 objRotations[MAX_OBJECTS];
+} ubo;
+
+// ============================================================================
+// SDF PRIMITIVES
+// ============================================================================
+
+float sdSphere(vec3 p, float r) {
+    return length(p) - r;
+}
+
+float sdBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float sdRoundBox(vec3 p, vec3 b, float r) {
+    return sdBox(p, b) - r;
+}
+
+float sdEllipsoid(vec3 p, vec3 r) {
+    float k0 = length(p / r);
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / k1;
+}
+
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+float sdVerticalCapsule(vec3 p, float h, float r) {
+    p.y -= clamp(p.y, 0.0, h);
+    return length(p) - r;
+}
+
+float sdCylinder(vec3 p, float h, float r) {
+    vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
+}
+
+float sdTorus(vec3 p, vec2 t) {
+    vec2 q = vec2(length(p.xz) - t.x, p.y);
+    return length(q) - t.y;
+}
+
+float sdPlane(vec3 p, vec3 n, float h) {
+    return dot(p, n) + h;
+}
+
+// ============================================================================
+// BOOLEAN OPERATIONS
+// ============================================================================
+
+float opUnion(float d1, float d2) { return min(d1, d2); }
+float opSubtract(float d1, float d2) { return max(-d1, d2); }
+float opIntersect(float d1, float d2) { return max(d1, d2); }
+
+float opSmoothUnion(float d1, float d2, float k) {
+    float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
+}
+
+float opSmoothSubtract(float d1, float d2, float k) {
+    float h = clamp(0.5 - 0.5 * (d2 + d1) / k, 0.0, 1.0);
+    return mix(d2, -d1, h) + k * h * (1.0 - h);
+}
+
+// ============================================================================
+// ROTATION MATRICES
+// ============================================================================
+
+mat3 rotateX(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(1, 0, 0, 0, c, -s, 0, s, c);
+}
+
+mat3 rotateY(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(c, 0, s, 0, 1, 0, -s, 0, c);
+}
+
+mat3 rotateZ(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(c, -s, 0, s, c, 0, 0, 0, 1);
+}
+
+// ============================================================================
+// MATERIAL IDS
+// ============================================================================
+
+#define MAT_GROUND      0
+#define MAT_SKIN        1
+#define MAT_JACKET      2
+#define MAT_PANTS       3
+#define MAT_HAIR        4
+#define MAT_GLASSES     5
+#define MAT_SHOES       6
+#define MAT_WATCH       7
+#define MAT_SHIRT       8
+#define MAT_BADGE       9
+#define MAT_EYES        10
+#define MAT_LIPS        11
+
+// ============================================================================
+// KIM KITSURAGI - SDF CHARACTER MODEL
+// DISCO ELYSIUM STYLE - Elongated narrow face, round glasses
+// ============================================================================
+
+vec3 kimPos = vec3(0.0, 0.0, 0.0);
+
+// Kim's head - ELONGATED and NARROW like the reference
+float sdKimHead(vec3 p) {
+    // Main head shape - slightly elongated oval
+    vec3 headP = p - vec3(0.0, 1.72, 0.0);
+    float head = sdEllipsoid(headP, vec3(0.085, 0.115, 0.095));
+
+    // Jaw - make it slightly more angular/defined
+    vec3 jawP = p - vec3(0.0, 1.63, 0.02);
+    float jaw = sdEllipsoid(jawP, vec3(0.075, 0.065, 0.075));
+    head = opSmoothUnion(head, jaw, 0.04);
+
+    // Cheekbones - defined but blended (less harsh)
+    vec3 cheekL = rotateZ(0.4) * (p - vec3(-0.062, 1.685, 0.055));
+    vec3 cheekR = rotateZ(-0.4) * (p - vec3(0.062, 1.685, 0.055));
+    float cheeks = opUnion(
+        sdEllipsoid(cheekL, vec3(0.032, 0.022, 0.022)),
+        sdEllipsoid(cheekR, vec3(0.032, 0.022, 0.022))
+    );
+    head = opSmoothUnion(head, cheeks, 0.045);
+
+    // Ears
+    vec3 earL = p - vec3(-0.09, 1.72, 0.0);
+    vec3 earR = p - vec3(0.09, 1.72, 0.0);
+    float ears = opUnion(
+        sdEllipsoid(earL, vec3(0.015, 0.03, 0.01)),
+        sdEllipsoid(earR, vec3(0.015, 0.03, 0.01))
+    );
+    head = opSmoothUnion(head, ears, 0.01);
+
+    // Nose
+    vec3 noseP = p - vec3(0.0, 1.68, 0.1);
+    float nose = sdEllipsoid(noseP, vec3(0.015, 0.025, 0.02));
+    head = opSmoothUnion(head, nose, 0.02);
+
+    // Eye sockets (subtraction)
+    vec3 socketL = p - vec3(-0.035, 1.72, 0.08);
+    vec3 socketR = p - vec3(0.035, 1.72, 0.08);
+    float sockets = opUnion(
+        sdEllipsoid(socketL, vec3(0.024, 0.020, 0.030)),
+        sdEllipsoid(socketR, vec3(0.024, 0.020, 0.030))
+    );
+    head = opSmoothSubtract(sockets, head, 0.02);
+
+    // Mouth area - organic shape (ellipsoid base)
+    vec3 mouthP = p - vec3(0.0, 1.615, 0.088);
+    float mouthArea = sdEllipsoid(mouthP, vec3(0.022, 0.008, 0.015));
+    head = opSmoothUnion(head, mouthArea, 0.015);
+
+    return head;
+}
+
+// Eyes - visible in the sockets
+float sdKimEyes(vec3 p) {
+    vec3 eyeL = p - vec3(-0.032, 1.72, 0.055);
+    vec3 eyeR = p - vec3(0.032, 1.72, 0.055);
+    return opUnion(
+        sdSphere(eyeL, 0.012),
+        sdSphere(eyeR, 0.012)
+    );
+}
+
+// Lips - defined upper and lower lips
+float sdKimLips(vec3 p) {
+    // Upper lip - thin
+    vec3 upperP = p - vec3(0.0, 1.618, 0.092);
+    float upper = sdEllipsoid(upperP, vec3(0.018, 0.0025, 0.006));
+
+    // Lower lip - fuller
+    vec3 lowerP = p - vec3(0.0, 1.612, 0.092);
+    float lower = sdEllipsoid(lowerP, vec3(0.016, 0.0035, 0.007));
+
+    return opSmoothUnion(upper, lower, 0.002);
+}
+
+// Kim's iconic black hair - short and neat
+float sdKimHair(vec3 p) {
+    // Adjusted for new head shape (taller)
+    vec3 hairP = p - vec3(0.0, 1.82, -0.01); // Moved up from 1.78
+
+    // Main hair volume - cap on top of head
+    // Flatter on top, more coverage on sides
+    float hair = sdEllipsoid(hairP, vec3(0.09, 0.05, 0.105));
+
+    // Side hair - adjusted for new head width
+    vec3 sideL = p - vec3(-0.085, 1.76, 0.0);
+    vec3 sideR = p - vec3(0.085, 1.76, 0.0);
+    float sides = opUnion(
+        sdEllipsoid(sideL, vec3(0.025, 0.05, 0.07)),
+        sdEllipsoid(sideR, vec3(0.025, 0.05, 0.07))
+    );
+    hair = opSmoothUnion(hair, sides, 0.03);
+
+    // Back of hair
+    vec3 backP = p - vec3(0.0, 1.75, -0.08);
+    float back = sdEllipsoid(backP, vec3(0.08, 0.07, 0.04));
+    hair = opSmoothUnion(hair, back, 0.03);
+
+    // Messy tufts on top (low profile, not spikes)
+    vec3 tuft1 = p - vec3(0.0, 1.87, 0.04);
+    float tufts = sdEllipsoid(tuft1, vec3(0.03, 0.015, 0.03)); // Flat, wide
+
+    // Side tufts - slightly raised but mostly horizontal
+    vec3 tuft2 = p - vec3(-0.04, 1.86, 0.02);
+    tufts = opSmoothUnion(tufts, sdEllipsoid(tuft2, vec3(0.025, 0.012, 0.025)), 0.01);
+
+    vec3 tuft3 = p - vec3(0.035, 1.86, 0.025);
+    tufts = opSmoothUnion(tufts, sdEllipsoid(tuft3, vec3(0.022, 0.010, 0.025)), 0.01);
+
+    hair = opSmoothUnion(hair, tufts, 0.015);
+
+    return hair;
+}
+
+// Kim's diamond-shaped glasses (appear circular in art)
+float sdKimGlasses(vec3 p) {
+    vec3 glassP = p - vec3(0.0, 1.72, 0.08); // Moved up slightly to match eyes
+
+    // Frame - two circular/diamond frames
+    // Torus major radius: 0.022, minor: 0.003
+    // Rotate X to face forward (Z-axis)
+    float frameL = sdTorus(rotateX(1.57) * (glassP - vec3(-0.035, 0.0, 0.0)), vec2(0.022, 0.003));
+    float frameR = sdTorus(rotateX(1.57) * (glassP - vec3(0.035, 0.0, 0.0)), vec2(0.022, 0.003));
+
+    // Lenses (thin cylinders)
+    // Rotate X to face forward
+    float lensL = sdCylinder(rotateX(1.57) * (glassP - vec3(-0.035, 0.0, 0.0)), 0.002, 0.021);
+    float lensR = sdCylinder(rotateX(1.57) * (glassP - vec3(0.035, 0.0, 0.0)), 0.002, 0.021);
+
+    // Bridge between lenses
+    vec3 bridgeP = glassP - vec3(0.0, 0.005, 0.0);
+    float bridge = sdCapsule(bridgeP, vec3(-0.01, 0.0, 0.0), vec3(0.01, 0.0, 0.0), 0.002);
+
+    // Temple arms (sides that go to ears)
+    vec3 armLP = glassP - vec3(-0.06, 0.0, -0.02);
+    vec3 armRP = glassP - vec3(0.06, 0.0, -0.02);
+    float arms = opUnion(
+        sdCapsule(armLP, vec3(0.0, 0.0, 0.0), vec3(-0.04, 0.0, -0.04), 0.002),
+        sdCapsule(armRP, vec3(0.0, 0.0, 0.0), vec3(0.04, 0.0, -0.04), 0.002)
+    );
+
+    float frames = opUnion(opUnion(frameL, frameR), opUnion(bridge, arms));
+    return opUnion(frames, opUnion(lensL, lensR));
+}
+
+// Neck
+float sdKimNeck(vec3 p) {
+    vec3 neckP = p - vec3(0.0, 1.52, 0.0);
+    return sdCylinder(neckP, 0.06, 0.035);
+}
+
+// Kim's iconic orange bomber jacket
+float sdKimJacket(vec3 p) {
+    vec3 torsoP = p - vec3(0.0, 1.3, 0.0);
+    float torso = sdRoundBox(torsoP, vec3(0.12, 0.18, 0.07), 0.025);
+
+    // Jacket collar - bomber style
+    vec3 collarP = p - vec3(0.0, 1.48, 0.02);
+    float collar = sdTorus(rotateX(1.57) * collarP, vec2(0.05, 0.02));
+    collar = opIntersect(collar, sdPlane(collarP, vec3(0, -1, 0), 0.0));
+    torso = opSmoothUnion(torso, collar, 0.015);
+
+    // Shoulders
+    vec3 shoulderL = p - vec3(-0.14, 1.42, 0.0);
+    vec3 shoulderR = p - vec3(0.14, 1.42, 0.0);
+    float shoulders = opUnion(
+        sdEllipsoid(shoulderL, vec3(0.045, 0.035, 0.05)),
+        sdEllipsoid(shoulderR, vec3(0.045, 0.035, 0.05))
+    );
+    torso = opSmoothUnion(torso, shoulders, 0.025);
+
+    // Bottom ribbing
+    vec3 ribP = p - vec3(0.0, 1.12, 0.0);
+    float rib = sdCylinder(ribP, 0.018, 0.125);
+    torso = opSmoothUnion(torso, rib, 0.01);
+
+    return torso;
+}
+
+// Arms with jacket sleeves
+float sdKimArms(vec3 p) {
+    vec3 upperL = p - vec3(-0.18, 1.35, 0.0);
+    vec3 upperR = p - vec3(0.18, 1.35, 0.0);
+    float upper = opUnion(
+        sdCapsule(upperL, vec3(0.0), vec3(-0.04, -0.14, 0.02), 0.035),
+        sdCapsule(upperR, vec3(0.0), vec3(0.04, -0.14, 0.02), 0.035)
+    );
+
+    vec3 lowerL = p - vec3(-0.22, 1.21, 0.02);
+    vec3 lowerR = p - vec3(0.22, 1.21, 0.02);
+    float lower = opUnion(
+        sdCapsule(lowerL, vec3(0.0), vec3(0.0, -0.16, 0.04), 0.03),
+        sdCapsule(lowerR, vec3(0.0), vec3(0.0, -0.16, 0.04), 0.03)
+    );
+
+    return opSmoothUnion(upper, lower, 0.018);
+}
+
+// Hands
+float sdKimHands(vec3 p) {
+    vec3 handL = p - vec3(-0.22, 1.02, 0.07);
+    vec3 handR = p - vec3(0.22, 1.02, 0.07);
+    return opUnion(
+        sdEllipsoid(handL, vec3(0.022, 0.035, 0.012)),
+        sdEllipsoid(handR, vec3(0.022, 0.035, 0.012))
+    );
+}
+
+// Watch
+float sdKimWatch(vec3 p) {
+    vec3 watchP = p - vec3(-0.22, 1.04, 0.055);
+    float face = sdCylinder(rotateX(1.57) * watchP, 0.006, 0.015);
+    float band = sdBox(watchP, vec3(0.02, 0.012, 0.006));
+    return opUnion(face, band);
+}
+
+// RCM Badge
+float sdKimBadge(vec3 p) {
+    vec3 badgeP = p - vec3(-0.08, 1.38, 0.10);
+    float shield = sdRoundBox(badgeP, vec3(0.03, 0.035, 0.006), 0.008);
+    float star = sdSphere(badgeP - vec3(0.0, 0.005, 0.008), 0.015);
+    return opUnion(shield, star);
+}
+
+// Dark green pants
+float sdKimPants(vec3 p) {
+    vec3 hipsP = p - vec3(0.0, 1.0, 0.0);
+    float hips = sdRoundBox(hipsP, vec3(0.09, 0.09, 0.055), 0.018);
+
+    vec3 legL = p - vec3(-0.05, 0.7, 0.0);
+    float leftLeg = sdCapsule(legL, vec3(0.0, 0.18, 0.0), vec3(0.0, -0.32, 0.0), 0.045);
+
+    vec3 legR = p - vec3(0.05, 0.7, 0.0);
+    float rightLeg = sdCapsule(legR, vec3(0.0, 0.18, 0.0), vec3(0.0, -0.32, 0.0), 0.045);
+
+    float legs = opUnion(leftLeg, rightLeg);
+    return opSmoothUnion(hips, legs, 0.035);
+}
+
+// Shoes
+float sdKimShoes(vec3 p) {
+    vec3 shoeL = p - vec3(-0.05, 0.35, 0.02);
+    vec3 shoeR = p - vec3(0.05, 0.35, 0.02);
+    return opUnion(
+        sdRoundBox(shoeL, vec3(0.035, 0.018, 0.06), 0.012),
+        sdRoundBox(shoeR, vec3(0.035, 0.018, 0.06), 0.012)
+    );
+}
+
+// Shirt collar
+float sdKimShirt(vec3 p) {
+    vec3 shirtP = p - vec3(0.0, 1.46, 0.025);
+    return sdBox(shirtP, vec3(0.04, 0.015, 0.015));
+}
+
+// ============================================================================
+// SCENE COMPOSITION
+// ============================================================================
+
+vec2 sceneSDF_mat(vec3 p) {
+    float time = ubo.resolution.z;
+
+    vec3 kimP = p - kimPos;
+    float breathe = sin(time * 1.5) * 0.002;
+    kimP.y -= breathe;
+
+    // Ground
+    float ground = sdPlane(p, vec3(0, 1, 0), -0.3);
+    vec2 res = vec2(ground, MAT_GROUND);
+
+    // === KIM ===
+
+    // Head (skin)
+    float head = sdKimHead(kimP);
+    if (head < res.x) res = vec2(head, MAT_SKIN);
+
+    // Eyes
+    float eyes = sdKimEyes(kimP);
+    if (eyes < res.x) res = vec2(eyes, MAT_EYES);
+
+    // Lips
+    float lips = sdKimLips(kimP);
+    if (lips < res.x) res = vec2(lips, MAT_LIPS);
+
+    // Hair
+    float hair = sdKimHair(kimP);
+    if (hair < res.x) res = vec2(hair, MAT_HAIR);
+
+    // Glasses
+    float glasses = sdKimGlasses(kimP);
+    if (glasses < res.x) res = vec2(glasses, MAT_GLASSES);
+
+    // Neck
+    float neck = sdKimNeck(kimP);
+    if (neck < res.x) res = vec2(neck, MAT_SKIN);
+
+    // Shirt
+    float shirt = sdKimShirt(kimP);
+    if (shirt < res.x) res = vec2(shirt, MAT_SHIRT);
+
+    // Jacket
+    float jacket = sdKimJacket(kimP);
+    if (jacket < res.x) res = vec2(jacket, MAT_JACKET);
+
+    // Arms
+    float arms = sdKimArms(kimP);
+    if (arms < res.x) res = vec2(arms, MAT_JACKET);
+
+    // Hands
+    float hands = sdKimHands(kimP);
+    if (hands < res.x) res = vec2(hands, MAT_SKIN);
+
+    // Watch
+    float watch = sdKimWatch(kimP);
+    if (watch < res.x) res = vec2(watch, MAT_WATCH);
+
+    // Badge
+    float badge = sdKimBadge(kimP);
+    if (badge < res.x) res = vec2(badge, MAT_BADGE);
+
+    // Pants
+    float pants = sdKimPants(kimP);
+    if (pants < res.x) res = vec2(pants, MAT_PANTS);
+
+    // Shoes
+    float shoes = sdKimShoes(kimP);
+    if (shoes < res.x) res = vec2(shoes, MAT_SHOES);
+
+    return res;
+}
+
+float sceneSDF(vec3 p) {
+    return sceneSDF_mat(p).x;
+}
+
+// ============================================================================
+// MATERIAL COLORS - Disco Elysium palette
+// ============================================================================
+
+vec3 getMaterialColor(int matID, vec3 p) {
+    if (matID == MAT_GROUND) {
+        float pattern = mod(floor(p.x * 2.0) + floor(p.z * 2.0), 2.0);
+        return mix(vec3(0.22, 0.20, 0.18), vec3(0.32, 0.28, 0.25), pattern);
+    }
+    else if (matID == MAT_SKIN) {
+        // DARKER olive/brown skin tone like the reference!
+        return vec3(0.55, 0.42, 0.32);
+    }
+    else if (matID == MAT_JACKET) {
+        // Iconic saturated ORANGE bomber
+        return vec3(0.92, 0.48, 0.08);
+    }
+    else if (matID == MAT_PANTS) {
+        // Dark green
+        return vec3(0.15, 0.22, 0.12);
+    }
+    else if (matID == MAT_HAIR) {
+        // Very dark brown/black
+        return vec3(0.06, 0.04, 0.03);
+    }
+    else if (matID == MAT_GLASSES) {
+        // Dark frame with slight reflection
+        return vec3(0.08, 0.06, 0.06);
+    }
+    else if (matID == MAT_SHOES) {
+        return vec3(0.12, 0.08, 0.06);
+    }
+    else if (matID == MAT_WATCH) {
+        return vec3(0.18, 0.18, 0.20);
+    }
+    else if (matID == MAT_SHIRT) {
+        // White/cream collar
+        return vec3(0.88, 0.85, 0.80);
+    }
+    else if (matID == MAT_BADGE) {
+        // Gold/brass
+        return vec3(0.82, 0.62, 0.12);
+    }
+    else if (matID == MAT_EYES) {
+        // Dark brown eyes
+        return vec3(0.12, 0.08, 0.06);
+    }
+    else if (matID == MAT_LIPS) {
+        // Slightly darker than skin
+        return vec3(0.45, 0.32, 0.25);
+    }
+
+    return vec3(0.5);
+}
+
+// ============================================================================
+// RAYMARCHING
+// ============================================================================
+
+const int MAX_STEPS = 128;
+const float MAX_DIST = 50.0;
+const float SURF_DIST = 0.0005;
+
+float raymarch(vec3 ro, vec3 rd) {
+    float d = 0.0;
+    for (int i = 0; i < MAX_STEPS; i++) {
+        vec3 p = ro + rd * d;
+        float ds = sceneSDF(p);
+        d += ds;
+        if (d > MAX_DIST || ds < SURF_DIST) break;
+    }
+    return d;
+}
+
+vec3 calcNormal(vec3 p) {
+    const float eps = 0.0001;
+    vec2 e = vec2(eps, 0);
+    return normalize(vec3(
+        sceneSDF(p + e.xyy) - sceneSDF(p - e.xyy),
+        sceneSDF(p + e.yxy) - sceneSDF(p - e.yxy),
+        sceneSDF(p + e.yyx) - sceneSDF(p - e.yyx)
+    ));
+}
+
+float calcSoftShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
+    float res = 1.0;
+    float t = mint;
+    for (int i = 0; i < 64 && t < maxt; i++) {
+        float h = sceneSDF(ro + rd * t);
+        if (h < 0.001) return 0.0;
+        res = min(res, k * h / t);
+        t += clamp(h, 0.02, 0.1);
+    }
+    return res;
+}
+
+float calcAO(vec3 pos, vec3 nor) {
+    float occ = 0.0;
+    float sca = 1.0;
+    for (int i = 0; i < 5; i++) {
+        float h = 0.01 + 0.12 * float(i);
+        float d = sceneSDF(pos + h * nor);
+        occ += (h - d) * sca;
+        sca *= 0.95;
+    }
+    return clamp(1.0 - 3.0 * occ, 0.0, 1.0);
+}
+
+// ============================================================================
+// PAINTERLY EFFECTS - Disco Elysium style
+// ============================================================================
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+    float f = 0.0;
+    f += 0.5 * noise(p); p *= 2.0;
+    f += 0.25 * noise(p); p *= 2.0;
+    f += 0.125 * noise(p);
+    return f;
+}
+
+// Stronger posterization for painterly look
+vec3 posterize(vec3 col, float levels) {
+    return floor(col * levels + 0.5) / levels;
+}
+
+// Brush stroke direction based on normals
+float brushStroke(vec2 uv, vec3 normal, float scale) {
+    // Directional noise based on surface orientation
+    vec2 dir = normalize(normal.xy + 0.001);
+    float angle = atan(dir.y, dir.x);
+
+    // Elongated noise in brush direction
+    vec2 rotUV = vec2(
+        uv.x * cos(angle) - uv.y * sin(angle),
+        uv.x * sin(angle) + uv.y * cos(angle)
+    );
+    rotUV.x *= 3.0; // Stretch in brush direction
+
+    return fbm(rotUV * scale);
+}
+
+vec3 render(vec3 ro, vec3 rd) {
+    vec3 col = vec3(0.0);
+    float d = raymarch(ro, rd);
+
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = vec2(pixelCoord) / ubo.resolution.xy;
+
+    if (d < MAX_DIST) {
+        vec3 p = ro + rd * d;
+        vec3 n = calcNormal(p);
+        vec3 lightDir = normalize(ubo.lightDir.xyz);
+
+        vec2 mat = sceneSDF_mat(p);
+        int matID = int(mat.y);
+        vec3 albedo = getMaterialColor(matID, p);
+
+        // === PAINTERLY LIGHTING ===
+        float diff = max(dot(n, lightDir), 0.0);
+        vec3 h = normalize(lightDir - rd);
+        float spec = pow(max(dot(n, h), 0.0), 12.0);
+        float shadow = calcSoftShadow(p + n * 0.002, lightDir, 0.02, 10.0, 6.0);
+        float ao = calcAO(p, n);
+
+        // Warmer, more dramatic ambient
+        vec3 warmAmbient = vec3(0.25, 0.18, 0.12) * ao;
+        vec3 coolAmbient = vec3(0.08, 0.12, 0.16) * ao;
+        vec3 ambient = mix(warmAmbient, coolAmbient, max(0.0, -n.y) * 0.5);
+
+        // High contrast diffuse
+        float diffIntensity = diff * 0.85 + 0.15;
+        diffIntensity *= mix(0.4, 1.0, shadow); // Stronger shadows
+        vec3 diffuse = albedo * diffIntensity;
+
+        // Warm rim light - very important for Disco Elysium style
+        float rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.5);
+        vec3 rimLight = vec3(0.5, 0.3, 0.15) * rim * 0.6;
+
+        // Minimal specular - matte look
+        vec3 specular = vec3(0.1) * spec * shadow;
+
+        col = ambient + diffuse + specular + rimLight;
+
+        // === STRONG PAINTERLY EFFECTS ===
+
+        // Brush strokes based on surface
+        float brush = brushStroke(p.xy * 60.0 + p.zx * 30.0, n, 50.0);
+        col *= (0.85 + brush * 0.3);
+
+        // Color posterization - key to painterly look!
+        col = posterize(col, 8.0);
+
+        // Paint mixing variation
+        float colorVar = noise(uv * 180.0 + p.xy * 20.0);
+        col.r += (colorVar - 0.5) * 0.08;
+        col.g += (noise(uv * 200.0) - 0.5) * 0.05;
+        col.b -= (colorVar - 0.5) * 0.06;
+
+        // Edge darkening like paint buildup
+        float edgeFactor = pow(1.0 - abs(dot(n, rd)), 0.7);
+        col *= (1.0 - edgeFactor * 0.25);
+
+        // Subtle hatching lines in shadows
+        if (diff < 0.3) {
+            float hatch = sin((p.x + p.y) * 150.0) * 0.5 + 0.5;
+            hatch = smoothstep(0.3, 0.7, hatch);
+            col *= (0.9 + hatch * 0.15);
+        }
+
+    } else {
+        // === DARK BACKGROUND WITH HALO ===
+        vec3 bgDark = vec3(0.18, 0.12, 0.10);
+        vec3 bgLight = vec3(0.30, 0.22, 0.18);
+        float t = 0.5 * (rd.y + 1.0);
+        col = mix(bgDark, bgLight, t * 0.4);
+
+        // HALO behind Kim's head - key to the reference look!
+        vec3 headCenter = vec3(0.0, 1.72, 0.0);
+        vec3 toHead = headCenter - ro;
+        float headDist = length(cross(toHead, rd));
+
+        float haloRadius = 0.38;
+        float haloFalloff = smoothstep(haloRadius, haloRadius * 0.25, headDist);
+        vec3 haloColor = vec3(0.95, 0.90, 0.82);
+
+        float behindHead = smoothstep(0.0, 0.6, dot(normalize(toHead), rd));
+        haloFalloff *= behindHead;
+
+        col = mix(col, haloColor, haloFalloff * 0.9);
+
+        // Background texture
+        float bgBrush = fbm(uv * 100.0) * 0.12;
+        col *= (0.92 + bgBrush);
+    }
+
+    return col;
+}
+
+mat3 setCamera(vec3 ro, vec3 ta) {
+    vec3 cw = normalize(ta - ro);
+    vec3 up = vec3(0, -1, 0);
+    vec3 cu = normalize(cross(cw, up));
+    vec3 cv = cross(cu, cw);
+    return mat3(cu, cv, cw);
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 resolution = ubo.resolution.xy;
+
+    if (pixelCoord.x >= int(resolution.x) || pixelCoord.y >= int(resolution.y)) {
+        return;
+    }
+
+    vec2 uv = (2.0 * vec2(pixelCoord) - resolution) / resolution.y;
+    uv.y = -uv.y;
+
+    vec3 ro = ubo.cameraPos.xyz;
+    vec3 ta = ubo.cameraTarget.xyz;
+    float fov = ubo.cameraPos.w;
+
+    mat3 ca = setCamera(ro, ta);
+    vec3 rd = ca * normalize(vec3(uv, fov));
+
+    vec3 col = render(ro, rd);
+    col = pow(col, vec3(1.0 / 2.2));
+
+    imageStore(outputImage, pixelCoord, vec4(col, 1.0));
+}

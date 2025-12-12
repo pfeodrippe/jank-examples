@@ -1,0 +1,185 @@
+(ns vybe.sdf
+  (:require
+   [vybe.sdf.math :as m]
+   [vybe.sdf.ui :as ui]
+   [jank.nrepl-server.server :as server]))
+
+;; Include the SDF Vulkan engine header
+(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")
+
+;; ============================================================================
+;; Camera presets for each shader
+;; ============================================================================
+
+;; Mutable camera state for each shader (updated when switching)
+;; Using defonce so state persists across namespace reloads
+(defonce camera-states
+  (atom {"hand_cigarette" {:distance 0.35
+                           :angle-x 0.2
+                           :angle-y 0.3
+                           :target-y 0.08}
+         "sdf_scene"      {:distance 0.45
+                           :angle-x 0.15
+                           :angle-y 0.0
+                           :target-y 1.72}}))
+
+(defn get-current-camera-state
+  "Get the current camera state from the C++ renderer."
+  []
+  {:distance (cpp/sdfx.get_camera_distance)
+   :angle-x (cpp/sdfx.get_camera_angle_x)
+   :angle-y (cpp/sdfx.get_camera_angle_y)
+   :target-y (cpp/sdfx.get_camera_target_y)})
+
+(defn save-camera-state!
+  "Save the current camera state to the atom for the given shader."
+  [shader-name]
+  (let [state (get-current-camera-state)]
+    (swap! camera-states assoc shader-name state)
+    (println "Saved camera state for" shader-name)))
+
+(defn apply-camera-state!
+  "Apply a camera state map to the renderer."
+  [state]
+  (when state
+    (cpp/sdfx.set_camera_distance (cpp/float. (:distance state)))
+    (cpp/sdfx.set_camera_angle_x (cpp/float. (:angle-x state)))
+    (cpp/sdfx.set_camera_angle_y (cpp/float. (:angle-y state)))
+    (cpp/sdfx.set_camera_target_y (cpp/float. (:target-y state)))
+    (println "Camera state applied")))
+
+(defn get-current-shader-name
+  "Get the name of the currently loaded shader."
+  []
+  (cpp/sdfx.get_current_shader_name))
+
+(defn switch-shader-with-preset!
+  "Switch shader with independent camera states.
+   Saves current camera state before switching, then restores target shader's state."
+  [direction]
+  ;; Save current camera state before switching
+  (let [current-shader (get-current-shader-name)]
+    (save-camera-state! current-shader))
+  ;; Switch to new shader
+  (cpp/sdfx.switch_shader (cpp/int. direction))
+  ;; Apply camera state for new shader
+  (let [shader-name (get-current-shader-name)
+        state (get @camera-states shader-name)]
+    (println "Shader:" shader-name)
+    (when state
+      (apply-camera-state! state))))
+
+(defn process-pending-shader-switch!
+  "Check for and process any pending shader switch from keyboard input.
+   This allows keyboard-triggered switches to go through Jank's camera state management."
+  []
+  (let [direction (cpp/sdfx.get_pending_shader_switch)]
+    (when (not= direction 0)
+      (cpp/sdfx.clear_pending_shader_switch)
+      (switch-shader-with-preset! direction))))
+
+;; ============================================================================
+;; Kim-specific initialization - compiles and loads Kim's shader
+;; ============================================================================
+
+(defn init-kim!
+  "Initialize the Vulkan renderer with Kim's shader."
+  []
+  (println "")
+  (println "============================================")
+  (println "   KIM KITSURAGI - Disco Elysium SDF Model")
+  (println "============================================")
+  (println "")
+  (println "Character: Kim Kitsuragi")
+  (println "  - Lieutenant, RCM Precinct 57")
+  (println "  - Age: 43")
+  (println "  - Known for: Orange bomber jacket, calm demeanor")
+  (println "")
+  (println "Controls:")
+  (println "  Mouse drag = Orbit camera")
+  (println "  Scroll     = Zoom in/out")
+  (println "  ESC        = Quit")
+  (println "")
+
+  ;; Initialize Vulkan with Kim's independent shader directory
+  (cpp/sdfx.init "vulkan_kim")
+
+  ;; Enable continuous rendering for animations
+  (cpp/sdfx.set_continuous_mode false)
+  (println "Continuous rendering enabled for animations")
+
+  ;; Apply camera state for the default shader (hand_cigarette)
+  (let [shader-name (get-current-shader-name)
+        state (get @camera-states shader-name)]
+    (println "Default shader:" shader-name)
+    (when state
+      (apply-camera-state! state)))
+  true)
+
+(defn should-close?
+  "Check if the window should close."
+  []
+  (cpp/sdfx.should_close))
+
+(defn poll-events!
+  "Process window events."
+  []
+  (cpp/sdfx.poll_events))
+
+(defn update-uniforms!
+  "Update uniform buffer."
+  [dt]
+  (cpp/sdfx.update_uniforms (m/to-double dt)))
+
+(defn draw-frame!
+  "Render one frame."
+  []
+  (cpp/sdfx.draw_frame))
+
+(defn cleanup!
+  "Cleanup and destroy the renderer."
+  []
+  (cpp/sdfx.cleanup))
+
+(defn get-time
+  "Get elapsed time in seconds."
+  []
+  (cpp/sdfx.get_time))
+
+;; ============================================================================
+;; Main Loop
+;; ============================================================================
+
+(defn save-screenshot!
+  "Save current frame to a PNG file (downsampled for smaller size)."
+  [filepath]
+  (cpp/sdfx.save_screenshot filepath))
+
+(defn run!
+  "Run the Kim Kitsuragi viewer."
+  []
+  (server/start-server {:port 5557})
+  (when (init-kim!)
+    (println "Starting viewer...")
+    (loop [frame-count 0]
+      (when-not (should-close?)
+        (poll-events!)
+        ;; Process any pending shader switch from keyboard
+        (process-pending-shader-switch!)
+        ;; Minimal ImGui frame (required by sdf_engine)
+        (ui/new-frame!)
+        (update-uniforms! 0.016)
+        (ui/render!)
+        (draw-frame!)
+        ;; Take screenshot after 10 frames (let scene stabilize)
+        (when (= frame-count 10)
+          (save-screenshot! "kim_screenshot.png")
+          (println "Screenshot saved to kim_screenshot.png"))
+        (recur (inc frame-count))))
+    (cleanup!)
+    (println "")
+    (println "Viewer closed.")
+    (println "\"I appreciate your discretion, detective.\"")))
+
+(defn -main [& args]
+  (run!))

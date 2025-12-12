@@ -1,0 +1,789 @@
+#version 450
+//
+// HAND WITH MARLBORO CIGARETTE - SDF Model
+// Disco Elysium Style
+//
+// ============================================================================
+// DESIGN NOTES
+// ============================================================================
+//
+// HAND ANATOMY:
+//   - Palm: Rounded box with organic deformations
+//   - Fingers: Capsule chains with knuckle bulges
+//   - Thumb: Positioned naturally for cigarette hold
+//   - Classic "smoking grip" between index and middle fingers
+//
+// CIGARETTE:
+//   - White paper cylinder (main body)
+//   - Orange/tan filter (Marlboro style)
+//   - Glowing ember tip with animated heat
+//   - Wispy smoke tendrils rising up
+//
+// MATERIALS:
+//   - Skin: Same warm olive as Kim
+//   - Cigarette paper: Off-white
+//   - Filter: Cork/orange color
+//   - Ember: Hot orange/red with glow
+//
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+
+const int MAX_OBJECTS = 32;
+
+layout(std140, binding = 1) uniform UBO {
+    vec4 cameraPos;      // xyz = position, w = fov
+    vec4 cameraTarget;   // xyz = target
+    vec4 lightDir;       // xyz = direction (normalized)
+    vec4 resolution;     // xy = width/height, z = time
+    vec4 editMode;       // x = enabled, y = selectedObject, z = hoveredAxis, w = objectCount
+    vec4 gizmoPos;       // xyz = gizmo position
+    vec4 gizmoRot;       // xyz = selected object rotation (for preview)
+    vec4 objPositions[MAX_OBJECTS];
+    vec4 objRotations[MAX_OBJECTS];
+} ubo;
+
+// ============================================================================
+// SDF PRIMITIVES
+// ============================================================================
+
+float sdSphere(vec3 p, float r) {
+    return length(p) - r;
+}
+
+float sdBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float sdRoundBox(vec3 p, vec3 b, float r) {
+    return sdBox(p, b) - r;
+}
+
+float sdEllipsoid(vec3 p, vec3 r) {
+    float k0 = length(p / r);
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / k1;
+}
+
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+float sdCylinder(vec3 p, float h, float r) {
+    vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
+}
+
+float sdCone(vec3 p, vec2 c, float h) {
+    vec2 q = h * vec2(c.x / c.y, -1.0);
+    vec2 w = vec2(length(p.xz), p.y);
+    vec2 a = w - q * clamp(dot(w, q) / dot(q, q), 0.0, 1.0);
+    vec2 b = w - q * vec2(clamp(w.x / q.x, 0.0, 1.0), 1.0);
+    float k = sign(q.y);
+    float d = min(dot(a, a), dot(b, b));
+    float s = max(k * (w.x * q.y - w.y * q.x), k * (w.y - q.y));
+    return sqrt(d) * sign(s);
+}
+
+float sdTorus(vec3 p, vec2 t) {
+    vec2 q = vec2(length(p.xz) - t.x, p.y);
+    return length(q) - t.y;
+}
+
+// ============================================================================
+// BOOLEAN OPERATIONS
+// ============================================================================
+
+float opUnion(float d1, float d2) { return min(d1, d2); }
+float opSubtract(float d1, float d2) { return max(-d1, d2); }
+float opIntersect(float d1, float d2) { return max(d1, d2); }
+
+float opSmoothUnion(float d1, float d2, float k) {
+    float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
+}
+
+float opSmoothSubtract(float d1, float d2, float k) {
+    float h = clamp(0.5 - 0.5 * (d2 + d1) / k, 0.0, 1.0);
+    return mix(d2, -d1, h) + k * h * (1.0 - h);
+}
+
+// ============================================================================
+// ROTATION MATRICES
+// ============================================================================
+
+mat3 rotateX(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(1, 0, 0, 0, c, -s, 0, s, c);
+}
+
+mat3 rotateY(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(c, 0, s, 0, 1, 0, -s, 0, c);
+}
+
+mat3 rotateZ(float a) {
+    float c = cos(a), s = sin(a);
+    return mat3(c, -s, 0, s, c, 0, 0, 0, 1);
+}
+
+// ============================================================================
+// MATERIAL IDS
+// ============================================================================
+
+#define MAT_SKIN        1
+#define MAT_NAIL        2
+#define MAT_CIGARETTE   3
+#define MAT_FILTER      4
+#define MAT_EMBER       5
+#define MAT_SMOKE       6
+#define MAT_GROUND      7
+
+// ============================================================================
+// FINGER SDF - Realistic finger with knuckles
+// ============================================================================
+
+float sdFinger(vec3 p, float length1, float length2, float length3,
+               float radius, float bendAngle1, float bendAngle2) {
+    float d = 1e10;
+
+    // First phalanx (proximal)
+    vec3 p1 = p;
+    float seg1 = sdCapsule(p1, vec3(0), vec3(0, length1, 0), radius);
+    d = seg1;
+
+    // Knuckle bulge
+    float knuckle1 = sdSphere(p1 - vec3(0, length1, 0), radius * 1.15);
+    d = opSmoothUnion(d, knuckle1, 0.003);
+
+    // Second phalanx (middle) - bent
+    vec3 p2 = p1 - vec3(0, length1, 0);
+    p2 = rotateX(bendAngle1) * p2;
+    float seg2 = sdCapsule(p2, vec3(0), vec3(0, length2, 0), radius * 0.9);
+    d = opSmoothUnion(d, seg2, 0.004);
+
+    // Second knuckle
+    float knuckle2 = sdSphere(p2 - vec3(0, length2, 0), radius * 0.95);
+    d = opSmoothUnion(d, knuckle2, 0.003);
+
+    // Third phalanx (distal) - more bent
+    vec3 p3 = p2 - vec3(0, length2, 0);
+    p3 = rotateX(bendAngle2) * p3;
+    float seg3 = sdCapsule(p3, vec3(0), vec3(0, length3, 0), radius * 0.8);
+    d = opSmoothUnion(d, seg3, 0.004);
+
+    return d;
+}
+
+// Fingernail at tip
+float sdFingernail(vec3 p, float length1, float length2, float length3,
+                   float radius, float bendAngle1, float bendAngle2) {
+    // Navigate to fingertip
+    vec3 tipP = p;
+    tipP = tipP - vec3(0, length1, 0);
+    tipP = rotateX(bendAngle1) * tipP;
+    tipP = tipP - vec3(0, length2, 0);
+    tipP = rotateX(bendAngle2) * tipP;
+    tipP = tipP - vec3(0, length3 * 0.85, 0);
+
+    // Nail is an ellipsoid on top of fingertip
+    tipP.z -= radius * 0.6;
+    return sdEllipsoid(tipP, vec3(radius * 0.7, radius * 0.5, radius * 0.15));
+}
+
+// ============================================================================
+// HAND WITH CIGARETTE HOLD
+// ============================================================================
+
+vec3 handPos = vec3(0.0, 0.0, 0.0);
+
+// Animation helper - subtle finger fidget
+float fingerAnim(float phase) {
+    float time = ubo.resolution.z;
+    // Slow, subtle breathing motion + occasional twitch
+    float breath = sin(time * 0.8 + phase) * 0.03;
+    float twitch = sin(time * 3.0 + phase * 2.0) * 0.03 * smoothstep(0.7, 1.0, sin(time * 1 + phase));
+    return breath + twitch;
+}
+
+float sdPalm(vec3 p) {
+    // Main palm - rounded box
+    vec3 palmP = p;
+    float palm = sdRoundBox(palmP, vec3(0.04, 0.055, 0.015), 0.012);
+
+    // Thumb mount bulge
+    vec3 thumbMount = palmP - vec3(-0.035, -0.02, 0.01);
+    float mount = sdEllipsoid(thumbMount, vec3(0.02, 0.025, 0.018));
+    palm = opSmoothUnion(palm, mount, 0.015);
+
+    // Palm heel
+    vec3 heelP = palmP - vec3(0.0, -0.06, 0.0);
+    float heel = sdEllipsoid(heelP, vec3(0.035, 0.02, 0.018));
+    palm = opSmoothUnion(palm, heel, 0.015);
+
+    // Knuckle ridge at top
+    for (int i = 0; i < 4; i++) {
+        float x = -0.028 + float(i) * 0.019;
+        vec3 kp = palmP - vec3(x, 0.055, 0.005);
+        float knuckle = sdSphere(kp, 0.012);
+        palm = opSmoothUnion(palm, knuckle, 0.008);
+    }
+
+    return palm;
+}
+
+// Index finger - slightly bent to hold cigarette (animated)
+float sdIndexFinger(vec3 p) {
+    vec3 fp = p - vec3(-0.028, 0.065, 0.0);
+    fp = rotateZ(0.05) * fp;  // Slight outward angle
+    float anim = fingerAnim(0.0);
+    // Bent to hold cigarette between index and middle
+    return sdFinger(fp, 0.032, 0.022, 0.018, 0.0085, 0.6 + anim, 0.4 + anim * 0.5);
+}
+
+float sdIndexNail(vec3 p) {
+    vec3 fp = p - vec3(-0.028, 0.065, 0.0);
+    fp = rotateZ(0.05) * fp;
+    float anim = fingerAnim(0.0);
+    return sdFingernail(fp, 0.032, 0.022, 0.018, 0.0085, 0.6 + anim, 0.4 + anim * 0.5);
+}
+
+// Middle finger - bent similarly (animated)
+float sdMiddleFinger(vec3 p) {
+    vec3 fp = p - vec3(-0.009, 0.068, 0.0);
+    float anim = fingerAnim(0.5);
+    // Bent to hold cigarette
+    return sdFinger(fp, 0.035, 0.024, 0.02, 0.009, 0.5 + anim, 0.35 + anim * 0.5);
+}
+
+float sdMiddleNail(vec3 p) {
+    vec3 fp = p - vec3(-0.009, 0.068, 0.0);
+    float anim = fingerAnim(0.5);
+    return sdFingernail(fp, 0.035, 0.024, 0.02, 0.009, 0.5 + anim, 0.35 + anim * 0.5);
+}
+
+// Ring finger - more relaxed (animated)
+float sdRingFinger(vec3 p) {
+    vec3 fp = p - vec3(0.01, 0.065, 0.0);
+    fp = rotateZ(-0.05) * fp;
+    float anim = fingerAnim(1.0);
+    return sdFinger(fp, 0.032, 0.022, 0.018, 0.0085, 0.7 + anim, 0.5 + anim * 0.5);
+}
+
+float sdRingNail(vec3 p) {
+    vec3 fp = p - vec3(0.01, 0.065, 0.0);
+    fp = rotateZ(-0.05) * fp;
+    float anim = fingerAnim(1.0);
+    return sdFingernail(fp, 0.032, 0.022, 0.018, 0.0085, 0.7 + anim, 0.5 + anim * 0.5);
+}
+
+// Pinky - curled in (animated more)
+float sdPinkyFinger(vec3 p) {
+    vec3 fp = p - vec3(0.028, 0.058, 0.0);
+    fp = rotateZ(-0.12) * fp;
+    float anim = fingerAnim(1.5) * 1.5;  // Pinky moves more
+    return sdFinger(fp, 0.025, 0.017, 0.014, 0.007, 0.9 + anim, 0.7 + anim * 0.5);
+}
+
+float sdPinkyNail(vec3 p) {
+    vec3 fp = p - vec3(0.028, 0.058, 0.0);
+    fp = rotateZ(-0.12) * fp;
+    float anim = fingerAnim(1.5) * 1.5;
+    return sdFingernail(fp, 0.025, 0.017, 0.014, 0.007, 0.9 + anim, 0.7 + anim * 0.5);
+}
+
+// Thumb - positioned naturally (animated)
+float sdThumb(vec3 p) {
+    vec3 tp = p - vec3(-0.05, 0.01, 0.015);
+    tp = rotateY(-0.8) * rotateZ(0.5) * tp;
+
+    float anim = fingerAnim(2.0) * 0.8;  // Thumb moves less
+
+    float d = 1e10;
+
+    // First segment (metacarpal area)
+    float seg1 = sdCapsule(tp, vec3(0), vec3(0, 0.028, 0), 0.012);
+    d = seg1;
+
+    // Knuckle
+    float knuckle = sdSphere(tp - vec3(0, 0.028, 0), 0.013);
+    d = opSmoothUnion(d, knuckle, 0.004);
+
+    // Second segment (animated)
+    vec3 tp2 = tp - vec3(0, 0.028, 0);
+    tp2 = rotateX(0.3 + anim) * tp2;
+    float seg2 = sdCapsule(tp2, vec3(0), vec3(0, 0.024, 0), 0.011);
+    d = opSmoothUnion(d, seg2, 0.004);
+
+    // Tip (animated)
+    vec3 tp3 = tp2 - vec3(0, 0.024, 0);
+    tp3 = rotateX(0.2 + anim * 0.5) * tp3;
+    float seg3 = sdCapsule(tp3, vec3(0), vec3(0, 0.018, 0), 0.01);
+    d = opSmoothUnion(d, seg3, 0.004);
+
+    return d;
+}
+
+float sdThumbNail(vec3 p) {
+    vec3 tp = p - vec3(-0.05, 0.01, 0.015);
+    tp = rotateY(-0.8) * rotateZ(0.5) * tp;
+
+    float anim = fingerAnim(2.0) * 0.8;
+
+    tp = tp - vec3(0, 0.028, 0);
+    tp = rotateX(0.3 + anim) * tp;
+    tp = tp - vec3(0, 0.024, 0);
+    tp = rotateX(0.2 + anim * 0.5) * tp;
+    tp = tp - vec3(0, 0.015, 0);
+    tp.z -= 0.008;
+    return sdEllipsoid(tp, vec3(0.008, 0.006, 0.002));
+}
+
+// Complete hand
+float sdHand(vec3 p) {
+    vec3 handP = p - handPos;
+    // Rotate hand to natural position
+    handP = rotateX(-0.3) * rotateY(0.2) * handP;
+
+    float d = sdPalm(handP);
+    d = opSmoothUnion(d, sdIndexFinger(handP), 0.006);
+    d = opSmoothUnion(d, sdMiddleFinger(handP), 0.006);
+    d = opSmoothUnion(d, sdRingFinger(handP), 0.006);
+    d = opSmoothUnion(d, sdPinkyFinger(handP), 0.006);
+    d = opSmoothUnion(d, sdThumb(handP), 0.008);
+
+    return d;
+}
+
+float sdHandNails(vec3 p) {
+    vec3 handP = p - handPos;
+    handP = rotateX(-0.3) * rotateY(0.2) * handP;
+
+    float d = sdIndexNail(handP);
+    d = opUnion(d, sdMiddleNail(handP));
+    d = opUnion(d, sdRingNail(handP));
+    d = opUnion(d, sdPinkyNail(handP));
+    d = opUnion(d, sdThumbNail(handP));
+
+    return d;
+}
+
+// ============================================================================
+// CIGARETTE - Held between index and middle fingers
+// ============================================================================
+
+// Position cigarette between index and middle finger
+vec3 getCigarettePos() {
+    return vec3(-0.018, 0.14, 0.02);
+}
+
+float sdCigarette(vec3 p) {
+    vec3 handP = p - handPos;
+    handP = rotateX(-0.3) * rotateY(0.2) * handP;
+
+    vec3 cigPos = getCigarettePos();
+    vec3 cp = handP - cigPos;
+
+    // Rotate cigarette to angle upward (classic smoking pose)
+    cp = rotateX(-0.4) * rotateZ(0.15) * cp;
+
+    // Main cigarette body (white paper)
+    // Standard cigarette: ~7mm diameter, ~84mm long (king size)
+    // At this scale: radius 0.0035, length 0.042
+    float body = sdCylinder(cp, 0.038, 0.0035);
+
+    return body;
+}
+
+float sdFilter(vec3 p) {
+    vec3 handP = p - handPos;
+    handP = rotateX(-0.3) * rotateY(0.2) * handP;
+
+    vec3 cigPos = getCigarettePos();
+    vec3 cp = handP - cigPos;
+    cp = rotateX(-0.4) * rotateZ(0.15) * cp;
+
+    // Filter at the bottom (held end)
+    // Filter is about 20mm, so 0.01 at this scale
+    vec3 filterP = cp + vec3(0, 0.033, 0);
+    float filterDist = sdCylinder(filterP, 0.012, 0.0036);
+
+    return filterDist;
+}
+
+float sdEmber(vec3 p) {
+    vec3 handP = p - handPos;
+    handP = rotateX(-0.3) * rotateY(0.2) * handP;
+
+    vec3 cigPos = getCigarettePos();
+    vec3 cp = handP - cigPos;
+    cp = rotateX(-0.4) * rotateZ(0.15) * cp;
+
+    // Glowing tip
+    vec3 emberP = cp - vec3(0, 0.038, 0);
+    float ember = sdCylinder(emberP, 0.003, 0.0034);
+
+    // Slight cone shape for ash
+    vec3 ashP = cp - vec3(0, 0.041, 0);
+    float ash = sdCone(ashP, vec2(0.4, 1.0), 0.004);
+
+    return opSmoothUnion(ember, ash, 0.001);
+}
+
+// ============================================================================
+// SMOKE WISPS (animated)
+// ============================================================================
+
+float hash(vec3 p) {
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+}
+
+float noise3D(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+
+    float n = mix(
+        mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
+            mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+        mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+            mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y),
+        f.z
+    );
+    return n;
+}
+
+// Smoke column anchored above cigarette with animated dissolving chunks
+float sdSmoke(vec3 p) {
+    vec3 handP = p - handPos;
+    handP = rotateX(-0.3) * rotateY(0.2) * handP;
+
+    vec3 cigPos = getCigarettePos();
+    vec3 sp = handP - cigPos - vec3(0, 0.0, 0);
+    sp = rotateX(-0.4) * rotateZ(0.15) * sp;
+
+    float time = ubo.resolution.z;
+    float height = sp.y;
+
+    // Gentle swaying motion (smoke column stays in place but sways)
+    float sway = sin(time * 1.5) * 0.003 * height * 5.0;
+    sp.x += sway;
+    sp.z += cos(time * 1.2) * 0.002 * height * 5.0;
+
+    // Subtle turbulence
+    sp.x += noise3D(sp * 30.0 + time * 0.5) * 0.003 * height * 3.0;
+    sp.z += noise3D(sp * 25.0 + time * 0.4) * 0.002 * height * 3.0;
+
+    // Expanding wisp shape
+    float expansion = 1.0 + max(0.0, height) * 4.0;
+    float radius = 0.004 * expansion;
+
+    float d = length(sp.xz) - radius;
+    d = max(d, -sp.y);           // Start at ember
+    d = max(d, sp.y - 0.08);     // Limit height
+
+    // Animated dissolving chunks - noise scrolls through creating appearing/disappearing holes
+    float scrollingNoise = noise3D(sp * 60.0 + vec3(0, -time * 2.0, 0));
+    float dissolveAmount = smoothstep(0.01, 0.06, height);  // More dissolve higher up
+    float holes = smoothstep(0.35 - dissolveAmount * 0.2, 0.55, scrollingNoise);
+    d += holes * 0.012;
+
+    // Chunks breaking off at top - animated threshold
+    float chunkNoise = noise3D(sp * 45.0 + vec3(time * 0.3, -time * 1.5, time * 0.2));
+    float topBreak = smoothstep(0.04, 0.07, height) * smoothstep(0.3, 0.6, chunkNoise);
+    d += topBreak * 0.015;
+
+    // Wispy edges
+    d += noise3D(sp * 50.0) * 0.002;
+
+    return d;
+}
+
+// ============================================================================
+// SCENE COMPOSITION
+// ============================================================================
+
+vec2 sceneSDF_mat(vec3 p) {
+    vec2 res = vec2(1e10, 0.0);
+
+    // Hand (skin)
+    float hand = sdHand(p);
+    if (hand < res.x) res = vec2(hand, MAT_SKIN);
+
+    // Fingernails
+    float nails = sdHandNails(p);
+    if (nails < res.x) res = vec2(nails, MAT_NAIL);
+
+    // Cigarette body (white paper)
+    float cig = sdCigarette(p);
+    if (cig < res.x) res = vec2(cig, MAT_CIGARETTE);
+
+    // Filter (cork colored)
+    float filterDist = sdFilter(p);
+    if (filterDist < res.x) res = vec2(filterDist, MAT_FILTER);
+
+    // Glowing ember
+    float ember = sdEmber(p);
+    if (ember < res.x) res = vec2(ember, MAT_EMBER);
+
+    // Smoke (optional, can be faint)
+    float smoke = sdSmoke(p);
+    if (smoke < res.x) res = vec2(smoke, MAT_SMOKE);
+
+    return res;
+}
+
+float sceneSDF(vec3 p) {
+    return sceneSDF_mat(p).x;
+}
+
+// ============================================================================
+// MATERIAL COLORS
+// ============================================================================
+
+vec3 getMaterialColor(int matID, vec3 p) {
+    if (matID == MAT_SKIN) {
+        // Same skin tone as Kim
+        return vec3(0.55, 0.42, 0.32);
+    }
+    else if (matID == MAT_NAIL) {
+        // Pale pink nail
+        return vec3(0.85, 0.75, 0.72);
+    }
+    else if (matID == MAT_CIGARETTE) {
+        // White cigarette paper
+        return vec3(0.95, 0.93, 0.88);
+    }
+    else if (matID == MAT_FILTER) {
+        // Marlboro cork/orange filter
+        return vec3(0.85, 0.65, 0.45);
+    }
+    else if (matID == MAT_EMBER) {
+        // Hot glowing ember
+        float glow = 0.5 + 0.5 * sin(ubo.resolution.z * 3.0);
+        return mix(vec3(1.0, 0.3, 0.05), vec3(1.0, 0.6, 0.2), glow);
+    }
+    else if (matID == MAT_SMOKE) {
+        return vec3(0.7, 0.7, 0.75);
+    }
+    else if (matID == MAT_GROUND) {
+        return vec3(0.25, 0.2, 0.18);
+    }
+
+    return vec3(0.5);
+}
+
+// ============================================================================
+// RAYMARCHING
+// ============================================================================
+
+const int MAX_STEPS = 128;
+const float MAX_DIST = 50.0;
+const float SURF_DIST = 0.0005;
+
+float raymarch(vec3 ro, vec3 rd) {
+    float d = 0.0;
+    for (int i = 0; i < MAX_STEPS; i++) {
+        vec3 p = ro + rd * d;
+        float ds = sceneSDF(p);
+        d += ds;
+        if (d > MAX_DIST || ds < SURF_DIST) break;
+    }
+    return d;
+}
+
+vec3 calcNormal(vec3 p) {
+    const float eps = 0.0001;
+    vec2 e = vec2(eps, 0);
+    return normalize(vec3(
+        sceneSDF(p + e.xyy) - sceneSDF(p - e.xyy),
+        sceneSDF(p + e.yxy) - sceneSDF(p - e.yxy),
+        sceneSDF(p + e.yyx) - sceneSDF(p - e.yyx)
+    ));
+}
+
+float calcSoftShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
+    float res = 1.0;
+    float t = mint;
+    for (int i = 0; i < 64 && t < maxt; i++) {
+        float h = sceneSDF(ro + rd * t);
+        if (h < 0.001) return 0.0;
+        res = min(res, k * h / t);
+        t += clamp(h, 0.02, 0.1);
+    }
+    return res;
+}
+
+float calcAO(vec3 pos, vec3 nor) {
+    float occ = 0.0;
+    float sca = 1.0;
+    for (int i = 0; i < 5; i++) {
+        float h = 0.01 + 0.12 * float(i);
+        float d = sceneSDF(pos + h * nor);
+        occ += (h - d) * sca;
+        sca *= 0.95;
+    }
+    return clamp(1.0 - 3.0 * occ, 0.0, 1.0);
+}
+
+// ============================================================================
+// PAINTERLY EFFECTS
+// ============================================================================
+
+float hash2D(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise2D(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash2D(i);
+    float b = hash2D(i + vec2(1.0, 0.0));
+    float c = hash2D(i + vec2(0.0, 1.0));
+    float d = hash2D(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+    float f = 0.0;
+    f += 0.5 * noise2D(p); p *= 2.0;
+    f += 0.25 * noise2D(p); p *= 2.0;
+    f += 0.125 * noise2D(p);
+    return f;
+}
+
+vec3 posterize(vec3 col, float levels) {
+    return floor(col * levels + 0.5) / levels;
+}
+
+float brushStroke(vec2 uv, vec3 normal, float scale) {
+    vec2 dir = normalize(normal.xy + 0.001);
+    float angle = atan(dir.y, dir.x);
+    vec2 rotUV = vec2(
+        uv.x * cos(angle) - uv.y * sin(angle),
+        uv.x * sin(angle) + uv.y * cos(angle)
+    );
+    rotUV.x *= 3.0;
+    return fbm(rotUV * scale);
+}
+
+vec3 render(vec3 ro, vec3 rd) {
+    vec3 col = vec3(0.0);
+    float d = raymarch(ro, rd);
+
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = vec2(pixelCoord) / ubo.resolution.xy;
+
+    if (d < MAX_DIST) {
+        vec3 p = ro + rd * d;
+        vec3 n = calcNormal(p);
+        vec3 lightDir = normalize(ubo.lightDir.xyz);
+
+        vec2 mat = sceneSDF_mat(p);
+        int matID = int(mat.y);
+        vec3 albedo = getMaterialColor(matID, p);
+
+        // Lighting
+        float diff = max(dot(n, lightDir), 0.0);
+        vec3 h = normalize(lightDir - rd);
+        float spec = pow(max(dot(n, h), 0.0), 12.0);
+        float shadow = calcSoftShadow(p + n * 0.002, lightDir, 0.02, 10.0, 6.0);
+        float ao = calcAO(p, n);
+
+        // Ambient
+        vec3 warmAmbient = vec3(0.25, 0.18, 0.12) * ao;
+        vec3 coolAmbient = vec3(0.08, 0.12, 0.16) * ao;
+        vec3 ambient = mix(warmAmbient, coolAmbient, max(0.0, -n.y) * 0.5);
+
+        // Diffuse
+        float diffIntensity = diff * 0.85 + 0.15;
+        diffIntensity *= mix(0.4, 1.0, shadow);
+        vec3 diffuse = albedo * diffIntensity;
+
+        // Rim light
+        float rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.5);
+        vec3 rimLight = vec3(0.5, 0.3, 0.15) * rim * 0.6;
+
+        // Specular
+        vec3 specular = vec3(0.1) * spec * shadow;
+
+        // Ember glow
+        if (matID == MAT_EMBER) {
+            float glow = 0.5 + 0.5 * sin(ubo.resolution.z * 5.0);
+            col = albedo * (1.5 + glow * 0.5);  // Self-illuminated
+            // Add glow halo
+            col += vec3(1.0, 0.4, 0.1) * 0.3;
+        } else {
+            col = ambient + diffuse + specular + rimLight;
+        }
+
+        // Painterly effects (not on ember)
+        if (matID != MAT_EMBER) {
+            float brush = brushStroke(p.xy * 60.0 + p.zx * 30.0, n, 50.0);
+            col *= (0.85 + brush * 0.3);
+            col = posterize(col, 8.0);
+
+            float colorVar = noise2D(uv * 180.0 + p.xy * 20.0);
+            col.r += (colorVar - 0.5) * 0.08;
+            col.g += (noise2D(uv * 200.0) - 0.5) * 0.05;
+            col.b -= (colorVar - 0.5) * 0.06;
+
+            float edgeFactor = pow(1.0 - abs(dot(n, rd)), 0.7);
+            col *= (1.0 - edgeFactor * 0.25);
+        }
+
+    } else {
+        // Dark moody background
+        vec3 bgDark = vec3(0.12, 0.10, 0.08);
+        vec3 bgLight = vec3(0.22, 0.18, 0.15);
+        float t = 0.5 * (rd.y + 1.0);
+        col = mix(bgDark, bgLight, t * 0.4);
+
+        // Subtle warm glow from below (like bar/club lighting)
+        float floorGlow = smoothstep(0.0, -0.5, rd.y);
+        col += vec3(0.15, 0.08, 0.04) * floorGlow * 0.3;
+
+        // Background texture
+        float bgBrush = fbm(uv * 100.0) * 0.12;
+        col *= (0.92 + bgBrush);
+    }
+
+    return col;
+}
+
+mat3 setCamera(vec3 ro, vec3 ta) {
+    vec3 cw = normalize(ta - ro);
+    vec3 up = vec3(0, -1, 0);
+    vec3 cu = normalize(cross(cw, up));
+    vec3 cv = cross(cu, cw);
+    return mat3(cu, cv, cw);
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 resolution = ubo.resolution.xy;
+
+    if (pixelCoord.x >= int(resolution.x) || pixelCoord.y >= int(resolution.y)) {
+        return;
+    }
+
+    vec2 uv = (2.0 * vec2(pixelCoord) - resolution) / resolution.y;
+    uv.y = -uv.y;
+
+    vec3 ro = ubo.cameraPos.xyz;
+    vec3 ta = ubo.cameraTarget.xyz;
+    float fov = ubo.cameraPos.w;
+
+    mat3 ca = setCamera(ro, ta);
+    vec3 rd = ca * normalize(vec3(uv, fov));
+
+    vec3 col = render(ro, rd);
+    col = pow(col, vec3(1.0 / 2.2));
+
+    imageStore(outputImage, pixelCoord, vec4(col, 1.0));
+}

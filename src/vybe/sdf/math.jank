@@ -1,0 +1,295 @@
+(ns vybe.sdf.math)
+
+;; Native math functions via C++ interop
+(cpp/raw "
+#include <cmath>
+
+static double sdf_sqrt(double x) { return std::sqrt(x); }
+static double sdf_pow(double x, double y) { return std::pow(x, y); }
+static double sdf_sin(double x) { return std::sin(x); }
+static double sdf_cos(double x) { return std::cos(x); }
+static double sdf_tan(double x) { return std::tan(x); }
+static double sdf_atan(double x) { return std::atan(x); }
+static double sdf_atan2(double y, double x) { return std::atan2(y, x); }
+static double sdf_floor(double x) { return std::floor(x); }
+static double sdf_ceil(double x) { return std::ceil(x); }
+static double sdf_fmod(double x, double y) { return std::fmod(x, y); }
+static double sdf_abs(double x) { return std::fabs(x); }
+static double sdf_log(double x) { return std::log(x); }
+static double sdf_exp(double x) { return std::exp(x); }
+")
+
+;; Helper to ensure double type
+(defn to-double [x] (+ 0.0 x))
+
+(defn sqrt [x] (cpp/sdf_sqrt (to-double x)))
+(defn pow [x y] (cpp/sdf_pow (to-double x) (to-double y)))
+(defn sin [x] (cpp/sdf_sin (to-double x)))
+(defn cos [x] (cpp/sdf_cos (to-double x)))
+(defn tan [x] (cpp/sdf_tan (to-double x)))
+(defn atan [x] (cpp/sdf_atan (to-double x)))
+(defn atan2 [y x] (cpp/sdf_atan2 (to-double y) (to-double x)))
+(defn floor [x] (cpp/sdf_floor (to-double x)))
+(defn ceil [x] (cpp/sdf_ceil (to-double x)))
+(defn fmod [x y] (cpp/sdf_fmod (to-double x) (to-double y)))
+(defn math-abs [x] (cpp/sdf_abs (to-double x)))
+(defn abs [x] (math-abs x))
+(defn log [x] (cpp/sdf_log (to-double x)))
+(defn exp [x] (cpp/sdf_exp (to-double x)))
+
+(def PI 3.14159265358979323846)
+(def MAX-DOUBLE 1.7976931348623157E308)
+
+(defn deg->rad [d] (* d (/ PI 180.0)))
+(defn rad->deg [r] (* r (/ 180.0 PI)))
+
+(defn clamp [x lo hi]
+  (cond
+    (< x lo) lo
+    (> x hi) hi
+    :else x))
+
+(defn mix [a b t]
+  (+ (* a (- 1.0 t)) (* b t)))
+
+(defn smoothstep [edge0 edge1 x]
+  (let [t (clamp (/ (- x edge0) (- edge1 edge0)) 0.0 1.0)]
+    (* t t (- 3.0 (* 2.0 t)))))
+
+;; ============================================================================
+;; Vec2
+;; ============================================================================
+
+(defn vec2 [x y]
+  {:x x :y y})
+
+(defn vec2-x [v] (:x v))
+(defn vec2-y [v] (:y v))
+
+(defn vec2-add [a b]
+  (vec2 (+ (:x a) (:x b))
+        (+ (:y a) (:y b))))
+
+(defn vec2-sub [a b]
+  (vec2 (- (:x a) (:x b))
+        (- (:y a) (:y b))))
+
+(defn vec2-mul [a b]
+  (vec2 (* (:x a) (:x b))
+        (* (:y a) (:y b))))
+
+(defn vec2-scale [v s]
+  (vec2 (* (:x v) s)
+        (* (:y v) s)))
+
+(defn vec2-div [v s]
+  (vec2 (/ (:x v) s)
+        (/ (:y v) s)))
+
+(defn vec2-dot [a b]
+  (+ (* (:x a) (:x b))
+     (* (:y a) (:y b))))
+
+(defn vec2-length-sq [v]
+  (vec2-dot v v))
+
+(defn vec2-length [v]
+  (sqrt (vec2-length-sq v)))
+
+(defn vec2-normalize [v]
+  (vec2-div v (vec2-length v)))
+
+(defn vec2-abs [v]
+  (vec2 (math-abs (:x v)) (math-abs (:y v))))
+
+(defn vec2-max [a b]
+  (vec2 (max (:x a) (:x b))
+        (max (:y a) (:y b))))
+
+(defn vec2-min [a b]
+  (vec2 (min (:x a) (:x b))
+        (min (:y a) (:y b))))
+
+(defn vec2-max-scalar [v s]
+  (vec2 (max (:x v) s)
+        (max (:y v) s)))
+
+;; ============================================================================
+;; Vec3
+;; ============================================================================
+
+(defn vec3 [x y z]
+  {:x x :y y :z z})
+
+(defn vec3-x [v] (:x v))
+(defn vec3-y [v] (:y v))
+(defn vec3-z [v] (:z v))
+
+(defn vec3-add [a b]
+  (vec3 (+ (:x a) (:x b))
+        (+ (:y a) (:y b))
+        (+ (:z a) (:z b))))
+
+(defn vec3-sub [a b]
+  (vec3 (- (:x a) (:x b))
+        (- (:y a) (:y b))
+        (- (:z a) (:z b))))
+
+(defn vec3-mul [a b]
+  (vec3 (* (:x a) (:x b))
+        (* (:y a) (:y b))
+        (* (:z a) (:z b))))
+
+(defn vec3-scale [v s]
+  (vec3 (* (:x v) s)
+        (* (:y v) s)
+        (* (:z v) s)))
+
+(defn vec3-div [v s]
+  (vec3 (/ (:x v) s)
+        (/ (:y v) s)
+        (/ (:z v) s)))
+
+(defn vec3-neg [v]
+  (vec3 (- (:x v)) (- (:y v)) (- (:z v))))
+
+(defn vec3-dot [a b]
+  (+ (* (:x a) (:x b))
+     (* (:y a) (:y b))
+     (* (:z a) (:z b))))
+
+(defn vec3-cross [a b]
+  (vec3 (- (* (:y a) (:z b)) (* (:z a) (:y b)))
+        (- (* (:z a) (:x b)) (* (:x a) (:z b)))
+        (- (* (:x a) (:y b)) (* (:y a) (:x b)))))
+
+(defn vec3-length-sq [v]
+  (vec3-dot v v))
+
+(defn vec3-length [v]
+  (sqrt (vec3-length-sq v)))
+
+(defn vec3-normalize [v]
+  (let [len (vec3-length v)]
+    (if (< len 0.000001)
+      (vec3 0 0 0)
+      (vec3-div v len))))
+
+(defn vec3-abs [v]
+  (vec3 (math-abs (:x v)) (math-abs (:y v)) (math-abs (:z v))))
+
+(defn vec3-max [a b]
+  (vec3 (max (:x a) (:x b))
+        (max (:y a) (:y b))
+        (max (:z a) (:z b))))
+
+(defn vec3-min [a b]
+  (vec3 (min (:x a) (:x b))
+        (min (:y a) (:y b))
+        (min (:z a) (:z b))))
+
+(defn vec3-max-scalar [v s]
+  (vec3 (max (:x v) s)
+        (max (:y v) s)
+        (max (:z v) s)))
+
+(defn vec3-min-scalar [v s]
+  (vec3 (min (:x v) s)
+        (min (:y v) s)
+        (min (:z v) s)))
+
+(defn vec3-clamp [v lo hi]
+  (vec3 (clamp (:x v) lo hi)
+        (clamp (:y v) lo hi)
+        (clamp (:z v) lo hi)))
+
+(defn vec3-floor [v]
+  (vec3 (floor (:x v)) (floor (:y v)) (floor (:z v))))
+
+(defn vec3-fract [v]
+  (vec3 (- (:x v) (floor (:x v)))
+        (- (:y v) (floor (:y v)))
+        (- (:z v) (floor (:z v)))))
+
+(defn vec3-mod [v s]
+  (vec3 (fmod (:x v) s)
+        (fmod (:y v) s)
+        (fmod (:z v) s)))
+
+(defn vec3-mix [a b t]
+  (vec3 (mix (:x a) (:x b) t)
+        (mix (:y a) (:y b) t)
+        (mix (:z a) (:z b) t)))
+
+(defn vec3-reflect [v n]
+  (vec3-sub v (vec3-scale n (* 2.0 (vec3-dot v n)))))
+
+(defn vec3-max-component [v]
+  (max (:x v) (max (:y v) (:z v))))
+
+(defn vec3-min-component [v]
+  (min (:x v) (min (:y v) (:z v))))
+
+;; Swizzles (common ones for SDF work)
+(defn vec3-xy [v] (vec2 (:x v) (:y v)))
+(defn vec3-xz [v] (vec2 (:x v) (:z v)))
+(defn vec3-yz [v] (vec2 (:y v) (:z v)))
+(defn vec3-zx [v] (vec2 (:z v) (:x v)))
+
+;; ============================================================================
+;; Mat3 (for rotations)
+;; ============================================================================
+
+(defn mat3 [m00 m01 m02
+            m10 m11 m12
+            m20 m21 m22]
+  {:m00 m00 :m01 m01 :m02 m02
+   :m10 m10 :m11 m11 :m12 m12
+   :m20 m20 :m21 m21 :m22 m22})
+
+(defn mat3-identity []
+  (mat3 1 0 0
+        0 1 0
+        0 0 1))
+
+(defn mat3-mul-vec3 [m v]
+  (vec3 (+ (* (:m00 m) (:x v)) (* (:m01 m) (:y v)) (* (:m02 m) (:z v)))
+        (+ (* (:m10 m) (:x v)) (* (:m11 m) (:y v)) (* (:m12 m) (:z v)))
+        (+ (* (:m20 m) (:x v)) (* (:m21 m) (:y v)) (* (:m22 m) (:z v)))))
+
+(defn mat3-transpose [m]
+  (mat3 (:m00 m) (:m10 m) (:m20 m)
+        (:m01 m) (:m11 m) (:m21 m)
+        (:m02 m) (:m12 m) (:m22 m)))
+
+(defn mat3-rotate-x [angle]
+  (let [c (cos angle)
+        s (sin angle)]
+    (mat3 1 0 0
+          0 c (- s)
+          0 s c)))
+
+(defn mat3-rotate-y [angle]
+  (let [c (cos angle)
+        s (sin angle)]
+    (mat3 c 0 s
+          0 1 0
+          (- s) 0 c)))
+
+(defn mat3-rotate-z [angle]
+  (let [c (cos angle)
+        s (sin angle)]
+    (mat3 c (- s) 0
+          s c 0
+          0 0 1)))
+
+(defn mat3-mul [a b]
+  (mat3 (+ (* (:m00 a) (:m00 b)) (* (:m01 a) (:m10 b)) (* (:m02 a) (:m20 b)))
+        (+ (* (:m00 a) (:m01 b)) (* (:m01 a) (:m11 b)) (* (:m02 a) (:m21 b)))
+        (+ (* (:m00 a) (:m02 b)) (* (:m01 a) (:m12 b)) (* (:m02 a) (:m22 b)))
+        (+ (* (:m10 a) (:m00 b)) (* (:m11 a) (:m10 b)) (* (:m12 a) (:m20 b)))
+        (+ (* (:m10 a) (:m01 b)) (* (:m11 a) (:m11 b)) (* (:m12 a) (:m21 b)))
+        (+ (* (:m10 a) (:m02 b)) (* (:m11 a) (:m12 b)) (* (:m12 a) (:m22 b)))
+        (+ (* (:m20 a) (:m00 b)) (* (:m21 a) (:m10 b)) (* (:m22 a) (:m20 b)))
+        (+ (* (:m20 a) (:m01 b)) (* (:m21 a) (:m11 b)) (* (:m22 a) (:m21 b)))
+        (+ (* (:m20 a) (:m02 b)) (* (:m21 a) (:m12 b)) (* (:m22 a) (:m22 b)))))

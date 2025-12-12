@@ -1,0 +1,7 @@
+- [ ] audio
+  - [ ] most simple audio lib to use
+    - [ ] miniaudio ?
+      - https://github.com/mackron/miniaudio
+      - https://miniaud.io/docs/manual
+- [ ] sdf
+  - [ ] sdf to obj in runtime
