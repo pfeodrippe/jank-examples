@@ -77,6 +77,8 @@ jobs:
       - name: Build jank
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
+          export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
           cd ~/jank/compiler+runtime
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
             -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
@@ -186,6 +188,8 @@ jobs:
 
       - name: Build jank
         run: |
+          export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
+          export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
           cd ~/jank/compiler+runtime
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
             -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
