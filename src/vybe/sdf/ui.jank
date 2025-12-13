@@ -2,22 +2,21 @@
   (:require
    ["imgui.h" :as imgui :scope "ImGui"]
    ["imgui.h" :as imgui-h :scope ""]
+   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
    [vybe.sdf.state :as state]))
 
 ;; ImGui wrapper for SDF viewer
 ;; Uses header require for direct ImGui API access
 
-(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")
-
 (defn new-frame!
   "Start a new ImGui frame. Call before any UI code."
   []
-  (cpp/sdfx.imgui_new_frame))
+  (sdfx/imgui_new_frame))
 
 (defn render!
   "Finalize ImGui rendering. Call after all UI code, before draw-frame!."
   []
-  (cpp/sdfx.imgui_render))
+  (sdfx/imgui_render))
 
 (defn draw-debug-ui!
   "Draw debug UI panel using direct ImGui header require."

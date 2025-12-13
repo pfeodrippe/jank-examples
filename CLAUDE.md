@@ -47,3 +47,4 @@ export CXX=$PWD/build/llvm-install/usr/local/bin/clang++
 - **Fix in jank**: Missing includes in generated code, missing C API exports, compiler bugs
 - **Workaround in demo**: Demo-specific logic, one-off cases that don't affect other users
 - I've restarted it, but don't use :reload-all
+- we want to put as many things as possibles in jank!!

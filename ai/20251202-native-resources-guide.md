@@ -11,8 +11,13 @@ This guide documents how to use native (C/C++) resources in jank, how to minimiz
    - [Raw Array Access with cpp/aget](#raw-array-access-with-cppaget)
    - [Container Access with cpp/.at](#container-access-with-cppat)
    - [REPL-Persistent Mutable Primitives with cpp/new](#repl-persistent-mutable-primitives-with-cppnew)
+   - [Boxing/Unboxing Typedef Pointer Types (Vulkan Handles)](#boxingunboxing-typedef-pointer-types-vulkan-handles)
+   - [cpp/unbox Limitations](#cppunbox-limitations)
+   - [void* Return Values Need Boxing](#void-return-values-need-boxing)
+   - [cpp/cast Limitations with void*](#cppcast-limitations-with-void)
 3. [Why Wrappers Are Still Needed](#why-wrappers-are-still-needed)
 4. [Common Wrapper Patterns](#common-wrapper-patterns)
+   - [Pattern 3: Return Struct Instead of Output Parameters](#pattern-3-return-struct-instead-of-output-parameters)
 5. [What Works via Header Requires](#what-works-via-header-requires)
 6. [What Doesn't Work (Requires cpp/raw)](#what-doesnt-work-requires-cppraw)
 7. [C-Style Variadic Functions (WORKS!)](#c-style-variadic-functions-works)
@@ -362,6 +367,94 @@ For side-effect-only calls, you can often just call them sequentially in a funct
   (cpp/* typed-ptr))  ;; Dereference the unboxed pointer
 ```
 
+### Boxing/Unboxing Typedef Pointer Types (Vulkan Handles)
+
+Vulkan types like `VkCommandBuffer`, `VkBuffer`, `VkImage` are **typedef pointers**:
+```cpp
+typedef VkCommandBuffer_T* VkCommandBuffer;  // VkCommandBuffer is already a pointer!
+```
+
+**Problem:** When using `cpp/type "VkCommandBuffer"`, jank adds an extra pointer level:
+```clojure
+;; WRONG: Creates VkCommandBuffer* which is VkCommandBuffer_T** (double pointer!)
+(cpp/unbox (cpp/type "VkCommandBuffer") cmd)
+```
+
+**Solution:** Use the underlying struct pointer type:
+```clojure
+;; CORRECT: Creates VkCommandBuffer_T* (the actual handle type)
+(cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+```
+
+**Complete pattern for Vulkan handles:**
+```clojure
+;; Boxing: wrap a Vulkan handle returned from C++
+(defn alloc-cmd-buffer []
+  (cpp/box (sdfx/alloc_screenshot_cmd)))  ;; alloc returns VkCommandBuffer
+
+;; Unboxing: retrieve the handle to pass to Vulkan functions
+(defn free-cmd-buffer! [cmd]
+  (sdfx/free_screenshot_cmd
+    (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
+
+;; All Vulkan handle types follow this pattern:
+;; - VkCommandBuffer → "struct VkCommandBuffer_T*"
+;; - VkBuffer        → "struct VkBuffer_T*"
+;; - VkDeviceMemory  → "struct VkDeviceMemory_T*"
+;; - VkImage         → "struct VkImage_T*"
+;; - VkPipeline      → "struct VkPipeline_T*"
+;; etc.
+```
+
+### cpp/unbox Limitations
+
+**`cpp/unbox` only works for pointer types**, not value types:
+
+```clojure
+;; WORKS: Pointer types
+(cpp/unbox (cpp/type "int*") boxed-ptr)
+(cpp/unbox (cpp/type "struct VkBuffer_T*") boxed-handle)
+(cpp/unbox (cpp/type "void*") boxed-void-ptr)
+
+;; DOES NOT WORK: Value types (enums, ints, etc.)
+(cpp/unbox (cpp/type "VkImageLayout") layout)  ;; Error!
+(cpp/unbox (cpp/type "int") boxed-int)         ;; Error!
+```
+
+**Consequence:** When passing native enums/flags through jank function parameters, they get boxed and can't be unboxed. Solution: Keep enum/flag operations in C++ helpers, or use macros to inline the code.
+
+### void* Return Values Need Boxing
+
+Functions returning `void*` can't be auto-converted to jank objects:
+
+```clojure
+;; WRONG: void* can't auto-convert
+(defn map-memory [memory size]
+  (sdfx/map_screenshot_memory ...))  ;; Error: void* not convertible
+
+;; CORRECT: Explicitly box the void*
+(defn map-memory [memory size]
+  (cpp/box (sdfx/map_screenshot_memory
+             (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)
+             (cpp/VkDeviceSize. size))))
+```
+
+### cpp/cast Limitations with void*
+
+`cpp/cast` cannot cast from `void*` to other pointer types:
+
+```clojure
+;; DOES NOT WORK: Can't cast void* to uint8_t*
+(cpp/cast (cpp/type "const uint8_t*") (cpp/unbox (cpp/type "void*") pixels))
+
+;; WORKAROUND: Keep the cast in C++
+;; In C++ helper:
+inline int write_png(const void* pixelsVoid, ...) {
+    const uint8_t* pixels = static_cast<const uint8_t*>(pixelsVoid);
+    // ... process pixels ...
+}
+```
+
 ### Namespaced Access
 
 Use dots for `::` in C++:
@@ -666,7 +759,60 @@ inline double native_get_value() { return get_value(); }
 inline void native_set_value(double v) { get_value() = (float)v; }
 ```
 
-### Pattern 3: Vector Storage for Entity Iteration
+### Pattern 3: Return Struct Instead of Output Parameters
+
+For functions that need to return multiple values (especially Vulkan handles), return a struct instead of using output parameters. This avoids pointer-level issues with typedef pointer types.
+
+**Problem: Output parameters with typedef pointers don't work**
+```cpp
+// C++ function with output params
+inline bool create_buffer(VkDeviceSize size, VkBuffer* bufferOut, VkDeviceMemory* memoryOut);
+```
+
+```clojure
+;; WRONG: cpp/new cpp/VkBuffer creates VkBuffer** (triple pointer!)
+;; because VkBuffer is already VkBuffer_T*
+(let* [buffer-ptr (cpp/new cpp/VkBuffer vk/VK_NULL_HANDLE)
+       memory-ptr (cpp/new cpp/VkDeviceMemory vk/VK_NULL_HANDLE)
+       success (sdfx/create_buffer size buffer-ptr memory-ptr)]  ;; Type error!
+  ...)
+```
+
+**Solution: Return a struct**
+```cpp
+// Define a struct to hold multiple return values
+struct BufferResult {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    bool success;
+};
+
+// Return the struct instead of using output params
+inline BufferResult create_buffer(VkDeviceSize size) {
+    BufferResult result{VK_NULL_HANDLE, VK_NULL_HANDLE, false};
+    // ... create buffer and memory ...
+    result.buffer = buffer;
+    result.memory = memory;
+    result.success = true;
+    return result;
+}
+```
+
+```clojure
+;; CORRECT: Access struct fields directly
+(defn create-staging-buffer [size]
+  (let* [result (sdfx/create_buffer (cpp/VkDeviceSize. size))]
+    (when (cpp/.-success result)
+      {:buffer (cpp/box (cpp/.-buffer result))
+       :memory (cpp/box (cpp/.-memory result))})))
+```
+
+**Key benefits:**
+- Avoids pointer-level confusion with typedef pointer types
+- Clean jank code using `cpp/.-field` access
+- Works with Vulkan handles and other complex types
+
+### Pattern 4: Vector Storage for Entity Iteration
 
 ```cpp
 struct Entity {
@@ -746,10 +892,13 @@ rl/MOUSE_BUTTON_LEFT   ; Mouse button (0)
 | **Lambdas/Closures** | Not wrapped in jank yet | Write C++ callback wrappers |
 | **Static Member Access** | Blocked by Clang bug (LLVM #146956) | Wrapper function |
 | **Complex Pointer Math** | Can't express in jank | cpp/raw block |
-| **Output Parameters** | Can't pass pointers from jank | Wrapper that returns struct/vector |
+| **Output Parameters** | cpp/new creates wrong pointer levels for typedef pointers | Return struct from C++ |
 | **Callbacks** | Can't pass jank fn to C | C++ wrapper with trampoline |
 | **Global State** | ODR violations | Heap-pointer pattern |
 | **cpp/& with SliderFloat/Int** | JIT segfault (Checkbox works) | C++ wrapper functions |
+| **Typedef pointer output params** | `cpp/new cpp/VkBuffer` creates VkBuffer** not VkBuffer* | Return struct from C++ |
+| **Enum/flag function params** | Values get boxed, cpp/unbox only works for pointers | Keep enum ops in C++, or use macros |
+| **void* to typed pointer cast** | cpp/cast doesn't work for void* source | Keep cast in C++ helper |
 
 **Note:** C-style variadic functions (like `printf`, `ImGui::Text`) **DO work** - see next section.
 
@@ -1115,15 +1264,26 @@ Use two imports for namespaced C++ with constants:
 - Use enum values and constants
 - Get simple return values (int, float, bool)
 - **Call C variadic functions** like `printf`, `ImGui::Text` with `#cpp` literals
+- **Box/unbox Vulkan handles** using `struct VkXxx_T*` types
+- **Access struct fields** returned from C++ with `cpp/.-field`
 
-### What REQUIRES cpp/raw:
+### What REQUIRES cpp/raw or C++ Helpers:
 - Opaque pointer handling (opaque_box)
 - Type conversion (double ↔ float) for APIs that need float
 - Global mutable state (ODR-safe pattern)
 - C++ templates
 - Complex iteration/rendering
-- Output parameters
+- **Output parameters with typedef pointer types** (use struct return instead)
 - Callbacks
+- **Enum/flag operations passed through jank functions** (values get boxed)
+- **void* to typed pointer casts** (cpp/cast doesn't work)
+
+### Key Patterns for Vulkan/Graphics APIs:
+1. **Boxing handles:** `(cpp/box (sdfx/get_handle))`
+2. **Unboxing handles:** `(cpp/unbox (cpp/type "struct VkXxx_T*") boxed)`
+3. **Struct returns:** Return struct from C++ instead of output params
+4. **void* boxing:** `(cpp/box (sdfx/returns_void_ptr ...))`
+5. **Keep in C++:** Enum ops, void* casts, complex barriers
 
 ### Future Improvements That Would Help:
 1. Auto-wrap C pointers → Eliminate opaque_box boilerplate
@@ -1132,3 +1292,5 @@ Use two imports for namespaced C++ with constants:
 4. Template argument support → Enable some C++ template usage
 5. Lambda support → Enable callbacks from jank
 6. Output parameter support → Handle APIs with out params
+7. **cpp/unbox for value types** → Enable unboxing enums/ints
+8. **cpp/cast from void*** → Enable void* to typed pointer casts

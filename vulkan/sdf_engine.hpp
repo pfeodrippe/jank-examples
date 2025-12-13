@@ -2047,216 +2047,258 @@ inline int get_object_count() {
 }
 
 // ============================================================================
-// Screenshot Capture
+// Engine Field Accessors for jank interop
 // ============================================================================
 
-// Save the current compute image to a PNG file (downsized for smaller file)
-inline bool save_screenshot(const char* filepath) {
+inline bool engine_initialized() {
     auto* e = get_engine();
-    if (!e || !e->device || !e->computeImage) {
-        std::cerr << "Engine not initialized" << std::endl;
-        return false;
-    }
+    return e && e->device && e->computeImage;
+}
 
-    // ALWAYS dispatch compute shader to capture current pipeline state
-    // (don't rely on dirty flag since main loop may have cleared it)
-    {
-        VkCommandBuffer cmd;
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = e->commandPool;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = 1;
-        vkAllocateCommandBuffers(e->device, &allocInfo, &cmd);
+inline VkDevice get_device() {
+    auto* e = get_engine();
+    return e ? e->device : VK_NULL_HANDLE;
+}
 
-        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(cmd, &beginInfo);
+inline VkPhysicalDevice get_physical_device() {
+    auto* e = get_engine();
+    return e ? e->physicalDevice : VK_NULL_HANDLE;
+}
 
-        // Transition to general for compute
-        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = e->computeImage;
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                            0, 0, nullptr, 0, nullptr, 1, &barrier);
+inline VkCommandPool get_command_pool() {
+    auto* e = get_engine();
+    return e ? e->commandPool : VK_NULL_HANDLE;
+}
 
-        // Dispatch compute shader
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, e->computePipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, e->computePipelineLayout,
-                               0, 1, &e->descriptorSet, 0, nullptr);
-        vkCmdDispatch(cmd, (e->swapchainExtent.width + 15) / 16, (e->swapchainExtent.height + 15) / 16, 1);
+inline VkQueue get_graphics_queue() {
+    auto* e = get_engine();
+    return e ? e->graphicsQueue : VK_NULL_HANDLE;
+}
 
-        // Transition to shader read
-        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                            0, 0, nullptr, 0, nullptr, 1, &barrier);
+inline VkImage get_compute_image() {
+    auto* e = get_engine();
+    return e ? e->computeImage : VK_NULL_HANDLE;
+}
 
-        vkEndCommandBuffer(cmd);
+inline VkPipeline get_compute_pipeline() {
+    auto* e = get_engine();
+    return e ? e->computePipeline : VK_NULL_HANDLE;
+}
 
-        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &cmd;
-        vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(e->graphicsQueue);
-        vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmd);
+inline VkPipelineLayout get_compute_pipeline_layout() {
+    auto* e = get_engine();
+    return e ? e->computePipelineLayout : VK_NULL_HANDLE;
+}
 
-        std::cout << "[DEBUG] save_screenshot: dispatched compute shader" << std::endl;
-    }
+inline VkDescriptorSet get_descriptor_set() {
+    auto* e = get_engine();
+    return e ? e->descriptorSet : VK_NULL_HANDLE;
+}
 
-    uint32_t width = e->swapchainExtent.width;
-    uint32_t height = e->swapchainExtent.height;
-    VkDeviceSize imageSize = width * height * 4; // RGBA
+inline uint32_t get_swapchain_width() {
+    auto* e = get_engine();
+    return e ? e->swapchainExtent.width : 0;
+}
 
-    // Create staging buffer
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
+inline uint32_t get_swapchain_height() {
+    auto* e = get_engine();
+    return e ? e->swapchainExtent.height : 0;
+}
 
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+// find_memory_type wrapper for jank screenshot
+inline uint32_t find_memory_type_for_screenshot(uint32_t typeFilter, uint32_t properties) {
+    auto* e = get_engine();
+    if (!e) return 0;
+    return find_memory_type(e, typeFilter, static_cast<VkMemoryPropertyFlags>(properties));
+}
 
-    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) {
-        std::cerr << "Failed to create staging buffer" << std::endl;
-        return false;
-    }
+// Allocate a single command buffer - needed because jank can't handle VkCommandBuffer output params
+inline VkCommandBuffer alloc_screenshot_cmd() {
+    auto* e = get_engine();
+    if (!e) return VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    info.commandPool = e->commandPool;
+    info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    info.commandBufferCount = 1;
+    VkCommandBuffer cmd;
+    vkAllocateCommandBuffers(e->device, &info, &cmd);
+    return cmd;
+}
 
+// Free command buffer
+inline void free_screenshot_cmd(VkCommandBuffer cmd) {
+    auto* e = get_engine();
+    if (!e) return;
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmd);
+}
+
+// Submit and wait for command buffer
+inline void submit_screenshot_cmd(VkCommandBuffer cmd) {
+    auto* e = get_engine();
+    if (!e) return;
+    VkSubmitInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    info.commandBufferCount = 1;
+    info.pCommandBuffers = &cmd;
+    vkQueueSubmit(e->graphicsQueue, 1, &info, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+}
+
+// Struct for returning screenshot buffer handles
+struct ScreenshotBuffer {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    bool success;
+};
+
+// Create staging buffer, returns buffer and memory in struct
+inline ScreenshotBuffer create_screenshot_buffer(VkDeviceSize size) {
+    ScreenshotBuffer result{VK_NULL_HANDLE, VK_NULL_HANDLE, false};
+    auto* e = get_engine();
+    if (!e) return result;
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = size;
+    info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(e->device, &info, nullptr, &result.buffer) != VK_SUCCESS) return result;
     VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(e->device, stagingBuffer, &memReq);
-
+    vkGetBufferMemoryRequirements(e->device, result.buffer, &memReq);
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReq.size;
     allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
-        vkDestroyBuffer(e->device, stagingBuffer, nullptr);
-        std::cerr << "Failed to allocate staging memory" << std::endl;
-        return false;
+    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &result.memory) != VK_SUCCESS) {
+        vkDestroyBuffer(e->device, result.buffer, nullptr);
+        result.buffer = VK_NULL_HANDLE;
+        return result;
     }
+    vkBindBufferMemory(e->device, result.buffer, result.memory, 0);
+    result.success = true;
+    return result;
+}
 
-    vkBindBufferMemory(e->device, stagingBuffer, stagingMemory, 0);
+// Cleanup staging buffer
+inline void destroy_screenshot_buffer(VkBuffer buffer, VkDeviceMemory memory) {
+    auto* e = get_engine();
+    if (!e) return;
+    vkDestroyBuffer(e->device, buffer, nullptr);
+    vkFreeMemory(e->device, memory, nullptr);
+}
 
-    // Create command buffer for copy
-    VkCommandBufferAllocateInfo cmdAllocInfo{};
-    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cmdAllocInfo.commandPool = e->commandPool;
-    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmdAllocInfo.commandBufferCount = 1;
+// Map memory
+inline void* map_screenshot_memory(VkDeviceMemory memory, VkDeviceSize size) {
+    auto* e = get_engine();
+    if (!e) return nullptr;
+    void* data;
+    vkMapMemory(e->device, memory, 0, size, 0, &data);
+    return data;
+}
 
-    VkCommandBuffer cmdBuffer;
-    vkAllocateCommandBuffers(e->device, &cmdAllocInfo, &cmdBuffer);
+// Unmap memory
+inline void unmap_screenshot_memory(VkDeviceMemory memory) {
+    auto* e = get_engine();
+    if (!e) return;
+    vkUnmapMemory(e->device, memory);
+}
 
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmdBuffer, &beginInfo);
-
-    // Transition image to transfer src
+// Pipeline barrier: UNDEFINED -> GENERAL (for compute write)
+inline void barrier_to_general(VkCommandBuffer cmd, VkImage image) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
+// Pipeline barrier: GENERAL -> TRANSFER_SRC (after compute, for copy)
+inline void barrier_to_transfer_src(VkCommandBuffer cmd, VkImage image) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = e->computeImage;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-    vkCmdPipelineBarrier(cmdBuffer,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
 
-    // Copy image to buffer
+// Dispatch compute shader for screenshot
+inline void dispatch_screenshot_compute(VkCommandBuffer cmd) {
+    auto* e = get_engine();
+    if (!e) return;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, e->computePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        e->computePipelineLayout, 0, 1, &e->descriptorSet, 0, nullptr);
+    vkCmdDispatch(cmd,
+        (e->swapchainExtent.width + 15) / 16,
+        (e->swapchainExtent.height + 15) / 16, 1);
+}
+
+// Copy image to buffer
+inline void copy_image_to_buffer(VkCommandBuffer cmd, VkImage image, VkBuffer buffer,
+                                  uint32_t width, uint32_t height) {
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
     region.bufferRowLength = 0;
     region.bufferImageHeight = 0;
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
     region.imageOffset = {0, 0, 0};
     region.imageExtent = {width, height, 1};
+    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+}
 
-    vkCmdCopyImageToBuffer(cmdBuffer, e->computeImage,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+// Write PNG with downsampling - handles void* to uint8_t* cast internally
+inline int write_png_downsampled(const char* filepath, const void* pixelsVoid,
+                                  uint32_t width, uint32_t height, uint32_t scale) {
+    const uint8_t* pixels = static_cast<const uint8_t*>(pixelsVoid);
+    uint32_t out_w = width / scale;
+    uint32_t out_h = height / scale;
+    size_t rgb_size = out_w * out_h * 3;
+    uint8_t* rgb = new uint8_t[rgb_size];
 
-    // Transition image back
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    vkCmdPipelineBarrier(cmdBuffer,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-    vkEndCommandBuffer(cmdBuffer);
-
-    // Submit and wait
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmdBuffer;
-
-    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(e->graphicsQueue);
-
-    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmdBuffer);
-
-    // Map buffer
-    void* data;
-    vkMapMemory(e->device, stagingMemory, 0, imageSize, 0, &data);
-    const uint8_t* pixels = static_cast<const uint8_t*>(data);
-
-    // Downsample by 4x for smaller PNG (e.g., 2560x1440 -> 640x360)
-    uint32_t scale = 4;
-    uint32_t outWidth = width / scale;
-    uint32_t outHeight = height / scale;
-
-    // Allocate RGB buffer for downsampled image
-    std::vector<uint8_t> rgbData(outWidth * outHeight * 3);
-
-    for (uint32_t y = 0; y < outHeight; y++) {
-        for (uint32_t x = 0; x < outWidth; x++) {
-            // Simple point sampling (take center pixel of each block)
-            // Flip Y to correct upside-down image
-            uint32_t srcX = x * scale + scale / 2;
-            uint32_t srcY = (outHeight - 1 - y) * scale + scale / 2;
-            size_t srcIdx = (srcY * width + srcX) * 4;
-            size_t dstIdx = (y * outWidth + x) * 3;
-
-            rgbData[dstIdx + 0] = pixels[srcIdx + 0];  // R
-            rgbData[dstIdx + 1] = pixels[srcIdx + 1];  // G
-            rgbData[dstIdx + 2] = pixels[srcIdx + 2];  // B
+    // Downsample with vertical flip
+    for (uint32_t y = 0; y < out_h; y++) {
+        for (uint32_t x = 0; x < out_w; x++) {
+            uint32_t src_y = (out_h - 1 - y) * scale + scale / 2;
+            uint32_t src_x = x * scale + scale / 2;
+            size_t src_idx = (src_y * width + src_x) * 4;
+            size_t dst_idx = (y * out_w + x) * 3;
+            rgb[dst_idx] = pixels[src_idx];
+            rgb[dst_idx + 1] = pixels[src_idx + 1];
+            rgb[dst_idx + 2] = pixels[src_idx + 2];
         }
     }
 
-    vkUnmapMemory(e->device, stagingMemory);
-    vkDestroyBuffer(e->device, stagingBuffer, nullptr);
-    vkFreeMemory(e->device, stagingMemory, nullptr);
-
-    // Write PNG using stb_image_write
-    int result = stbi_write_png(filepath, outWidth, outHeight, 3, rgbData.data(), outWidth * 3);
-
-    if (result) {
-        std::cout << "Screenshot saved to " << filepath << " (" << outWidth << "x" << outHeight << ")" << std::endl;
-        return true;
-    } else {
-        std::cerr << "Failed to write PNG: " << filepath << std::endl;
-        return false;
-    }
+    int result = stbi_write_png(filepath, out_w, out_h, 3, rgb, out_w * 3);
+    delete[] rgb;
+    return result;
 }
 
 } // namespace sdfx

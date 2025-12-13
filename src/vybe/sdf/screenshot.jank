@@ -1,0 +1,115 @@
+(ns vybe.sdf.screenshot
+  (:require
+   [vybe.util :as u]
+   ["vulkan/vulkan.h" :as vk :scope ""]
+   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]))
+
+;; ============================================================================
+;; Screenshot - jank orchestration with C++ helpers for Vulkan operations
+;; C++ helpers handle typedef pointer types and enum operations
+;; jank orchestrates the flow and handles data processing (PNG writing)
+;; ============================================================================
+
+(defn alloc-cmd-buffer []
+  (cpp/box (sdfx/alloc_screenshot_cmd)))
+
+(defn free-cmd-buffer! [cmd]
+  (sdfx/free_screenshot_cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
+
+(defn submit-and-wait! [cmd]
+  (sdfx/submit_screenshot_cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
+
+(defn begin-cmd-buffer! [cmd]
+  (let* [info (cpp/VkCommandBufferBeginInfo.)
+         _ (cpp/= (cpp/.-sType info) vk/VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
+         _ (cpp/= (cpp/.-flags info) (cpp/VkCommandBufferUsageFlags. vk/VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))]
+    (vk/vkBeginCommandBuffer (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd) (cpp/& info))))
+
+(defn end-cmd-buffer! [cmd]
+  (vk/vkEndCommandBuffer (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
+
+(defn barrier-to-general! [cmd image]
+  (sdfx/barrier_to_general (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+                           (cpp/unbox (cpp/type "struct VkImage_T*") image)))
+
+(defn barrier-to-transfer-src! [cmd image]
+  (sdfx/barrier_to_transfer_src (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+                                (cpp/unbox (cpp/type "struct VkImage_T*") image)))
+
+(defn dispatch-compute! [cmd]
+  (sdfx/dispatch_screenshot_compute (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
+
+(defn create-staging-buffer [size]
+  (let* [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]
+    (when (cpp/.-success result)
+      {:buffer (cpp/box (cpp/.-buffer result))
+       :memory (cpp/box (cpp/.-memory result))})))
+
+(defn copy-image-to-buffer! [cmd image buffer width height]
+  (sdfx/copy_image_to_buffer (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+                             (cpp/unbox (cpp/type "struct VkImage_T*") image)
+                             (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
+                             (cpp/uint32_t. width)
+                             (cpp/uint32_t. height)))
+
+(defn map-memory [memory size]
+  (cpp/box (sdfx/map_screenshot_memory (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)
+                                       (cpp/VkDeviceSize. size))))
+
+(defn unmap-memory! [memory]
+  (sdfx/unmap_screenshot_memory (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)))
+
+(defn destroy-staging-buffer! [buffer memory]
+  (sdfx/destroy_screenshot_buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
+                                  (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)))
+
+(defn write-png-downsampled [filepath pixels width height scale]
+  (sdfx/write_png_downsampled filepath
+                              (cpp/unbox (cpp/type "void*") pixels)
+                              (cpp/uint32_t. width)
+                              (cpp/uint32_t. height)
+                              (cpp/uint32_t. scale)))
+
+(defn save-screenshot!
+  "Capture current frame and save to PNG file."
+  [filepath]
+  (if (not (sdfx/engine_initialized))
+    (do
+      (println "Screenshot failed - engine not initialized")
+      false)
+    (let* [width (sdfx/get_swapchain_width)
+           height (sdfx/get_swapchain_height)
+           image-size (* width height 4)
+           image (cpp/box (sdfx/get_compute_image))
+           ;; Allocate command buffer
+           cmd (alloc-cmd-buffer)
+           _ (begin-cmd-buffer! cmd)
+           ;; Transition image: UNDEFINED -> GENERAL for compute
+           _ (barrier-to-general! cmd image)
+           ;; Dispatch compute shader
+           _ (dispatch-compute! cmd)
+           ;; Transition image: GENERAL -> TRANSFER_SRC
+           _ (barrier-to-transfer-src! cmd image)
+           ;; Create staging buffer
+           staging (create-staging-buffer image-size)
+           buffer (:buffer staging)
+           memory (:memory staging)
+           ;; Copy image to buffer
+           _ (copy-image-to-buffer! cmd image buffer width height)
+           _ (end-cmd-buffer! cmd)
+           _ (submit-and-wait! cmd)
+           ;; Map memory and write PNG
+           pixels (map-memory memory image-size)
+           scale 4
+           result (write-png-downsampled filepath pixels width height scale)
+           _ (unmap-memory! memory)
+           _ (destroy-staging-buffer! buffer memory)
+           _ (free-cmd-buffer! cmd)]
+      (if (> result 0)
+        (do
+          (println "Screenshot saved to" filepath (str "(" (/ width scale) "x" (/ height scale) ")"))
+          true)
+        (do
+          (println "Failed to write PNG:" filepath)
+          false)))))
+#_ (save-screenshot! "eita.png")

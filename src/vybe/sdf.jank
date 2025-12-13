@@ -60,8 +60,8 @@
   (render/init! "vulkan_kim")
 
   ;; Enable continuous rendering
-  (render/set-continuous-mode! true)
-  (state/set-continuous-mode! true)
+  (render/set-continuous-mode! false)
+  (state/set-continuous-mode! false)
   (println "Continuous rendering enabled for animations")
 
   ;; Sync camera and objects state

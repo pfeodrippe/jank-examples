@@ -12,3 +12,6 @@
       - https://miniaud.io/docs/manual
 - [-] when we evaluate `should-close?` via the nREPL .app (after evaluating`(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")`), we have the app closing
   - better to just move things to jank as much as possible
+- [ ] ios sample
+  - townscaper-like
+- [ ] how can we eliminate jit at all when not needed?

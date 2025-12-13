@@ -46,41 +46,6 @@
            ks))))
 
 ;; =============================================================================
-;; defn* macro - for functions that return native C++ types
-;; =============================================================================
-
-(defmacro defn*
-  "Define a function that returns a native C++ type.
-   When :tag metadata specifies a native type, generates a macro
-   that inlines the body and wraps the result in cpp/unbox.
-
-   This is needed because jank functions must return object_ref due to
-   virtual dispatch, but we often need to return native types for C interop.
-
-   Usage:
-     (defn* ^{:tag \"ecs_world_t*\"} world-ptr [world]
-       world)
-
-   Expands to a macro that inlines: (cpp/unbox (cpp/type \"ecs_world_t*\") world)"
-  [name & body]
-  (let [m (meta name)
-        tag (:tag m)
-        ;; Parse optional docstring
-        [docstring params forms] (if (string? (first body))
-                                   [(first body) (second body) (drop 2 body)]
-                                   [nil (first body) (rest body)])]
-    (if tag
-      ;; Generate a macro that wraps body result in cpp/unbox
-      `(defmacro ~(with-meta name (dissoc m :tag))
-         ~@(when docstring [docstring])
-         ~params
-         (list (quote cpp/unbox)
-               (list (quote cpp/type) ~tag)
-               ~@forms))
-      ;; No tag, just use regular defn
-      `(defn ~name ~@body))))
-
-;; =============================================================================
 ;; Flecs C API wrappers for jank
 ;; =============================================================================
 
