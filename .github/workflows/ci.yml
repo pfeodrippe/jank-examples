@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+env:
+  JANK_REPO: pfeodrippe/jank
+  JANK_REF: nrepl
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon (M1/M2/M3)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk
+          brew install llvm@18 cmake ninja
+
+      - name: Cache jank build
+        id: cache-jank
+        uses: actions/cache@v4
+        with:
+          path: ~/jank
+          key: jank-${{ runner.os }}-${{ runner.arch }}-${{ env.JANK_REF }}-v1
+
+      - name: Clone and build jank
+        if: steps.cache-jank.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git jank
+          cd jank/compiler+runtime
+
+          # Set up environment for building
+          export SDKROOT=$(xcrun --show-sdk-path)
+
+          # Build jank
+          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release
+          ./bin/compile
+
+          echo "jank build complete"
+
+      - name: Set up jank environment
+        run: |
+          echo "$HOME/jank/compiler+runtime/build" >> $GITHUB_PATH
+          echo "JANK_DIR=$HOME/jank/compiler+runtime" >> $GITHUB_ENV
+
+      - name: Update project paths for CI
+        run: |
+          # Update hardcoded paths in scripts to use CI jank location
+          find bin -name "*.sh" -exec sed -i '' \
+            -e "s|/Users/pfeodrippe/dev/jank/compiler+runtime|$HOME/jank/compiler+runtime|g" \
+            -e "s|/Users/pfeodrippe/dev/something|$GITHUB_WORKSPACE|g" {} \;
+
+          # Verify jank is available
+          which jank || echo "jank not found in PATH"
+          jank --version || echo "jank version check failed"
+
+      - name: Build dependencies (ImGui, Jolt, Flecs)
+        run: |
+          export SDKROOT=$(xcrun --show-sdk-path)
+
+          # Build Flecs
+          if [ -d "vendor/flecs/distr" ]; then
+            cd vendor/flecs/distr
+            clang -c -fPIC -o flecs.o flecs.c || true
+            cd ../../..
+          fi
+
+          # Build ImGui (if script exists)
+          if [ -f "build_imgui.sh" ]; then
+            bash ./build_imgui.sh || true
+          fi
+
+          # Build Jolt (if script exists)
+          if [ -f "build_jolt.sh" ]; then
+            bash ./build_jolt.sh || true
+          fi
+
+      - name: Run tests
+        run: |
+          export SDKROOT=$(xcrun --show-sdk-path)
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make test
+
+      - name: Build standalone app
+        run: |
+          export SDKROOT=$(xcrun --show-sdk-path)
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make sdf-standalone
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SDFViewer-macOS-arm64
+          path: SDFViewer.dmg
+          if-no-files-found: error
+
+      - name: Upload App Bundle (for debugging)
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: SDFViewer-app-debug
+          path: SDFViewer.app
+          if-no-files-found: ignore

@@ -64,7 +64,6 @@ Type strings must match exactly (including spaces):
 **Rule 2 - Use jank/cpp prefix, cpp/raw is LAST RESORT**
 - Always prefer header requires: `["raylib.h" :as rl :scope ""]`
 - Use `cpp/` prefix for C++ interop: `cpp/box`, `cpp/unbox`, `cpp/.-field`, `cpp/.method`
-- Use `let*` with `_` binding for void returns
 - Only use `cpp/raw` when absolutely necessary (complex loops, callbacks, templates, ODR-safe globals)
 
 ## Files Modified

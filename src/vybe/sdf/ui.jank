@@ -1,7 +1,11 @@
-(ns vybe.sdf.ui)
+(ns vybe.sdf.ui
+  (:require
+   ["imgui.h" :as imgui :scope "ImGui"]
+   ["imgui.h" :as imgui-h :scope ""]
+   [vybe.sdf.state :as state]))
 
-;; Minimal ImGui wrapper for SDF viewer
-;; Only provides new-frame! and render! needed by vybe.sdf
+;; ImGui wrapper for SDF viewer
+;; Uses header require for direct ImGui API access
 
 (cpp/raw "#include \"vulkan/sdf_engine.hpp\"")
 
@@ -14,3 +18,28 @@
   "Finalize ImGui rendering. Call after all UI code, before draw-frame!."
   []
   (cpp/sdfx.imgui_render))
+
+(defn draw-debug-ui!
+  "Draw debug UI panel using direct ImGui header require."
+  []
+  (let [cam (state/get-camera)
+        edit (state/get-edit-mode)
+        objs (state/get-objects)
+        io (imgui/GetIO)
+        fps (cpp/.-Framerate io)]
+    (imgui/SetNextWindowPos (imgui-h/ImVec2. (cpp/float. 10.0) (cpp/float. 10.0))
+                            imgui-h/ImGuiCond_FirstUseEver)
+    (imgui/Begin "SDF Debug")
+    (imgui/Text #cpp "FPS: %.1f" fps)
+    (imgui/Separator)
+    (imgui/Text #cpp "Camera:")
+    (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (:distance cam)))
+    (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (:angle-x cam)))
+    (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (:angle-y cam)))
+    (imgui/Separator)
+    (imgui/Text #cpp "Edit Mode: %s" (if (:enabled edit) "ON" "OFF"))
+    (imgui/Text #cpp "Selected: %d" (cpp/int. (:selected-object edit)))
+    (imgui/Separator)
+    (imgui/Text #cpp "Objects: %d" (cpp/int. (count objs)))
+    (imgui/End)
+    nil))

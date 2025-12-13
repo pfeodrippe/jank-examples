@@ -327,11 +327,13 @@ bool vk_save_screenshot(const char* path);
 - [x] "Objects loaded: 6" confirmed in output
 - NOTE: C++ still owns objects, jank reads via sync. Next step: jank writes to C++
 
-### Phase 5: ImGui - DEFERRED
-- [ ] Add header require for imgui.h in ui.jank
-- [ ] Remove imgui wrapper functions from C++
-- [ ] Rewrite UI using direct imgui calls
-- STATUS: Deferred - requires jank header require investigation
+### Phase 5: ImGui ✅ COMPLETED (2025-12-13)
+- [x] Add header require for imgui.h in ui.jank
+- [x] Remove imgui wrapper functions from C++ (done in Session 3)
+- [x] Rewrite UI using direct imgui calls (draw-debug-ui!)
+- [x] Header require pattern: `["imgui.h" :as imgui :scope "ImGui"]`
+- [x] Debug panel shows: FPS, Camera state, Edit mode, Objects count
+- NOTE: imgui_new_frame/imgui_render still in C++ (backend init needs Vulkan/SDL context)
 
 ### Phase 6: Input - DEFERRED
 - [ ] Create `SDLEvent` struct and `vk_poll_event()`

@@ -190,7 +190,89 @@ make sdf-standalone
 ```
 
 ### What's Next
-- Phase 5 (ImGui header require) - DEFERRED: Requires jank header require investigation
+- Phase 5 (ImGui header require) - COMPLETED (see Session 4)
 - Phase 6 (Input handling) - DEFERRED: Complex C++ gizmo integration
 - Could potentially remove more unused code as migration continues
 - Consider moving object mutation (add/delete/duplicate) to jank in future
+
+---
+
+## Session 4: Phase 5 - ImGui Header Require (2025-12-13)
+
+### Goal
+Use jank header require to call ImGui functions directly instead of C++ wrappers.
+
+### Implementation
+
+**Header require pattern** (proven in `my_integrated_demo.jank`):
+```clojure
+["imgui.h" :as imgui :scope "ImGui"]   ;; ImGui::Begin, etc.
+["imgui.h" :as imgui-h :scope ""]      ;; ImVec2, constants
+```
+
+**Updated `src/vybe/sdf/ui.jank`**:
+```clojure
+(ns vybe.sdf.ui
+  (:require
+   ["imgui.h" :as imgui :scope "ImGui"]
+   ["imgui.h" :as imgui-h :scope ""]
+   [vybe.sdf.state :as state]))
+
+(defn draw-debug-ui!
+  []
+  (let [cam (state/get-camera)
+        edit (state/get-edit-mode)
+        objs (state/get-objects)
+        io (imgui/GetIO)
+        fps (cpp/.-Framerate io)]
+    (imgui/SetNextWindowPos (imgui-h/ImVec2. (cpp/float. 10.0) (cpp/float. 10.0))
+                            imgui-h/ImGuiCond_FirstUseEver)
+    (imgui/Begin "SDF Debug")
+    (imgui/Text #cpp "FPS: %.1f" fps)
+    ;; ... more UI code
+    (imgui/End)
+    nil))
+```
+
+**Updated `src/vybe/sdf.jank`**:
+- Added `(render/sync-camera-from-cpp!)` to main loop for live camera updates
+- Added `(ui/draw-debug-ui!)` call between new-frame! and render!
+
+### Key Learnings
+
+1. **Header require syntax**: `["imgui.h" :as imgui :scope "ImGui"]`
+   - `:scope "ImGui"` for ImGui:: namespaced functions
+   - `:scope ""` for global constants/structs (ImVec2, ImGuiCond_*, etc.)
+
+2. **Void returns in let**: Functions returning void CAN be used in let body
+   - Just make sure to return `nil` at the end of defn
+   - No need for `let*` with `_` bindings for void calls in body position
+
+3. **Accessing struct fields**: `(cpp/.-Framerate io)` for `io.Framerate`
+
+4. **What stays in C++**: Backend-specific init functions
+   - `imgui_new_frame()` must call ImGui_ImplVulkan_NewFrame + ImGui_ImplSDL3_NewFrame
+   - These require Vulkan/SDL context not available via header require
+
+### Test Results
+- `make sdf` - Dev mode works ✓
+- `make sdf-standalone` - AOT build works ✓ (181MB DMG)
+- Debug panel shows: FPS, Camera state, Edit mode, Objects count
+
+### Updated Architecture
+```
+jank (ui.jank):
+  - Header require: ["imgui.h" :as imgui :scope "ImGui"]
+  - draw-debug-ui! calls ImGui::Begin/End/Text directly
+  - Uses jank state atoms for data
+
+C++ (sdf_engine.hpp):
+  - imgui_new_frame() - backend init (ImGui_ImplVulkan/SDL)
+  - imgui_render() - thin wrapper for ImGui::Render()
+  - No more imgui_begin/end/text wrappers needed!
+```
+
+### What's Next
+- Phase 6 (Input handling) - Still DEFERRED: Complex C++ gizmo integration
+- Could expand debug UI with more features (sliders, buttons, etc.)
+- All ImGui UI can now be written in pure jank!

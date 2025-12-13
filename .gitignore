@@ -18,3 +18,4 @@ jank.profile
 *.png
 SDFViewer*
 sdf-viewer*
+.DS_Store

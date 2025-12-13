@@ -1,7 +1,7 @@
 # Makefile for something project
 # Manages builds, cache, and common operations
 
-.PHONY: clean clean-cache sdf integrated imgui jolt tests help
+.PHONY: clean clean-cache sdf integrated imgui jolt test tests help
 
 # Default target
 help:
@@ -10,7 +10,7 @@ help:
 	@echo "  make integrated  - Run integrated demo (Raylib+ImGui+Jolt+Flecs)"
 	@echo "  make imgui       - Run ImGui demo"
 	@echo "  make jolt        - Run Jolt physics demo"
-	@echo "  make tests       - Run tests"
+	@echo "  make test        - Run tests"
 	@echo ""
 	@echo "  make clean       - Clean all build artifacts and cache"
 	@echo "  make clean-cache - Clean only jank module cache (target/)"
@@ -46,7 +46,7 @@ imgui:
 jolt:
 	./bin/run_jolt.sh
 
-tests:
+test tests:
 	./bin/run_tests.sh
 
 # Standalone build
