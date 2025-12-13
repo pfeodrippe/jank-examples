@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: Clone jank
         run: |
-          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
 
       - name: Install Homebrew deps
         run: |
@@ -61,7 +61,7 @@ jobs:
 
       - name: Clone jank
         run: |
-          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
 
       - name: Install Homebrew deps
         run: |
@@ -135,7 +135,7 @@ jobs:
     steps:
       - name: Clone jank
         run: |
-          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
 
       - name: Install apt deps
         run: |
@@ -169,7 +169,7 @@ jobs:
 
       - name: Clone jank
         run: |
-          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
 
       - name: Install apt deps
         run: |
