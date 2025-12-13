@@ -62,7 +62,8 @@ export VK_ICD_FILENAMES="\$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"
 
 # Set C/C++ include paths for JIT compilation at runtime
 # CPATH is used by clang to find headers during JIT compilation
-export CPATH="\$RESOURCES/include:\$RESOURCES/include/flecs:\$RESOURCES/include/imgui:\$RESOURCES/include/imgui/backends"
+# Include bundled C++ headers FIRST to avoid conflicts with system headers
+export CPATH="\$RESOURCES/include/c++/v1:\$RESOURCES/include:\$RESOURCES/include/flecs:\$RESOURCES/include/imgui:\$RESOURCES/include/imgui/backends"
 
 # Set CXX to bundled clang for jank JIT compilation
 # jank checks CXX env var as fallback when hardcoded path doesn't exist
@@ -111,6 +112,9 @@ LAUNCHER
     install_name_tool -change "/usr/lib/libc++.1.dylib" "@executable_path/../../Frameworks/libc++.1.dylib" "$APP_BUNDLE/Contents/Resources/bin/clang-22"
     # Copy clang resource directory (headers for JIT)
     cp -r "$JANK_LIB_DIR/clang" "$APP_BUNDLE/Contents/Resources/lib/"
+    # Copy C++ standard library headers (to avoid conflicts with system headers)
+    echo "Bundling C++ headers..."
+    cp -r "$JANK_LIB_DIR/../include" "$APP_BUNDLE/Contents/Resources/"
     # Create Frameworks symlink in Resources for libraries that use @executable_path/../Frameworks
     # (when clang runs, its @executable_path is Resources/bin, so libs look in Resources/Frameworks)
     ln -sf ../Frameworks "$APP_BUNDLE/Contents/Resources/Frameworks"
