@@ -64,6 +64,10 @@ export VK_ICD_FILENAMES="\$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"
 # CPATH is used by clang to find headers during JIT compilation
 export CPATH="\$RESOURCES/include:\$RESOURCES/include/flecs:\$RESOURCES/include/imgui:\$RESOURCES/include/imgui/backends"
 
+# Set CXX to bundled clang for jank JIT compilation
+# jank checks CXX env var as fallback when hardcoded path doesn't exist
+export CXX="\$RESOURCES/bin/clang++"
+
 # Set working directory to Resources for shader loading
 cd "\$RESOURCES"
 
@@ -93,6 +97,24 @@ LAUNCHER
     cp vendor/imgui/*.h "$APP_BUNDLE/Contents/Resources/include/imgui/" 2>/dev/null || true
     cp vendor/imgui/backends/*.h "$APP_BUNDLE/Contents/Resources/include/imgui/backends/" 2>/dev/null || true
 
+    # Bundle clang for JIT compilation (jank requires clang 22)
+    echo "Bundling clang for JIT..."
+    mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
+    mkdir -p "$APP_BUNDLE/Contents/Resources/lib"
+    # Copy clang binary (just the driver - uses libclang-cpp.dylib)
+    cp "$JANK_LIB_DIR/../bin/clang-22" "$APP_BUNDLE/Contents/Resources/bin/"
+    ln -sf clang-22 "$APP_BUNDLE/Contents/Resources/bin/clang"
+    ln -sf clang "$APP_BUNDLE/Contents/Resources/bin/clang++"
+    # Fix clang's rpath to find libs in Frameworks (../../Frameworks from Resources/bin)
+    install_name_tool -add_rpath "@executable_path/../../Frameworks" "$APP_BUNDLE/Contents/Resources/bin/clang-22"
+    # Fix system libc++ reference to use bundled version
+    install_name_tool -change "/usr/lib/libc++.1.dylib" "@executable_path/../../Frameworks/libc++.1.dylib" "$APP_BUNDLE/Contents/Resources/bin/clang-22"
+    # Copy clang resource directory (headers for JIT)
+    cp -r "$JANK_LIB_DIR/clang" "$APP_BUNDLE/Contents/Resources/lib/"
+    # Create Frameworks symlink in Resources for libraries that use @executable_path/../Frameworks
+    # (when clang runs, its @executable_path is Resources/bin, so libs look in Resources/Frameworks)
+    ln -sf ../Frameworks "$APP_BUNDLE/Contents/Resources/Frameworks"
+
     # Copy MoltenVK ICD for Vulkan discovery
     echo "Setting up Vulkan ICD..."
     mkdir -p "$APP_BUNDLE/Contents/Resources/vulkan/icd.d"
@@ -115,6 +137,7 @@ MOLTENVK_ICD
         "$JANK_LIB_DIR/libLLVM.dylib"
         "$JANK_LIB_DIR/libclang-cpp.dylib"
         "$JANK_LIB_DIR/libc++.1.dylib"
+        "$JANK_LIB_DIR/libc++abi.1.dylib"
         "$JANK_LIB_DIR/libunwind.1.dylib"
     )
 
@@ -226,6 +249,12 @@ MOLTENVK_ICD
         install_name_tool -change "/opt/homebrew/opt/shaderc/lib/libshaderc_shared.1.dylib" \
             "@executable_path/../Frameworks/libshaderc_shared.1.dylib" "$lib" 2>/dev/null || true
 
+        # Fix system libc++ references to use bundled version
+        install_name_tool -change "/usr/lib/libc++.1.dylib" \
+            "@executable_path/../Frameworks/libc++.1.dylib" "$lib" 2>/dev/null || true
+        install_name_tool -change "/usr/lib/libc++abi.dylib" \
+            "@executable_path/../Frameworks/libc++abi.1.dylib" "$lib" 2>/dev/null || true
+
         # Fix jank lib cross-references
         for jank_lib in "${JANK_LIBS[@]}"; do
             jank_libname=$(basename "$jank_lib")
@@ -294,6 +323,19 @@ PLIST
     echo ""
     echo "To run: open $APP_BUNDLE"
     echo "Or:     $APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+    # Create DMG for distribution (preserves permissions)
+    echo ""
+    echo "Creating DMG for distribution..."
+    DMG_NAME="${APP_NAME}.dmg"
+    rm -f "$DMG_NAME"
+    hdiutil create -volname "$APP_NAME" -srcfolder "$APP_BUNDLE" -ov -format UDZO "$DMG_NAME"
+    echo ""
+    echo "============================================"
+    echo "DMG created: $DMG_NAME"
+    echo "============================================"
+    echo "Share this DMG file - it preserves all permissions."
+    ls -lh "$DMG_NAME"
 }
 
 export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
