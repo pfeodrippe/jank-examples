@@ -368,12 +368,233 @@ PLIST
     ls -lh "$DMG_NAME"
 }
 
-export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
-export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
+# ============================================================================
+# Linux Standalone Creation
+# ============================================================================
+create_linux_standalone() {
+    local EXECUTABLE="$1"
+    local APP_NAME="$2"
+    local DIST_DIR="${APP_NAME}-linux"
 
-# Vulkan environment for MoltenVK
-export VK_ICD_FILENAMES=/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json
-export DYLD_LIBRARY_PATH=/opt/homebrew/lib
+    echo ""
+    echo "============================================"
+    echo "Creating Linux Standalone: $DIST_DIR"
+    echo "============================================"
+
+    # Clean and create directory structure
+    rm -rf "$DIST_DIR"
+    mkdir -p "$DIST_DIR/bin"
+    mkdir -p "$DIST_DIR/lib"
+    mkdir -p "$DIST_DIR/resources"
+    mkdir -p "$DIST_DIR/include"
+
+    # Copy executable
+    cp "$EXECUTABLE" "$DIST_DIR/bin/${APP_NAME}-bin"
+
+    # Create launcher script
+    cat > "$DIST_DIR/$APP_NAME" << 'LAUNCHER'
+#!/bin/bash
+# Launcher script for Linux standalone
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Set library path
+export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
+
+# Set C/C++ include paths for JIT compilation at runtime
+export CPATH="$DIR/include/c++/v1:$DIR/include:$DIR/include/flecs:$DIR/include/imgui:$DIR/include/imgui/backends"
+
+# Set CXX to bundled clang for jank JIT compilation
+export CXX="$DIR/bin/clang++"
+
+# Set working directory to resources for shader loading
+cd "$DIR/resources"
+
+# Launch the actual binary
+exec "$DIR/bin/${APP_NAME##*/}-bin" "$@"
+LAUNCHER
+    chmod +x "$DIST_DIR/$APP_NAME"
+
+    # Copy shader resources
+    echo "Copying shader resources..."
+    cp -r vulkan_kim "$DIST_DIR/resources/"
+
+    # Copy jank source files
+    echo "Copying jank source files..."
+    cp -r src "$DIST_DIR/resources/"
+
+    # Copy header files for JIT compilation at runtime
+    echo "Copying header files..."
+    mkdir -p "$DIST_DIR/include/vybe"
+    mkdir -p "$DIST_DIR/include/flecs"
+    mkdir -p "$DIST_DIR/include/imgui/backends"
+
+    # vybe headers
+    cp vendor/vybe/*.h "$DIST_DIR/include/vybe/" 2>/dev/null || true
+
+    # flecs headers
+    cp vendor/flecs/distr/flecs.h "$DIST_DIR/include/flecs/" 2>/dev/null || true
+
+    # imgui headers
+    cp vendor/imgui/*.h "$DIST_DIR/include/imgui/" 2>/dev/null || true
+    cp vendor/imgui/backends/*.h "$DIST_DIR/include/imgui/backends/" 2>/dev/null || true
+
+    # Bundle clang for JIT compilation
+    echo "Bundling clang for JIT..."
+    local JANK_BIN_DIR="$JANK_DIR/llvm-install/usr/local/bin"
+    cp "$JANK_BIN_DIR/clang-22" "$DIST_DIR/bin/"
+    ln -sf clang-22 "$DIST_DIR/bin/clang"
+
+    # Create clang++ wrapper
+    cat > "$DIST_DIR/bin/clang++" << 'CLANG_WRAPPER'
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES="$(cd "$DIR/.." && pwd)"
+exec "$DIR/clang-22" -nostdinc++ \
+    -isystem "$RESOURCES/include/c++/v1" \
+    -isystem "$RESOURCES/lib/clang/22/include" \
+    "$@"
+CLANG_WRAPPER
+    chmod +x "$DIST_DIR/bin/clang++"
+
+    # Copy clang resource directory
+    mkdir -p "$DIST_DIR/lib"
+    cp -r "$JANK_LIB_DIR/clang" "$DIST_DIR/lib/"
+
+    # Copy C++ standard library headers
+    echo "Bundling C++ headers..."
+    cp -r "$JANK_LIB_DIR/../include" "$DIST_DIR/"
+
+    # Collect shared libraries to bundle
+    echo "Bundling shared libraries..."
+
+    # jank runtime libs
+    local JANK_LIBS=(
+        "$JANK_LIB_DIR/libLLVM.so"
+        "$JANK_LIB_DIR/libclang-cpp.so"
+        "$JANK_LIB_DIR/libc++.so.1"
+        "$JANK_LIB_DIR/libc++abi.so.1"
+        "$JANK_LIB_DIR/libunwind.so.1"
+    )
+
+    # Try to find versioned libs if main ones don't exist
+    for lib in "${JANK_LIBS[@]}"; do
+        if [ -f "$lib" ]; then
+            echo "  Copying $(basename "$lib")"
+            cp "$lib" "$DIST_DIR/lib/"
+        else
+            # Try with version suffix
+            for versioned in "${lib}".*; do
+                if [ -f "$versioned" ]; then
+                    echo "  Copying $(basename "$versioned")"
+                    cp "$versioned" "$DIST_DIR/lib/"
+                    break
+                fi
+            done
+        fi
+    done
+
+    # Copy our project shared lib if it exists
+    if [ -f "vulkan/libsdf_deps.so" ]; then
+        cp "vulkan/libsdf_deps.so" "$DIST_DIR/lib/"
+    fi
+
+    # System libraries needed (find and copy from system)
+    local SYSTEM_LIBS=(
+        libvulkan.so
+        libSDL2-2.0.so
+        libshaderc_shared.so
+    )
+
+    for lib in "${SYSTEM_LIBS[@]}"; do
+        # Try to find the library
+        local lib_path=$(ldconfig -p 2>/dev/null | grep "$lib" | head -1 | awk '{print $NF}')
+        if [ -n "$lib_path" ] && [ -f "$lib_path" ]; then
+            echo "  Copying $lib from $lib_path"
+            cp "$lib_path" "$DIST_DIR/lib/"
+        else
+            # Try common paths
+            for search_path in /usr/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/local/lib; do
+                if [ -f "$search_path/$lib" ]; then
+                    echo "  Copying $lib from $search_path"
+                    cp "$search_path/$lib" "$DIST_DIR/lib/"
+                    break
+                fi
+            done
+        fi
+    done
+
+    # Fix library paths using patchelf
+    echo "Fixing library paths with patchelf..."
+    if command -v patchelf &> /dev/null; then
+        # Set RPATH on the executable
+        patchelf --set-rpath '$ORIGIN/../lib' "$DIST_DIR/bin/${APP_NAME}-bin" 2>/dev/null || true
+
+        # Set RPATH on clang
+        patchelf --set-rpath '$ORIGIN/../lib' "$DIST_DIR/bin/clang-22" 2>/dev/null || true
+
+        # Fix library RPATHs
+        for lib in "$DIST_DIR/lib/"*.so*; do
+            if [ -f "$lib" ] && [ ! -L "$lib" ]; then
+                patchelf --set-rpath '$ORIGIN' "$lib" 2>/dev/null || true
+            fi
+        done
+    else
+        echo "Warning: patchelf not found, library paths not fixed"
+    fi
+
+    # Create versioned symlinks
+    echo "Creating versioned library symlinks..."
+    (cd "$DIST_DIR/lib" && \
+        ln -sf libvulkan.so libvulkan.so.1 2>/dev/null || true && \
+        ln -sf libSDL2-2.0.so libSDL2.so 2>/dev/null || true && \
+        ln -sf libc++.so.1 libc++.so 2>/dev/null || true && \
+        ln -sf libc++abi.so.1 libc++abi.so 2>/dev/null || true)
+
+    # Clean up the raw executable
+    rm -f "$EXECUTABLE"
+
+    echo ""
+    echo "============================================"
+    echo "Linux standalone created: $DIST_DIR"
+    echo "============================================"
+    echo ""
+    echo "Contents:"
+    du -sh "$DIST_DIR"
+    echo ""
+    echo "To run: ./$DIST_DIR/$APP_NAME"
+
+    # Create tarball for distribution
+    echo ""
+    echo "Creating tarball for distribution..."
+    TAR_NAME="${APP_NAME}-linux.tar.gz"
+    rm -f "$TAR_NAME"
+    tar -czvf "$TAR_NAME" "$DIST_DIR"
+    echo ""
+    echo "============================================"
+    echo "Tarball created: $TAR_NAME"
+    echo "============================================"
+    ls -lh "$TAR_NAME"
+}
+
+# Platform-specific environment setup
+case "$(uname -s)" in
+    Darwin)
+        export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+        export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
+
+        # Vulkan environment for MoltenVK
+        export VK_ICD_FILENAMES=/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json
+        export DYLD_LIBRARY_PATH=/opt/homebrew/lib
+        ;;
+    Linux)
+        # Linux jank path (adjust as needed for your setup)
+        if [ -d "$HOME/jank/compiler+runtime/build" ]; then
+            export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+            JANK_DIR="$HOME/jank/compiler+runtime/build"
+            JANK_LIB_DIR="$JANK_DIR/llvm-install/usr/local/lib"
+        fi
+        ;;
+esac
 
 # Build imgui objects if needed
 if [ ! -f vulkan/imgui/imgui.o ]; then
@@ -382,14 +603,25 @@ if [ ! -f vulkan/imgui/imgui.o ]; then
 fi
 
 # Compile blit shaders if needed
-GLSLC=glslangValidator4
-if [ ! -f vulkan_kim/blit.vert.spv ] || [ vulkan_kim/blit.vert -nt vulkan_kim/blit.vert.spv ]; then
-    echo "Compiling blit.vert..."
-    $GLSLC -V vulkan_kim/blit.vert -o vulkan_kim/blit.vert.spv
+# Use platform-specific glslang compiler
+if command -v glslangValidator &> /dev/null; then
+    GLSLC=glslangValidator
+elif command -v glslangValidator4 &> /dev/null; then
+    GLSLC=glslangValidator4
+else
+    echo "Warning: glslangValidator not found, skipping shader compilation"
+    GLSLC=""
 fi
-if [ ! -f vulkan_kim/blit.frag.spv ] || [ vulkan_kim/blit.frag -nt vulkan_kim/blit.frag.spv ]; then
-    echo "Compiling blit.frag..."
-    $GLSLC -V vulkan_kim/blit.frag -o vulkan_kim/blit.frag.spv
+
+if [ -n "$GLSLC" ]; then
+    if [ ! -f vulkan_kim/blit.vert.spv ] || [ vulkan_kim/blit.vert -nt vulkan_kim/blit.vert.spv ]; then
+        echo "Compiling blit.vert..."
+        $GLSLC -V vulkan_kim/blit.vert -o vulkan_kim/blit.vert.spv
+    fi
+    if [ ! -f vulkan_kim/blit.frag.spv ] || [ vulkan_kim/blit.frag -nt vulkan_kim/blit.frag.spv ]; then
+        echo "Compiling blit.frag..."
+        $GLSLC -V vulkan_kim/blit.frag -o vulkan_kim/blit.frag.spv
+    fi
 fi
 
 # Build stb_impl.o if needed
@@ -401,8 +633,16 @@ fi
 # Build vybe_flecs_jank.o if needed (jank-runtime-dependent flecs helpers)
 if [ ! -f vendor/vybe/vybe_flecs_jank.o ] || [ vendor/vybe/vybe_flecs_jank.cpp -nt vendor/vybe/vybe_flecs_jank.o ]; then
     echo "Compiling vybe_flecs_jank..."
-    JANK_SRC=/Users/pfeodrippe/dev/jank/compiler+runtime
-    /usr/bin/clang++ -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
+    # Determine jank source path based on platform
+    case "$(uname -s)" in
+        Darwin)
+            JANK_SRC=/Users/pfeodrippe/dev/jank/compiler+runtime
+            ;;
+        Linux)
+            JANK_SRC=$HOME/jank/compiler+runtime
+            ;;
+    esac
+    clang++ -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
         -DIMMER_HAS_LIBGC=1 \
         -I$JANK_SRC/include/cpp \
         -I$JANK_SRC/third-party \
@@ -431,41 +671,79 @@ OBJ_FILES=(
     vendor/vybe/vybe_flecs_jank.o
 )
 
-# Build jank arguments for SDF viewer (common args)
-JANK_ARGS=(
-    -I/opt/homebrew/include
-    -I/opt/homebrew/include/SDL3
-    -I.
-    -Ivendor
-    -Ivendor/imgui
-    -Ivendor/imgui/backends
-    -Ivendor/flecs/distr
-    -L/opt/homebrew/lib
-    --framework Cocoa
-    --framework IOKit
-    --framework IOSurface
-    --framework Metal
-    --framework QuartzCore
-    --module-path src
-)
-
-# Dynamic libraries - handled differently for JIT vs standalone
-DYLIBS=(
-    /opt/homebrew/lib/libvulkan.dylib
-    /opt/homebrew/lib/libSDL3.dylib
-    /opt/homebrew/lib/libshaderc_shared.dylib
-)
+# Build jank arguments for SDF viewer (platform-specific)
+case "$(uname -s)" in
+    Darwin)
+        JANK_ARGS=(
+            -I/opt/homebrew/include
+            -I/opt/homebrew/include/SDL3
+            -I.
+            -Ivendor
+            -Ivendor/imgui
+            -Ivendor/imgui/backends
+            -Ivendor/flecs/distr
+            -L/opt/homebrew/lib
+            --framework Cocoa
+            --framework IOKit
+            --framework IOSurface
+            --framework Metal
+            --framework QuartzCore
+            --module-path src
+        )
+        DYLIBS=(
+            /opt/homebrew/lib/libvulkan.dylib
+            /opt/homebrew/lib/libSDL3.dylib
+            /opt/homebrew/lib/libshaderc_shared.dylib
+        )
+        SHARED_LIB_EXT="dylib"
+        ;;
+    Linux)
+        JANK_ARGS=(
+            -I/usr/include
+            -I/usr/include/SDL2
+            -I.
+            -Ivendor
+            -Ivendor/imgui
+            -Ivendor/imgui/backends
+            -Ivendor/flecs/distr
+            -L/usr/lib
+            -L/usr/lib/x86_64-linux-gnu
+            -L/usr/lib/aarch64-linux-gnu
+            --module-path src
+        )
+        # Find SDL2 and Vulkan libraries on Linux
+        DYLIBS=()
+        for lib in libvulkan.so libSDL2-2.0.so libshaderc_shared.so; do
+            lib_path=$(ldconfig -p 2>/dev/null | grep "$lib" | head -1 | awk '{print $NF}')
+            if [ -n "$lib_path" ] && [ -f "$lib_path" ]; then
+                DYLIBS+=("$lib_path")
+            fi
+        done
+        SHARED_LIB_EXT="so"
+        ;;
+esac
 
 if [ "$STANDALONE" = true ]; then
     echo "Building standalone executable: $OUTPUT_NAME"
 
     # Create a shared library from object files for JIT loading and AOT linking
-    SHARED_LIB="vulkan/libsdf_deps.dylib"
+    SHARED_LIB="vulkan/libsdf_deps.$SHARED_LIB_EXT"
     echo "Creating shared library..."
-    clang++ -dynamiclib -o "$SHARED_LIB" "${OBJ_FILES[@]}" \
-        -framework Cocoa -framework IOKit -framework IOSurface -framework Metal -framework QuartzCore \
-        -L/opt/homebrew/lib -lvulkan -lSDL3 -lshaderc_shared \
-        -Wl,-undefined,dynamic_lookup
+
+    case "$(uname -s)" in
+        Darwin)
+            clang++ -dynamiclib -o "$SHARED_LIB" "${OBJ_FILES[@]}" \
+                -framework Cocoa -framework IOKit -framework IOSurface -framework Metal -framework QuartzCore \
+                -L/opt/homebrew/lib -lvulkan -lSDL3 -lshaderc_shared \
+                -Wl,-undefined,dynamic_lookup
+            ;;
+        Linux)
+            clang++ -shared -fPIC -o "$SHARED_LIB" "${OBJ_FILES[@]}" \
+                -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/aarch64-linux-gnu \
+                -lvulkan -lSDL2 -lshaderc_shared \
+                -Wl,--allow-shlib-undefined
+            ;;
+    esac
 
     # JIT needs dylibs (for symbol resolution during compilation)
     for lib in "${DYLIBS[@]}"; do
@@ -492,11 +770,7 @@ if [ "$STANDALONE" = true ]; then
             create_macos_app_bundle "$OUTPUT_NAME" "$OUTPUT_NAME"
             ;;
         Linux)
-            echo "Linux distribution: Creating AppImage structure..."
-            # TODO: Create AppImage or similar
-            mkdir -p "dist/$OUTPUT_NAME"
-            mv "$OUTPUT_NAME" "dist/$OUTPUT_NAME/"
-            echo "Executable at: dist/$OUTPUT_NAME/$OUTPUT_NAME"
+            create_linux_standalone "$OUTPUT_NAME" "$OUTPUT_NAME"
             ;;
         *)
             echo "Unknown platform, executable at: $OUTPUT_NAME"

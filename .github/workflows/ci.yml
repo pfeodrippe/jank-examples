@@ -78,7 +78,8 @@ jobs:
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           cd ~/jank/compiler+runtime
-          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release
+          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
           ./bin/compile
           echo "jank build complete"
           ~/jank/compiler+runtime/build/jank --version
@@ -173,9 +174,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl git build-essential libssl-dev libdouble-conversion-dev \
             pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
-            doctest-dev libgc-dev ccache
+            doctest-dev libgc-dev ccache patchelf
           # SDL3 and Vulkan deps
-          sudo apt-get install -y libsdl2-dev libvulkan-dev glslang-tools
+          sudo apt-get install -y libsdl2-dev libvulkan-dev glslang-tools libshaderc-dev
 
       - name: Restore Clang/LLVM cache
         uses: actions/cache/restore@v4
@@ -186,7 +187,8 @@ jobs:
       - name: Build jank
         run: |
           cd ~/jank/compiler+runtime
-          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release
+          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
           ./bin/compile
           echo "jank build complete"
           ~/jank/compiler+runtime/build/jank --version
@@ -214,3 +216,15 @@ jobs:
         run: |
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
           make test
+
+      - name: Build standalone app
+        run: |
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make sdf-standalone
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SDFViewer-Linux
+          path: SDFViewer-linux.tar.gz
+          if-no-files-found: error

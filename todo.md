@@ -1,4 +1,7 @@
-- [ ] standalone sdf script
+- [x] standalone sdf script
+- [ ] linux
+  - [ ] tests
+  - [ ] standalone
 - [ ] audio
   - [ ] most simple audio lib to use
     - [ ] miniaudio ?
