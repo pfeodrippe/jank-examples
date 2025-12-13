@@ -263,14 +263,13 @@ struct Engine {
     }
 };
 
-// ODR-safe global state
-static Engine** g_engine_ptr = nullptr;
-
+// ODR-safe global state using function-local static
+// This pattern ensures the same Engine* is shared across all translation units
+// (AOT and JIT) because inline functions with function-local statics have
+// vague linkage in C++17 - they are merged across TUs.
 inline Engine*& get_engine() {
-    if (!g_engine_ptr) {
-        g_engine_ptr = new Engine*(nullptr);
-    }
-    return *g_engine_ptr;
+    static Engine* ptr = nullptr;
+    return ptr;
 }
 
 
@@ -2767,13 +2766,13 @@ struct SDFSampler {
     std::string cachedShaderName;
 };
 
-inline SDFSampler* g_sampler = nullptr;
-
+// ODR-safe sampler accessor (function-local static for JIT compatibility)
 inline SDFSampler* get_sampler() {
-    if (!g_sampler) {
-        g_sampler = new SDFSampler();
+    static SDFSampler* sampler = nullptr;
+    if (!sampler) {
+        sampler = new SDFSampler();
     }
-    return g_sampler;
+    return sampler;
 }
 
 // Extract sceneSDF function and its dependencies from a shader source

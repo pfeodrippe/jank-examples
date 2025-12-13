@@ -102,6 +102,12 @@ LAUNCHER
     cp vendor/imgui/*.h "$APP_BUNDLE/Contents/Resources/include/imgui/" 2>/dev/null || true
     cp vendor/imgui/backends/*.h "$APP_BUNDLE/Contents/Resources/include/imgui/backends/" 2>/dev/null || true
 
+    # NOTE: We intentionally do NOT bundle sdf_engine.hpp and its dependencies
+    # (SDL3, Vulkan, shaderc headers). Direct cpp/sdfx.X calls from nREPL won't
+    # work in standalone mode due to JIT/AOT state sharing issues.
+    # Instead, use the pre-compiled jank wrapper functions in vybe.sdf namespace.
+    # To add new functionality, add jank wrappers and rebuild standalone.
+
     # Bundle clang for JIT compilation (jank requires clang 22)
     echo "Bundling clang for JIT..."
     mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
