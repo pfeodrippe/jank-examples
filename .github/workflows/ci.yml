@@ -96,16 +96,6 @@ jobs:
             -e "s|/Users/pfeodrippe/dev/jank/compiler+runtime|$HOME/jank/compiler+runtime|g" \
             -e "s|/Users/pfeodrippe/dev/something|$GITHUB_WORKSPACE|g" {} \;
 
-      - name: Build dependencies (Flecs)
-        run: |
-          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          if [ -d "vendor/flecs/distr" ]; then
-            cd vendor/flecs/distr
-            clang -c -fPIC -o flecs.o flecs.c || true
-            cd ../../..
-          fi
-
       - name: Run tests
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
@@ -206,15 +196,6 @@ jobs:
           find bin -name "*.sh" -exec sed -i \
             -e "s|/Users/pfeodrippe/dev/jank/compiler+runtime|$HOME/jank/compiler+runtime|g" \
             -e "s|/Users/pfeodrippe/dev/something|$GITHUB_WORKSPACE|g" {} \;
-
-      - name: Build dependencies (Flecs)
-        run: |
-          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          if [ -d "vendor/flecs/distr" ]; then
-            cd vendor/flecs/distr
-            clang -c -fPIC -o flecs.o flecs.c || true
-            cd ../../..
-          fi
 
       - name: Run tests
         run: |

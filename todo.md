@@ -1,4 +1,7 @@
 - [x] standalone sdf script
+- [ ] remove more stuff from sdf_engine.hpp
+- [ ] sdf
+  - [ ] sdf to obj in runtime
 - [ ] linux
   - [ ] tests
   - [ ] standalone
@@ -7,7 +10,5 @@
     - [ ] miniaudio ?
       - https://github.com/mackron/miniaudio
       - https://miniaud.io/docs/manual
-- [ ] sdf
-  - [ ] sdf to obj in runtime
 - [-] when we evaluate `should-close?` via the nREPL .app (after evaluating`(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")`), we have the app closing
   - better to just move things to jank as much as possible
