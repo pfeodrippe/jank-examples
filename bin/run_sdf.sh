@@ -81,6 +81,10 @@ LAUNCHER
     echo "Copying shader resources..."
     cp -r vulkan_kim "$APP_BUNDLE/Contents/Resources/"
 
+    # Copy jank source files
+    echo "Copying jank source files..."
+    cp -r src "$APP_BUNDLE/Contents/Resources/"
+
     # Copy header files for JIT compilation at runtime
     # CPATH in launcher script points to these directories
     echo "Copying header files..."
@@ -105,11 +109,27 @@ LAUNCHER
     # Copy clang binary (just the driver - uses libclang-cpp.dylib)
     cp "$JANK_LIB_DIR/../bin/clang-22" "$APP_BUNDLE/Contents/Resources/bin/"
     ln -sf clang-22 "$APP_BUNDLE/Contents/Resources/bin/clang"
-    ln -sf clang "$APP_BUNDLE/Contents/Resources/bin/clang++"
     # Fix clang's rpath to find libs in Frameworks (../../Frameworks from Resources/bin)
     install_name_tool -add_rpath "@executable_path/../../Frameworks" "$APP_BUNDLE/Contents/Resources/bin/clang-22"
     # Fix system libc++ reference to use bundled version
     install_name_tool -change "/usr/lib/libc++.1.dylib" "@executable_path/../../Frameworks/libc++.1.dylib" "$APP_BUNDLE/Contents/Resources/bin/clang-22"
+
+    # Create clang++ wrapper that forces bundled headers (clang has hardcoded absolute paths)
+    cat > "$APP_BUNDLE/Contents/Resources/bin/clang++" << 'CLANG_WRAPPER'
+#!/bin/bash
+# Wrapper to force clang to use bundled C++ headers instead of hardcoded build paths
+DIR="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES="$(cd "$DIR/.." && pwd)"
+
+# -nostdinc++ removes hardcoded C++ include paths
+# -isystem adds bundled headers as system includes
+exec "$DIR/clang-22" -nostdinc++ \
+    -isystem "$RESOURCES/include/c++/v1" \
+    -isystem "$RESOURCES/lib/clang/22/include" \
+    "$@"
+CLANG_WRAPPER
+    chmod +x "$APP_BUNDLE/Contents/Resources/bin/clang++"
+
     # Copy clang resource directory (headers for JIT)
     cp -r "$JANK_LIB_DIR/clang" "$APP_BUNDLE/Contents/Resources/lib/"
     # Copy C++ standard library headers (to avoid conflicts with system headers)

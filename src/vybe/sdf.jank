@@ -107,7 +107,7 @@
   (cpp/sdfx.init "vulkan_kim")
 
   ;; Enable continuous rendering for animations
-  (cpp/sdfx.set_continuous_mode false)
+  (cpp/sdfx.set_continuous_mode true)
   (println "Continuous rendering enabled for animations")
 
   ;; Apply camera state for the default shader (hand_cigarette)
