@@ -94,7 +94,7 @@ struct Engine {
 inline void update_uniforms(double dt,
                             float cam_dist, float cam_ax, float cam_ay,
                             float cam_tx, float cam_ty, float cam_tz) {
-    // Use params directly
+    //g Use params directly
 }
 ```
 
@@ -302,38 +302,42 @@ bool vk_save_screenshot(const char* path);
 
 ## Migration Checklist
 
-### Phase 1: Setup
-- [ ] Create `src/vybe/sdf/state.jank`
-- [ ] Create `src/vybe/sdf/input.jank`
-- [ ] Create `src/vybe/sdf/render.jank`
-- [ ] Update `src/vybe/sdf/ui.jank` with header require
+### Phase 1: Setup ✅ COMPLETED (2025-12-13)
+- [x] Create `src/vybe/sdf/state.jank`
+- [x] Create `src/vybe/sdf/render.jank`
+- [x] Update `src/vybe/sdf/ui.jank` (minimal wrapper)
+- NOTE: `input.jank` not yet created - input handling still in C++
 
-### Phase 2: Camera
-- [ ] Add camera atom to `state.jank`
-- [ ] Modify `vk_update_ubo()` to accept camera params
-- [ ] Remove `get/set_camera_*` from C++
-- [ ] Update `vybe.sdf` to pass camera state
+### Phase 2: Camera ✅ COMPLETED (2025-12-13)
+- [x] Add camera atom to `state.jank` (*camera*, *camera-presets*)
+- [x] Add sync-camera-to-cpp! and sync-camera-from-cpp! functions
+- [x] Camera state managed by jank, synced to C++ via existing set_camera_* functions
+- NOTE: C++ still has camera getters/setters - called by jank wrappers
 
-### Phase 3: Edit Mode
-- [ ] Add edit-mode atom to `state.jank`
-- [ ] Remove edit mode getters/setters from C++
-- [ ] Update input handling to use jank state
+### Phase 3: Edit Mode ✅ COMPLETED (2025-12-13)
+- [x] Add `*edit-mode*` atom to `state.jank`
+- [x] Add `sync-edit-mode-from-cpp!` to read state from C++
+- [x] Edit mode state synced each frame in main loop
+- NOTE: C++ still owns the state, jank reads via sync function
 
-### Phase 4: Objects
-- [ ] Add objects atom to `state.jank`
-- [ ] Create `vk_set_object_positions/rotations()` functions
-- [ ] Remove objects vector from C++ Engine
-- [ ] Implement jank-side object management
+### Phase 4: Objects ✅ COMPLETED (2025-12-13)
+- [x] Add `*objects*` atom to `state.jank`
+- [x] Add individual accessors to C++ (get_object_pos_x/y/z, get_object_rot_x/y/z, etc.)
+- [x] Add `sync-objects-from-cpp!` to read objects at startup
+- [x] "Objects loaded: 6" confirmed in output
+- NOTE: C++ still owns objects, jank reads via sync. Next step: jank writes to C++
 
-### Phase 5: ImGui
+### Phase 5: ImGui - DEFERRED
 - [ ] Add header require for imgui.h in ui.jank
 - [ ] Remove imgui wrapper functions from C++
 - [ ] Rewrite UI using direct imgui calls
+- STATUS: Deferred - requires jank header require investigation
 
-### Phase 6: Input
+### Phase 6: Input - DEFERRED
 - [ ] Create `SDLEvent` struct and `vk_poll_event()`
 - [ ] Implement `handle-event!` in jank
 - [ ] Remove `handle_*` functions from C++
+- STATUS: Deferred - complex, deeply integrated with C++ gizmo logic
 
 ## Testing Strategy
 

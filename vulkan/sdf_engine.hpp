@@ -1910,14 +1910,6 @@ inline void check_shader_reload() {
     }
 }
 
-inline void set_camera(double dist, double ax, double ay) {
-    auto* e = get_engine();
-    if (!e) return;
-    e->camera.distance = static_cast<float>(dist);
-    e->camera.angleX = static_cast<float>(ax);
-    e->camera.angleY = static_cast<float>(ay);
-}
-
 inline double get_time() {
     auto* e = get_engine();
     return e ? e->time : 0;
@@ -1929,19 +1921,9 @@ inline bool get_edit_mode() {
     return e ? e->editMode : false;
 }
 
-inline void set_edit_mode(bool enabled) {
-    auto* e = get_engine();
-    if (e) e->editMode = enabled;
-}
-
 inline int get_selected_object() {
     auto* e = get_engine();
     return e ? e->selectedObject : -1;
-}
-
-inline void set_selected_object(int id) {
-    auto* e = get_engine();
-    if (e) e->selectedObject = id;
 }
 
 inline int get_hovered_axis() {
@@ -1954,74 +1936,12 @@ inline int get_dragging_axis() {
     return e ? e->draggingAxis : -1;
 }
 
-// Keyboard request accessors (consume = check and clear)
-inline bool consume_undo_request() {
-    auto* e = get_engine();
-    if (e && e->undoRequested) { e->undoRequested = false; return true; }
-    return false;
-}
-inline bool consume_redo_request() {
-    auto* e = get_engine();
-    if (e && e->redoRequested) { e->redoRequested = false; return true; }
-    return false;
-}
-inline bool consume_duplicate_request() {
-    auto* e = get_engine();
-    if (e && e->duplicateRequested) { e->duplicateRequested = false; return true; }
-    return false;
-}
-inline bool consume_delete_request() {
-    auto* e = get_engine();
-    if (e && e->deleteRequested) { e->deleteRequested = false; return true; }
-    return false;
-}
-inline bool consume_reset_transform_request() {
-    auto* e = get_engine();
-    if (e && e->resetTransformRequested) { e->resetTransformRequested = false; return true; }
-    return false;
-}
-
-inline bool is_dirty() {
-    auto* e = get_engine();
-    return e ? e->dirty : false;
-}
-
-// Continuous rendering mode API
-inline bool get_continuous_mode() {
-    auto* e = get_engine();
-    return e ? e->continuousMode : false;
-}
-
 inline void set_continuous_mode(bool enabled) {
     auto* e = get_engine();
     if (e) {
         e->continuousMode = enabled;
-        if (enabled) e->dirty = true;  // Start rendering immediately
+        if (enabled) e->dirty = true;
     }
-}
-
-inline void set_gizmo_pos(double x, double y, double z) {
-    auto* e = get_engine();
-    if (e) {
-        e->selectedPos[0] = static_cast<float>(x);
-        e->selectedPos[1] = static_cast<float>(y);
-        e->selectedPos[2] = static_cast<float>(z);
-    }
-}
-
-inline void get_mouse_pos(double* x, double* y) {
-    auto* e = get_engine();
-    if (e && e->window) {
-        float fx, fy;
-        SDL_GetMouseState(&fx, &fy);
-        *x = (double)fx;
-        *y = (double)fy;
-    }
-}
-
-inline bool is_mouse_pressed() {
-    auto* e = get_engine();
-    return e ? e->mousePressed : false;
 }
 
 // ============================================================================
@@ -2040,54 +1960,6 @@ inline void imgui_render() {
 
 inline void imgui_render_draw_data(VkCommandBuffer cmd) {
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-}
-
-inline void imgui_set_next_window_pos(float x, float y) {
-    ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_FirstUseEver);
-}
-
-inline void imgui_set_next_window_size(float w, float h) {
-    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_FirstUseEver);
-}
-
-inline void imgui_begin(const char* name) {
-    ImGui::Begin(name);
-}
-
-inline void imgui_end() {
-    ImGui::End();
-}
-
-inline void imgui_text(const char* text) {
-    ImGui::Text("%s", text);
-}
-
-inline void imgui_separator() {
-    ImGui::Separator();
-}
-
-inline bool imgui_button(const char* label) {
-    return ImGui::Button(label);
-}
-
-inline bool imgui_drag_float(const char* label, float* v, float speed) {
-    return ImGui::DragFloat(label, v, speed);
-}
-
-inline bool imgui_drag_float3(const char* label, float* v, float speed) {
-    return ImGui::DragFloat3(label, v, speed);
-}
-
-inline bool imgui_slider_float(const char* label, float* v, float min, float max) {
-    return ImGui::SliderFloat(label, v, min, max);
-}
-
-inline bool imgui_checkbox(const char* label, bool* v) {
-    return ImGui::Checkbox(label, v);
-}
-
-inline void imgui_same_line() {
-    ImGui::SameLine();
 }
 
 inline void set_dirty() {
@@ -2151,169 +2023,51 @@ inline void clear_pending_shader_switch() {
     if (e) e->pendingShaderSwitch = 0;
 }
 
-inline float* get_object_position(int idx) {
+// Individual component accessors for jank
+inline float get_object_pos_x(int idx) {
     auto* e = get_engine();
-    if (e && idx >= 0 && idx < (int)e->objects.size()) {
-        return e->objects[idx].position;
-    }
-    return nullptr;
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].position[0];
+    return 0.0f;
 }
-
-inline float* get_object_rotation(int idx) {
+inline float get_object_pos_y(int idx) {
     auto* e = get_engine();
-    if (e && idx >= 0 && idx < (int)e->objects.size()) {
-        return e->objects[idx].rotation;
-    }
-    return nullptr;
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].position[1];
+    return 0.0f;
 }
-
-// Helper functions for Jank to set position/rotation
-inline void set_object_position(int idx, float x, float y, float z) {
+inline float get_object_pos_z(int idx) {
     auto* e = get_engine();
-    if (e && idx >= 0 && idx < (int)e->objects.size()) {
-        e->objects[idx].position[0] = x;
-        e->objects[idx].position[1] = y;
-        e->objects[idx].position[2] = z;
-    }
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].position[2];
+    return 0.0f;
 }
-inline void set_object_rotation(int idx, float rx, float ry, float rz) {
+inline float get_object_rot_x(int idx) {
     auto* e = get_engine();
-    if (e && idx >= 0 && idx < (int)e->objects.size()) {
-        e->objects[idx].rotation[0] = rx;
-        e->objects[idx].rotation[1] = ry;
-        e->objects[idx].rotation[2] = rz;
-    }
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].rotation[0];
+    return 0.0f;
 }
-
-// Game-specific: Set object position with 4 components (x, y, z, w)
-// The w component can be used for rotation or other game-specific data
-// This directly modifies the objects array which gets copied to UBO
-inline void set_object_position_4(int idx, float x, float y, float z, float w) {
+inline float get_object_rot_y(int idx) {
     auto* e = get_engine();
-    if (!e) return;
-
-    // Ensure we have enough objects
-    while (idx >= (int)e->objects.size() && e->objects.size() < MAX_OBJECTS) {
-        e->objects.push_back(SceneObject(0, 0, 0, 0, false));
-    }
-
-    if (idx >= 0 && idx < (int)e->objects.size()) {
-        e->objects[idx].position[0] = x;
-        e->objects[idx].position[1] = y;
-        e->objects[idx].position[2] = z;
-        // Store w in rotation[0] since type is int and can't store float rotation
-        e->objects[idx].rotation[0] = w;
-    }
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].rotation[1];
+    return 0.0f;
 }
-
-// Duplicate object - returns new object index or -1 on failure
-inline int duplicate_object(int idx) {
+inline float get_object_rot_z(int idx) {
     auto* e = get_engine();
-    if (!e || idx < 0 || idx >= (int)e->objects.size()) return -1;
-    if (e->objects.size() >= MAX_OBJECTS) return -1;
-
-    auto& src = e->objects[idx];
-    SceneObject copy(src.position[0], src.position[1], src.position[2], src.type, src.selectable);
-    copy.rotation[0] = src.rotation[0];
-    copy.rotation[1] = src.rotation[1];
-    copy.rotation[2] = src.rotation[2];
-    e->objects.push_back(copy);
-    e->dirty = true;
-    return (int)e->objects.size() - 1;
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].rotation[2];
+    return 0.0f;
 }
-
-// Delete object - returns true on success
-inline bool delete_object(int idx) {
+inline int get_object_type_id(int idx) {
     auto* e = get_engine();
-    if (!e || idx <= 0 || idx >= (int)e->objects.size()) return false;  // Can't delete ground (idx 0)
-
-    e->objects.erase(e->objects.begin() + idx);
-    if (e->selectedObject >= idx) e->selectedObject = -1;  // Deselect if deleted or after
-    e->dirty = true;
-    return true;
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].type;
+    return 0;
 }
-
-// Reset object transform to origin
-inline void reset_object_transform(int idx) {
+inline bool get_object_selectable(int idx) {
     auto* e = get_engine();
-    if (!e || idx < 0 || idx >= (int)e->objects.size()) return;
-
-    e->objects[idx].position[0] = 0;
-    e->objects[idx].position[1] = 0;
-    e->objects[idx].position[2] = 0;
-    e->objects[idx].rotation[0] = 0;
-    e->objects[idx].rotation[1] = 0;
-    e->objects[idx].rotation[2] = 0;
-
-    // Update gizmo if selected
-    if (e->selectedObject == idx) {
-        e->selectedPos[0] = 0; e->selectedPos[1] = 0; e->selectedPos[2] = 0;
-    }
-    e->dirty = true;
+    if (e && idx >= 0 && idx < (int)e->objects.size()) return e->objects[idx].selectable;
+    return false;
 }
 
 inline int get_object_count() {
     auto* e = get_engine();
     return e ? (int)e->objects.size() : 0;
-}
-
-inline const char* get_object_type(int idx) {
-    auto* e = get_engine();
-    if (e && idx >= 0 && idx < (int)e->objects.size()) {
-        // Map type IDs to names (matching shader MAT_* defines)
-        static const char* typeNames[] = {
-            "Ground",    // 0 - MAT_GROUND
-            "Blob",      // 1 - MAT_BLOB
-            "Torus",     // 2 - MAT_TORUS
-            "Carved",    // 3 - MAT_CARVED
-            "Column",    // 4 - MAT_COLUMN
-            "Repeated"   // 5 - MAT_REPEATED
-        };
-        int type = e->objects[idx].type;
-        if (type >= 0 && type < 6) {
-            return typeNames[type];
-        }
-        return "Object";
-    }
-    return "Unknown";
-}
-
-// Combined drag UI for object position - returns true if changed
-inline bool imgui_drag_object_position(int idx, float speed) {
-    auto* e = get_engine();
-    if (!e || idx < 0 || idx >= (int)e->objects.size()) return false;
-
-    float* pos = e->objects[idx].position;
-    if (ImGui::DragFloat3("Position", pos, speed)) {
-        // Also update selectedPos if this is the selected object
-        if (e->selectedObject == idx) {
-            e->selectedPos[0] = pos[0];
-            e->selectedPos[1] = pos[1];
-            e->selectedPos[2] = pos[2];
-        }
-        e->dirty = true;
-        return true;
-    }
-    return false;
-}
-
-// Combined drag UI for object rotation - returns true if changed
-inline bool imgui_drag_object_rotation(int idx, float speed) {
-    auto* e = get_engine();
-    if (!e || idx < 0 || idx >= (int)e->objects.size()) return false;
-
-    float* rot = e->objects[idx].rotation;
-    if (ImGui::DragFloat3("Rotation", rot, speed)) {
-        // Also update selectedRot if this is the selected object
-        if (e->selectedObject == idx) {
-            e->selectedRot[0] = rot[0];
-            e->selectedRot[1] = rot[1];
-            e->selectedRot[2] = rot[2];
-        }
-        e->dirty = true;
-        return true;
-    }
-    return false;
 }
 
 // ============================================================================

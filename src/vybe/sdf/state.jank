@@ -1,0 +1,168 @@
+(ns vybe.sdf.state)
+
+;; ============================================================================
+;; Camera State
+;; ============================================================================
+
+(defonce *camera*
+  (atom {:distance 8.0
+         :angle-x 0.3
+         :angle-y 0.0
+         :target-x 0.0
+         :target-y 0.0
+         :target-z 0.0}))
+
+;; Per-shader camera presets (persisted when switching shaders)
+(defonce *camera-presets*
+  (atom {"hand_cigarette" {:distance 0.35
+                           :angle-x 0.2
+                           :angle-y 0.3
+                           :target-y 0.08}
+         "sdf_scene"      {:distance 0.45
+                           :angle-x 0.15
+                           :angle-y 0.0
+                           :target-y 1.72}}))
+
+;; ============================================================================
+;; Render State
+;; ============================================================================
+
+(defonce *render*
+  (atom {:continuous-mode true
+         :dirty true
+         :time 0.0}))
+
+;; ============================================================================
+;; Shader State
+;; ============================================================================
+
+(defonce *shader*
+  (atom {:current-name ""
+         :current-index 0
+         :shader-list []
+         :pending-switch 0}))
+
+;; ============================================================================
+;; Edit Mode State
+;; ============================================================================
+
+(defonce *edit-mode*
+  (atom {:enabled false
+         :selected-object -1
+         :hovered-axis -1
+         :dragging-axis -1}))
+
+;; ============================================================================
+;; Objects State (synced from C++)
+;; ============================================================================
+
+(defonce *objects*
+  (atom []))
+
+;; ============================================================================
+;; Camera Helpers
+;; ============================================================================
+
+(defn get-camera
+  "Get current camera state map."
+  []
+  @*camera*)
+
+(defn update-camera!
+  "Update camera with a function."
+  [f & args]
+  (apply swap! *camera* f args))
+
+(defn set-camera!
+  "Set camera to specific values."
+  [camera-map]
+  (reset! *camera* (merge @*camera* camera-map)))
+
+(defn save-camera-preset!
+  "Save current camera state for a shader name."
+  [shader-name]
+  (swap! *camera-presets* assoc shader-name @*camera*))
+
+(defn load-camera-preset!
+  "Load camera preset for a shader name (if exists)."
+  [shader-name]
+  (when-let [preset (get @*camera-presets* shader-name)]
+    (set-camera! preset)))
+
+;; ============================================================================
+;; Render Helpers
+;; ============================================================================
+
+(defn set-dirty!
+  "Mark renderer as needing a redraw."
+  []
+  (swap! *render* assoc :dirty true))
+
+(defn clear-dirty!
+  "Clear the dirty flag."
+  []
+  (swap! *render* assoc :dirty false))
+
+(defn dirty?
+  "Check if renderer needs a redraw."
+  []
+  (:dirty @*render*))
+
+(defn set-continuous-mode!
+  "Enable/disable continuous rendering."
+  [enabled]
+  (swap! *render* assoc :continuous-mode enabled)
+  (when enabled (set-dirty!)))
+
+(defn continuous-mode?
+  "Check if continuous rendering is enabled."
+  []
+  (:continuous-mode @*render*))
+
+;; ============================================================================
+;; Edit Mode Helpers
+;; ============================================================================
+
+(defn get-edit-mode
+  "Get current edit mode state."
+  []
+  @*edit-mode*)
+
+(defn set-edit-mode!
+  "Set edit mode state."
+  [edit-map]
+  (reset! *edit-mode* (merge @*edit-mode* edit-map)))
+
+(defn edit-mode-enabled?
+  "Check if edit mode is enabled."
+  []
+  (:enabled @*edit-mode*))
+
+(defn selected-object
+  "Get currently selected object index."
+  []
+  (:selected-object @*edit-mode*))
+
+;; ============================================================================
+;; Object Helpers
+;; ============================================================================
+
+(defn get-objects
+  "Get all objects."
+  []
+  @*objects*)
+
+(defn set-objects!
+  "Set objects list."
+  [objs]
+  (reset! *objects* objs))
+
+(defn object-count
+  "Get number of objects."
+  []
+  (count @*objects*))
+
+(defn get-object
+  "Get object at index."
+  [idx]
+  (get @*objects* idx))

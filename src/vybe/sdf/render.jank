@@ -1,0 +1,114 @@
+(ns vybe.sdf.render
+  (:require
+   [vybe.sdf.state :as state]))
+
+(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")
+
+;; Core Lifecycle
+(defn init!
+  [shader-dir]
+  (cpp/sdfx.init shader-dir))
+
+(defn cleanup!
+  []
+  (cpp/sdfx.cleanup))
+
+(defn should-close?
+  []
+  (cpp/sdfx.should_close))
+
+;; Frame Rendering
+(defn poll-events!
+  []
+  (cpp/sdfx.poll_events))
+
+(defn update-uniforms!
+  [dt]
+  (cpp/sdfx.update_uniforms (+ 0.0 dt)))
+
+(defn draw-frame!
+  []
+  (cpp/sdfx.draw_frame))
+
+;; Time
+(defn get-time
+  []
+  (cpp/sdfx.get_time))
+
+;; Camera sync
+(defn sync-camera-to-cpp!
+  []
+  (let [cam (state/get-camera)]
+    (let* [_ (cpp/sdfx.set_camera_distance (cpp/float. (:distance cam)))]
+      (let* [_ (cpp/sdfx.set_camera_angle_x (cpp/float. (:angle-x cam)))]
+        (let* [_ (cpp/sdfx.set_camera_angle_y (cpp/float. (:angle-y cam)))]
+          (let* [_ (cpp/sdfx.set_camera_target_y (cpp/float. (:target-y cam)))]
+            nil))))))
+
+(defn sync-camera-from-cpp!
+  []
+  (state/set-camera!
+   {:distance (cpp/sdfx.get_camera_distance)
+    :angle-x (cpp/sdfx.get_camera_angle_x)
+    :angle-y (cpp/sdfx.get_camera_angle_y)
+    :target-y (cpp/sdfx.get_camera_target_y)}))
+
+;; Edit Mode sync (reads from C++ into jank atom)
+(defn sync-edit-mode-from-cpp!
+  []
+  (state/set-edit-mode!
+   {:enabled (cpp/sdfx.get_edit_mode)
+    :selected-object (cpp/sdfx.get_selected_object)
+    :hovered-axis (cpp/sdfx.get_hovered_axis)
+    :dragging-axis (cpp/sdfx.get_dragging_axis)}))
+
+;; Objects sync (reads from C++ into jank atom)
+(defn read-object-from-cpp
+  "Read a single object from C++ by index."
+  [idx]
+  {:position [(cpp/sdfx.get_object_pos_x idx)
+              (cpp/sdfx.get_object_pos_y idx)
+              (cpp/sdfx.get_object_pos_z idx)]
+   :rotation [(cpp/sdfx.get_object_rot_x idx)
+              (cpp/sdfx.get_object_rot_y idx)
+              (cpp/sdfx.get_object_rot_z idx)]
+   :type (cpp/sdfx.get_object_type_id idx)
+   :selectable (cpp/sdfx.get_object_selectable idx)})
+
+(defn sync-objects-from-cpp!
+  "Read all objects from C++ into jank state."
+  []
+  (let [count (cpp/sdfx.get_object_count)]
+    (state/set-objects!
+     (vec (map read-object-from-cpp (range count))))))
+
+;; Shader Management
+(defn get-current-shader-name
+  []
+  (cpp/sdfx.get_current_shader_name))
+
+(defn switch-shader!
+  [direction]
+  (cpp/sdfx.switch_shader (cpp/int. direction)))
+
+(defn get-pending-shader-switch
+  []
+  (cpp/sdfx.get_pending_shader_switch))
+
+(defn clear-pending-shader-switch!
+  []
+  (cpp/sdfx.clear_pending_shader_switch))
+
+;; Render Mode
+(defn set-continuous-mode!
+  [enabled]
+  (cpp/sdfx.set_continuous_mode enabled))
+
+(defn set-dirty!
+  []
+  (cpp/sdfx.set_dirty))
+
+;; Screenshot
+(defn save-screenshot!
+  [filepath]
+  (cpp/sdfx.save_screenshot filepath))
