@@ -10,49 +10,80 @@ on:
 env:
   JANK_REPO: pfeodrippe/jank
   JANK_REF: nrepl
+  HOMEBREW_NO_AUTO_UPDATE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: macos-14  # Apple Silicon (M1/M2/M3)
+  # Build Clang/LLVM first (required by jank)
+  build-clang:
+    name: Build Clang/LLVM
+    runs-on: macos-14
+    timeout-minutes: 200
+    steps:
+      - name: Clone jank
+        run: |
+          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
 
+      - name: Install Homebrew deps
+        run: |
+          brew install git pkg-config ninja python cmake zlib
+
+      - name: Cache Clang/LLVM
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-${{ runner.os }}-${{ runner.arch }}-${{ env.JANK_REF }}-v1
+
+      - name: Build Clang/LLVM
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          cd ~/jank/compiler+runtime
+          ./bin/build-clang
+          ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
+
+  # Build and test
+  build:
+    name: Build and Test
+    needs: build-clang
+    runs-on: macos-14
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install Homebrew dependencies
+      - name: Clone jank
         run: |
+          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install Homebrew deps
+        run: |
+          brew install cmake ninja double-conversion pkg-config llvm ccache boost openssl zlib doctest
           brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk
-          brew install llvm@18 cmake ninja
 
-      - name: Cache jank build
-        id: cache-jank
-        uses: actions/cache@v4
+      - name: Restore Clang/LLVM cache
+        uses: actions/cache/restore@v4
         with:
-          path: ~/jank
-          key: jank-${{ runner.os }}-${{ runner.arch }}-${{ env.JANK_REF }}-v1
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-${{ runner.os }}-${{ runner.arch }}-${{ env.JANK_REF }}-v1
 
-      - name: Clone and build jank
-        if: steps.cache-jank.outputs.cache-hit != 'true'
+      - name: Build jank
         run: |
-          cd ~
-          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git jank
-          cd jank/compiler+runtime
-
-          # Set up environment for building
-          export SDKROOT=$(xcrun --show-sdk-path)
-
-          # Build jank
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          cd ~/jank/compiler+runtime
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release
           ./bin/compile
-
           echo "jank build complete"
+          ~/jank/compiler+runtime/build/jank --version
 
-      - name: Set up jank environment
+      - name: Set up environment
         run: |
           echo "$HOME/jank/compiler+runtime/build" >> $GITHUB_PATH
-          echo "JANK_DIR=$HOME/jank/compiler+runtime" >> $GITHUB_ENV
 
       - name: Update project paths for CI
         run: |
@@ -61,13 +92,10 @@ jobs:
             -e "s|/Users/pfeodrippe/dev/jank/compiler+runtime|$HOME/jank/compiler+runtime|g" \
             -e "s|/Users/pfeodrippe/dev/something|$GITHUB_WORKSPACE|g" {} \;
 
-          # Verify jank is available
-          which jank || echo "jank not found in PATH"
-          jank --version || echo "jank version check failed"
-
-      - name: Build dependencies (ImGui, Jolt, Flecs)
+      - name: Build dependencies (Flecs, ImGui, Jolt)
         run: |
-          export SDKROOT=$(xcrun --show-sdk-path)
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
 
           # Build Flecs
           if [ -d "vendor/flecs/distr" ]; then
@@ -76,39 +104,21 @@ jobs:
             cd ../../..
           fi
 
-          # Build ImGui (if script exists)
-          if [ -f "build_imgui.sh" ]; then
-            bash ./build_imgui.sh || true
-          fi
-
-          # Build Jolt (if script exists)
-          if [ -f "build_jolt.sh" ]; then
-            bash ./build_jolt.sh || true
-          fi
-
       - name: Run tests
         run: |
-          export SDKROOT=$(xcrun --show-sdk-path)
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
           make test
 
       - name: Build standalone app
         run: |
-          export SDKROOT=$(xcrun --show-sdk-path)
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
           make sdf-standalone
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SDFViewer-macOS-arm64
+          name: SDFViewer-macOS-${{ runner.arch }}
           path: SDFViewer.dmg
           if-no-files-found: error
-
-      - name: Upload App Bundle (for debugging)
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: SDFViewer-app-debug
-          path: SDFViewer.app
-          if-no-files-found: ignore
