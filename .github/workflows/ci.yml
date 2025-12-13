@@ -84,7 +84,7 @@ jobs:
             -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
           ./bin/compile
           echo "jank build complete"
-          ~/jank/compiler+runtime/build/jank --version
+          ~/jank/compiler+runtime/build/jank check-health
 
       - name: Set up environment
         run: |
@@ -195,7 +195,7 @@ jobs:
             -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
           ./bin/compile
           echo "jank build complete"
-          ~/jank/compiler+runtime/build/jank --version
+          ~/jank/compiler+runtime/build/jank check-health
 
       - name: Set up environment
         run: |
