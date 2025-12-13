@@ -53,7 +53,7 @@
                         (cpp/uint32_t. (/ (+ width 15) 16))
                         (cpp/uint32_t. (/ (+ height 15) 16))
                         (cpp/uint32_t. 1)))
-    nil)
+  nil)
 
 (defn create-staging-buffer [size]
   (let* [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]

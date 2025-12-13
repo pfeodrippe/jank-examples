@@ -95,12 +95,6 @@ jobs:
         run: |
           echo "$HOME/jank/compiler+runtime/build" >> $GITHUB_PATH
 
-      - name: Update project paths for CI
-        run: |
-          find bin -name "*.sh" -exec sed -i '' \
-            -e "s|/Users/pfeodrippe/dev/jank/compiler+runtime|$HOME/jank/compiler+runtime|g" \
-            -e "s|/Users/pfeodrippe/dev/something|$GITHUB_WORKSPACE|g" {} \;
-
       - name: Run tests
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"

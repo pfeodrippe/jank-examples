@@ -3,13 +3,35 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
-export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
+# Determine jank paths - support both local dev and CI environments
+if [ -d "/Users/pfeodrippe/dev/jank/compiler+runtime" ]; then
+    JANK_SRC="/Users/pfeodrippe/dev/jank/compiler+runtime"
+elif [ -d "$HOME/jank/compiler+runtime" ]; then
+    JANK_SRC="$HOME/jank/compiler+runtime"
+else
+    echo "Error: Could not find jank source directory"
+    exit 1
+fi
+
+# Use jank's built clang (required for header compatibility)
+JANK_CXX="$JANK_SRC/build/llvm-install/usr/local/bin/clang++"
+if [ ! -f "$JANK_CXX" ]; then
+    echo "Error: Could not find jank's clang at $JANK_CXX"
+    exit 1
+fi
+
+# Set up environment
+if [ "$(uname)" = "Darwin" ]; then
+    export SDKROOT=${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}
+fi
+export PATH="$JANK_SRC/build:$PATH"
+
+SOMETHING_DIR="$(pwd)"
 
 echo "Running vybe tests"
+echo "  JANK_SRC: $JANK_SRC"
+echo "  JANK_CXX: $JANK_CXX"
 echo ""
-
-SOMETHING_DIR="/Users/pfeodrippe/dev/something"
 
 # Build ImGui if needed
 if [ ! -f "vendor/imgui/build/imgui.o" ]; then
@@ -23,11 +45,10 @@ if [ ! -f "vendor/jolt_wrapper.o" ]; then
     bash ./build_jolt.sh
 fi
 
-# Build vybe_flecs_jank.o if needed
+# Build vybe_flecs_jank.o if needed (must use jank's clang for header compatibility)
 if [ ! -f "vendor/vybe/vybe_flecs_jank.o" ]; then
     echo "Building vybe_flecs_jank..."
-    JANK_SRC=/Users/pfeodrippe/dev/jank/compiler+runtime
-    /usr/bin/clang++ -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
+    "$JANK_CXX" -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
         -DIMMER_HAS_LIBGC=1 \
         -I$JANK_SRC/include/cpp \
         -I$JANK_SRC/third-party \
