@@ -59,6 +59,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Ensure submodules are initialized
+        run: |
+          git submodule update --init --recursive
+          ls -la vendor/JoltPhysics/CMakeLists.txt || echo "WARNING: JoltPhysics not properly cloned"
+
       - name: Clone jank
         run: |
           git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank

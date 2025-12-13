@@ -5,9 +5,30 @@ cd "$(dirname "$0")"
 
 echo "=== Building JoltPhysics Wrapper ==="
 
-# Check if Jolt is already built
-if [ ! -d "vendor/JoltPhysics/build" ]; then
+# Create root CMakeLists.txt if it doesn't exist (needed for simple library build)
+if [ ! -f "vendor/JoltPhysics/CMakeLists.txt" ]; then
+    echo "Creating JoltPhysics CMakeLists.txt..."
+    cat > vendor/JoltPhysics/CMakeLists.txt << 'CMAKEOF'
+cmake_minimum_required(VERSION 3.16)
+project(JoltPhysics)
+
+# Disable asserts and debug features
+set(USE_ASSERTS OFF)
+set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF)
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF)
+set(INTERPROCEDURAL_OPTIMIZATION OFF)
+
+set(PHYSICS_REPO_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Include Jolt cmake file - creates Jolt target
+include(${PHYSICS_REPO_ROOT}/Jolt/Jolt.cmake)
+CMAKEOF
+fi
+
+# Check if Jolt is already built (check for actual library, not just directory)
+if [ ! -f "vendor/JoltPhysics/build/libJolt.a" ]; then
     echo "Building JoltPhysics..."
+    rm -rf vendor/JoltPhysics/build  # Clean any partial build
     cd vendor/JoltPhysics
     mkdir -p build
     cd build
