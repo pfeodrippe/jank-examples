@@ -17,9 +17,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Build Clang/LLVM first (required by jank)
-  build-clang:
-    name: Build Clang/LLVM
+  # ============================================================================
+  # macOS Pipeline (runs in parallel with Linux)
+  # ============================================================================
+  build-clang-macos:
+    name: Build Clang - macOS
     runs-on: macos-14
     timeout-minutes: 200
     steps:
@@ -36,19 +38,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-${{ runner.os }}-${{ runner.arch }}-${{ env.JANK_REF }}-v1
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
 
       - name: Build Clang/LLVM
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           cd ~/jank/compiler+runtime
           ./bin/build-clang
           ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
 
-  # Build and test
-  build:
-    name: Build and Test
-    needs: build-clang
+  build-macos:
+    name: Build and Test - macOS
+    needs: build-clang-macos
     runs-on: macos-14
     timeout-minutes: 60
     steps:
@@ -70,7 +72,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-${{ runner.os }}-${{ runner.arch }}-${{ env.JANK_REF }}-v1
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
 
       - name: Build jank
         run: |
@@ -87,17 +89,14 @@ jobs:
 
       - name: Update project paths for CI
         run: |
-          # Update hardcoded paths in scripts to use CI jank location
           find bin -name "*.sh" -exec sed -i '' \
             -e "s|/Users/pfeodrippe/dev/jank/compiler+runtime|$HOME/jank/compiler+runtime|g" \
             -e "s|/Users/pfeodrippe/dev/something|$GITHUB_WORKSPACE|g" {} \;
 
-      - name: Build dependencies (Flecs, ImGui, Jolt)
+      - name: Build dependencies (Flecs)
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-
-          # Build Flecs
           if [ -d "vendor/flecs/distr" ]; then
             cd vendor/flecs/distr
             clang -c -fPIC -o flecs.o flecs.c || true
@@ -119,6 +118,99 @@ jobs:
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SDFViewer-macOS-${{ runner.arch }}
+          name: SDFViewer-macOS
           path: SDFViewer.dmg
           if-no-files-found: error
+
+  # ============================================================================
+  # Linux Pipeline (runs in parallel with macOS)
+  # ============================================================================
+  build-clang-linux:
+    name: Build Clang - Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - name: Clone jank
+        run: |
+          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install apt deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git build-essential libssl-dev pkg-config ninja-build cmake zlib1g-dev libffi-dev
+
+      - name: Cache Clang/LLVM
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-linux-x64-${{ env.JANK_REF }}-v1
+
+      - name: Build Clang/LLVM
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          cd ~/jank/compiler+runtime
+          ./bin/build-clang
+          ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
+
+  build-linux:
+    name: Build and Test - Linux
+    needs: build-clang-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Clone jank
+        run: |
+          git clone --depth 1 --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install apt deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git build-essential libssl-dev libdouble-conversion-dev \
+            pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
+            doctest-dev libgc-dev ccache
+          # SDL3 and Vulkan deps
+          sudo apt-get install -y libsdl2-dev libvulkan-dev glslang-tools
+
+      - name: Restore Clang/LLVM cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-linux-x64-${{ env.JANK_REF }}-v1
+
+      - name: Build jank
+        run: |
+          cd ~/jank/compiler+runtime
+          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release
+          ./bin/compile
+          echo "jank build complete"
+          ~/jank/compiler+runtime/build/jank --version
+
+      - name: Set up environment
+        run: |
+          echo "$HOME/jank/compiler+runtime/build" >> $GITHUB_PATH
+
+      - name: Update project paths for CI
+        run: |
+          find bin -name "*.sh" -exec sed -i \
+            -e "s|/Users/pfeodrippe/dev/jank/compiler+runtime|$HOME/jank/compiler+runtime|g" \
+            -e "s|/Users/pfeodrippe/dev/something|$GITHUB_WORKSPACE|g" {} \;
+
+      - name: Build dependencies (Flecs)
+        run: |
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          if [ -d "vendor/flecs/distr" ]; then
+            cd vendor/flecs/distr
+            clang -c -fPIC -o flecs.o flecs.c || true
+            cd ../../..
+          fi
+
+      - name: Run tests
+        run: |
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make test

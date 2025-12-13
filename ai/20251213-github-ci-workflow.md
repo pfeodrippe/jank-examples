@@ -69,10 +69,17 @@ After successful CI run, the DMG will be available at:
 
 ## Notes
 
-- First run takes ~20-30 min to build jank
-- Subsequent runs use cached jank build
-- Uses `nrepl` branch of jank (same as local development)
-- Debug artifact (app bundle) uploaded on failure for troubleshooting
+- First run takes ~1-2 hours to build LLVM/Clang (cached for subsequent runs)
+- Uses `nrepl` branch of jank from `pfeodrippe/jank` (same as local development)
+- Standalone DMG only built on macOS
+- Linux runs tests but no standalone build (would need AppImage or similar)
+
+## Platform Support
+
+| Platform | Tests | Standalone |
+|----------|-------|------------|
+| macOS (arm64) | ✓ | ✓ DMG |
+| Ubuntu 24.04 | ✓ | - |
 
 ## Commands Used
 
@@ -80,4 +87,8 @@ After successful CI run, the DMG will be available at:
 # Check local jank branch
 cd /Users/pfeodrippe/dev/jank && git branch --show-current
 # Output: nrepl
+
+# Check CI status
+gh run list --limit 5
+gh run view <run-id> --log-failed
 ```
