@@ -79,7 +79,7 @@ imgui:
 jolt:
 	./bin/run_jolt.sh
 
-test tests: build-deps
+test tests: build-flecs
 	./bin/run_tests.sh
 
 # Standalone build

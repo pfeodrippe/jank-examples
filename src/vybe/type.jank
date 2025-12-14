@@ -3,9 +3,6 @@
    ["flecs.h" :as fl :scope ""]
    ["vybe/vybe_type_helpers.h" :as _ :scope ""]))
 
-;; This `eita` is being used just to measure eval time. Caching form hash takes it from 7/6s to 4/3s.
-(cpp/eita)
-
 ;; =============================================================================
 ;; Local helpers (duplicated from vybe.flecs to avoid circular dependency)
 ;; =============================================================================
@@ -1053,5 +1050,3 @@
      (make-comp-constructor (make-comp ~(mangle-name *ns* sym) ~fields))))
 
 (defn -main [& args])
-
-(cpp/eita)
