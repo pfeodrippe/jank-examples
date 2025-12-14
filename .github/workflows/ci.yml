@@ -179,9 +179,14 @@ jobs:
       - name: Install apt deps
         run: |
           sudo apt-get update
+          # Install GCC 13 - GCC 14's <any> header has a bug that Clang 22 rejects
+          # when asio.cpp's #define private public hack is active
           sudo apt-get install -y curl git build-essential libssl-dev libdouble-conversion-dev \
             pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
-            doctest-dev libgc-dev
+            doctest-dev libgc-dev g++-13
+          # Set GCC 13 as default so Clang uses its headers
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
 
       # Cache 1: Clang/LLVM (rarely changes, keyed by branch)
       - name: Cache Clang/LLVM
@@ -243,11 +248,15 @@ jobs:
       - name: Install apt deps
         run: |
           sudo apt-get update
+          # Install GCC 13 - GCC 14's <any> header has a bug with Clang 22
           sudo apt-get install -y curl git build-essential libssl-dev libdouble-conversion-dev \
             pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
-            doctest-dev libgc-dev ccache patchelf
+            doctest-dev libgc-dev ccache patchelf g++-13
           # SDL3 and Vulkan deps
           sudo apt-get install -y libsdl2-dev libvulkan-dev glslang-tools libshaderc-dev
+          # Set GCC 13 as default
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
 
       - name: Restore Clang/LLVM cache
         uses: actions/cache/restore@v4
