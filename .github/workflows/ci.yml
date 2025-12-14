@@ -198,7 +198,7 @@ jobs:
           ./bin/build-clang
           ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
 
-      # Cache 2: jank build (keyed by commit hash) - includes PCH to avoid 50+ min rebuild
+      # Cache 2: jank build (keyed by commit hash)
       - name: Cache jank build
         id: cache-jank
         uses: actions/cache@v4
@@ -210,10 +210,18 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-            ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-build-linux-x64-${{ env.JANK_REF }}-v7
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v8
+
+      # Cache 3: PCH separately (takes 1h30 to build, rarely changes)
+      - name: Cache PCH
+        id: cache-pch
+        uses: actions/cache@v4
+        with:
+          path: ~/jank/compiler+runtime/build/incremental.pch
+          key: jank-pch-linux-x64-${{ env.JANK_REF }}-v1
 
       - name: Create swap space
+        if: steps.cache-jank.outputs.cache-hit != 'true' || steps.cache-pch.outputs.cache-hit != 'true'
         run: |
           # Create 8GB swap to handle PCH generation memory requirements
           sudo fallocate -l 8G /swapfile
@@ -223,6 +231,7 @@ jobs:
           free -h
 
       - name: Build jank
+        if: steps.cache-jank.outputs.cache-hit != 'true' || steps.cache-pch.outputs.cache-hit != 'true'
         run: |
           export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
           export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
@@ -274,8 +283,13 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-            ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-build-linux-x64-${{ env.JANK_REF }}-v7
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v8
+
+      - name: Restore PCH cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/jank/compiler+runtime/build/incremental.pch
+          key: jank-pch-linux-x64-${{ env.JANK_REF }}-v1
 
       - name: Verify jank
         run: |
@@ -289,3 +303,15 @@ jobs:
         run: |
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
           make test
+
+      - name: Build standalone app
+        run: |
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make sdf-standalone
+
+      - name: Upload Linux tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SDFViewer-Linux
+          path: SDFViewer-linux.tar.gz
+          if-no-files-found: error

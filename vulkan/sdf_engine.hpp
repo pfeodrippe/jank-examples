@@ -1815,9 +1815,9 @@ inline void cleanup() {
     std::cout << "Cleaned up" << std::endl;
 }
 
-// Step 1: Compile GLSL to SPIR-V and store internally
+// Compile GLSL to SPIR-V and store internally (shaderc is C++, must stay here)
 // Returns: 0 = success, 1 = compile error
-inline int compile_shader_to_internal_spirv(const char* glsl_source, const char* shader_name) {
+inline int compile_glsl_to_spirv_stored(const char* glsl_source, const char* shader_name) {
     auto* e = get_engine();
     if (!e || !e->initialized) return 1;
 
@@ -1830,55 +1830,51 @@ inline int compile_shader_to_internal_spirv(const char* glsl_source, const char*
     return 0;  // Success
 }
 
-// Step 2: Recreate pipeline from internally stored SPIR-V
-// Returns: 0 = success, 2 = pipeline error
-inline int recreate_pipeline_from_internal_spirv() {
+// SPIR-V data accessors for jank
+inline const uint32_t* get_pending_spirv_data() {
     auto* e = get_engine();
-    if (!e || !e->initialized) return 2;
-    if (e->pendingSpirvData.empty()) return 2;
+    return (e && !e->pendingSpirvData.empty()) ? e->pendingSpirvData.data() : nullptr;
+}
 
-    vkDeviceWaitIdle(e->device);
+inline size_t get_pending_spirv_size_bytes() {
+    auto* e = get_engine();
+    return e ? e->pendingSpirvData.size() * sizeof(uint32_t) : 0;
+}
 
-    // Destroy old pipeline and shader module
-    vkDestroyPipeline(e->device, e->computePipeline, nullptr);
-    vkDestroyPipelineLayout(e->device, e->computePipelineLayout, nullptr);
-    vkDestroyShaderModule(e->device, e->computeShaderModule, nullptr);
+inline void clear_pending_spirv() {
+    auto* e = get_engine();
+    if (e) e->pendingSpirvData.clear();
+}
 
-    VkShaderModuleCreateInfo shaderModuleInfo{};
-    shaderModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderModuleInfo.codeSize = e->pendingSpirvData.size() * sizeof(uint32_t);
-    shaderModuleInfo.pCode = e->pendingSpirvData.data();
+// Vulkan handle accessors for jank pipeline recreation
+inline VkDescriptorSetLayout get_descriptor_set_layout() {
+    auto* e = get_engine();
+    return e ? e->descriptorSetLayout : VK_NULL_HANDLE;
+}
 
-    if (vkCreateShaderModule(e->device, &shaderModuleInfo, nullptr, &e->computeShaderModule) != VK_SUCCESS) {
-        return 2;  // Pipeline error
-    }
+inline const VkDescriptorSetLayout* get_descriptor_set_layout_ptr() {
+    auto* e = get_engine();
+    return e ? &e->descriptorSetLayout : nullptr;
+}
 
-    VkPipelineShaderStageCreateInfo shaderStageInfo{};
-    shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    shaderStageInfo.module = e->computeShaderModule;
-    shaderStageInfo.pName = "main";
+inline VkShaderModule get_compute_shader_module() {
+    auto* e = get_engine();
+    return e ? e->computeShaderModule : VK_NULL_HANDLE;
+}
 
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &e->descriptorSetLayout;
+inline void set_compute_shader_module(VkShaderModule m) {
+    auto* e = get_engine();
+    if (e) e->computeShaderModule = m;
+}
 
-    vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &e->computePipelineLayout);
+inline void set_compute_pipeline(VkPipeline p) {
+    auto* e = get_engine();
+    if (e) e->computePipeline = p;
+}
 
-    VkComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage = shaderStageInfo;
-    pipelineInfo.layout = e->computePipelineLayout;
-
-    if (vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &e->computePipeline) != VK_SUCCESS) {
-        return 2;  // Pipeline error
-    }
-
-    // Clear stored SPIR-V and mark dirty
-    e->pendingSpirvData.clear();
-    e->dirty = true;
-    return 0;  // Success
+inline void set_compute_pipeline_layout(VkPipelineLayout l) {
+    auto* e = get_engine();
+    if (e) e->computePipelineLayout = l;
 }
 
 inline double get_time() {

@@ -24,6 +24,7 @@ This guide documents how to use native (C/C++) resources in jank, how to minimiz
 8. [Potential jank Improvements](#potential-jank-improvements)
 9. [Best Practices](#best-practices)
 10. [C++ to jank Conversion Patterns](#c-to-jank-conversion-patterns)
+11. [Vulkan Pipeline Patterns](#vulkan-pipeline-patterns)
 
 ---
 
@@ -1383,6 +1384,96 @@ Use two imports for namespaced C++ with constants:
 3. **Struct returns:** Return struct from C++ instead of output params
 4. **void* boxing:** `(cpp/box (sdfx/returns_void_ptr ...))`
 5. **Keep in C++:** Enum ops, void* casts, complex barriers
+
+---
+
+## Vulkan Pipeline Patterns
+
+### Struct Initialization with u/merge*
+
+Instead of verbose field-by-field assignment, use the `u/merge*` macro from `vybe.util`:
+
+```clojure
+;; VERBOSE: Field-by-field assignment (avoid!)
+(let [info (cpp/VkShaderModuleCreateInfo.)]
+  (cpp/= (cpp/.-sType info) vk/VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO)
+  (cpp/= (cpp/.-codeSize info) size)
+  (cpp/= (cpp/.-pCode info) data)
+  ...)
+
+;; CLEAN: Using u/merge* macro
+(let [info (cpp/VkShaderModuleCreateInfo.)]
+  (u/merge* info
+            {:sType vk/VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO
+             :codeSize size
+             :pCode data})
+  ...)
+```
+
+**Key points:**
+- Use `cpp/VkType.` (value type with trailing dot) for stack allocation
+- `u/merge*` expands to individual `cpp/=` assignments at compile time
+- Works for any C struct type accessible via header requires
+- String literals use `#cpp "string"` syntax
+
+### Vulkan Create Functions (Output Parameters)
+
+Vulkan `vkCreate*` functions use output parameters that don't work well in pure jank. Use small `cpp/raw` helpers that return the handle:
+
+```clojure
+;; Small helpers for Vulkan create functions (output params don't work in pure jank)
+(cpp/raw "
+inline VkShaderModule create_shader_module_jank(VkDevice device, VkShaderModuleCreateInfo* info) {
+    VkShaderModule module = VK_NULL_HANDLE;
+    vkCreateShaderModule(device, info, nullptr, &module);
+    return module;
+}
+inline VkPipelineLayout create_pipeline_layout_jank(VkDevice device, VkPipelineLayoutCreateInfo* info) {
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    vkCreatePipelineLayout(device, info, nullptr, &layout);
+    return layout;
+}
+inline VkPipeline create_compute_pipeline_jank(VkDevice device, VkComputePipelineCreateInfo* info) {
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, info, nullptr, &pipeline);
+    return pipeline;
+}
+")
+
+;; Usage in jank
+(let [info (cpp/VkShaderModuleCreateInfo.)]
+  (u/merge* info {:sType vk/VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO
+                  :codeSize size
+                  :pCode data})
+  (let [module (cpp/create_shader_module_jank device (cpp/& info))]
+    ...))
+```
+
+### Vulkan Destroy Functions (Direct jank Calls)
+
+Unlike create functions, Vulkan destroy functions work directly from jank:
+
+```clojure
+;; Direct Vulkan destroy calls - no wrappers needed!
+(vk/vkDeviceWaitIdle device)
+(vk/vkDestroyPipeline device pipeline cpp/nullptr)
+(vk/vkDestroyPipelineLayout device layout cpp/nullptr)
+(vk/vkDestroyShaderModule device module cpp/nullptr)
+```
+
+### Null Checks for Vulkan Handles
+
+Use `cpp/!` for null checks instead of comparing with nullptr (avoids type mismatch):
+
+```clojure
+;; WRONG: Type mismatch between pointer and nullptr_t
+(if (cpp/== module cpp/nullptr) ...)
+
+;; CORRECT: Use cpp/! for null check
+(if (cpp/! module)
+  (println "Creation failed!")
+  (println "Success!"))
+```
 
 ### Future Improvements That Would Help:
 1. Auto-wrap C pointers → Eliminate opaque_box boilerplate

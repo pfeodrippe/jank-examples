@@ -79,9 +79,15 @@ Added swap space creation before jank build in `.github/workflows/ci.yml`:
 ## CI Status
 
 - **macOS**: Build and Test succeeded
-- **Linux**: Testing with swap space fix
+- **Linux**: Build and Test succeeded (with swap space fix)
+
+## Linux Standalone Support
+
+Added to `.github/workflows/ci.yml`:
+- `make sdf-standalone` build step for Linux
+- Artifact upload for `SDFViewer-linux.tar.gz`
 
 ## Next Steps
 
-1. Continue polling CI every 3 minutes
-2. Monitor Linux build with swap space
+1. Test Linux standalone build in CI
+2. Verify standalone runs correctly

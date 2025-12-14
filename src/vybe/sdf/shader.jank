@@ -1,10 +1,97 @@
 (ns vybe.sdf.shader
   (:require
-   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]))
+   [vybe.util :as u]
+   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
+   ["vulkan/vulkan.h" :as vk :scope ""]))
 
 ;; =============================================================================
 ;; Shader Management - centralized to avoid circular dependencies
 ;; =============================================================================
+
+;; Small helpers for Vulkan create functions (output params don't work in pure jank)
+(cpp/raw "
+inline VkShaderModule create_shader_module_jank(VkDevice device, VkShaderModuleCreateInfo* info) {
+    VkShaderModule module = VK_NULL_HANDLE;
+    vkCreateShaderModule(device, info, nullptr, &module);
+    return module;
+}
+inline VkPipelineLayout create_pipeline_layout_jank(VkDevice device, VkPipelineLayoutCreateInfo* info) {
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    vkCreatePipelineLayout(device, info, nullptr, &layout);
+    return layout;
+}
+inline VkPipeline create_compute_pipeline_jank(VkDevice device, VkComputePipelineCreateInfo* info) {
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, info, nullptr, &pipeline);
+    return pipeline;
+}
+")
+
+;; Pipeline recreation in jank - calls Vulkan C functions directly
+(defn recreate-pipeline!
+  "Recreate Vulkan compute pipeline from stored SPIR-V data.
+   All Vulkan calls done in jank using cpp/ interop."
+  []
+  (let [device (sdfx/get_device)
+        old-pipeline (sdfx/get_compute_pipeline)
+        old-layout (sdfx/get_compute_pipeline_layout)
+        old-module (sdfx/get_compute_shader_module)
+        spirv-data (sdfx/get_pending_spirv_data)
+        spirv-size (sdfx/get_pending_spirv_size_bytes)
+        desc-set-layout (sdfx/get_descriptor_set_layout)]
+    (if (= spirv-size 0)
+      2  ;; No SPIR-V data
+      (do
+        ;; Wait for device idle
+        (vk/vkDeviceWaitIdle device)
+
+        ;; Destroy old resources
+        (vk/vkDestroyPipeline device old-pipeline cpp/nullptr)
+        (vk/vkDestroyPipelineLayout device old-layout cpp/nullptr)
+        (vk/vkDestroyShaderModule device old-module cpp/nullptr)
+
+        ;; Create shader module
+        (let [module-info (cpp/VkShaderModuleCreateInfo.)]
+          (u/merge* module-info
+                    {:sType vk/VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO
+                     :codeSize spirv-size
+                     :pCode spirv-data})
+          (let [new-module (cpp/create_shader_module_jank device (cpp/& module-info))]
+            (if (cpp/! new-module)
+              2  ;; Shader module creation failed
+              (do
+                (sdfx/set_compute_shader_module new-module)
+
+                ;; Create pipeline layout
+                (let [layout-info (cpp/VkPipelineLayoutCreateInfo.)
+                      desc-layout-ptr (sdfx/get_descriptor_set_layout_ptr)]
+                  (u/merge* layout-info
+                            {:sType vk/VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+                             :setLayoutCount (cpp/uint32_t. 1)
+                             :pSetLayouts desc-layout-ptr})
+                  (let [new-layout (cpp/create_pipeline_layout_jank device (cpp/& layout-info))]
+                    (sdfx/set_compute_pipeline_layout new-layout)
+
+                    ;; Create compute pipeline
+                    (let [stage-info (cpp/VkPipelineShaderStageCreateInfo.)
+                          pipeline-info (cpp/VkComputePipelineCreateInfo.)]
+                      (u/merge* stage-info
+                                {:sType vk/VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+                                 :stage vk/VK_SHADER_STAGE_COMPUTE_BIT
+                                 :module new-module
+                                 :pName #cpp "main"})
+                      (u/merge* pipeline-info
+                                {:sType vk/VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO
+                                 :stage stage-info
+                                 :layout new-layout})
+                      (let [new-pipeline (cpp/create_compute_pipeline_jank device (cpp/& pipeline-info))]
+                        (if (cpp/! new-pipeline)
+                          2  ;; Pipeline creation failed
+                          (do
+                            (sdfx/set_compute_pipeline new-pipeline)
+                            (sdfx/clear_pending_spirv)
+                            (sdfx/set_dirty)
+                            0))))))))))))))  ;; Success
 
 (defn get-shader-dir
   []
@@ -30,10 +117,12 @@
   [idx]
   (sdfx/load_shader_at_index (cpp/int. idx)))
 
-;; Shader reload - orchestration in jank, low-level ops in C++
+;; Shader reload - all orchestration and Vulkan calls in jank
 (defn reload-shader!
   "Reload the current shader. Reads GLSL source, compiles to SPIR-V, recreates pipeline.
-   Orchestration is in jank, low-level Vulkan/shaderc operations stay in C++."
+   - File reading: C++ (jank slurp is buggy)
+   - GLSL compilation: C++ (shaderc is C++ library)
+   - Pipeline recreation: pure jank (recreate-pipeline! above)"
   []
   (let [shader-dir (str (sdfx/get_shader_dir))
         shader-name (str (sdfx/get_current_shader_name))
@@ -41,12 +130,12 @@
         glsl-source (str (sdfx/read_text_file shader-path))]
     (if (empty? glsl-source)
       (println "Failed to read shader source:" shader-path)
-      ;; Step 1: Compile GLSL to SPIR-V (stored internally in C++)
-      (let [compile-result (sdfx/compile_shader_to_internal_spirv glsl-source (str shader-name ".comp"))]
+      ;; Step 1: Compile GLSL to SPIR-V (shaderc is C++, must stay there)
+      (let [compile-result (sdfx/compile_glsl_to_spirv_stored glsl-source (str shader-name ".comp"))]
         (if (not= compile-result 0)
           (println "Shader compilation failed!")
-          ;; Step 2: Recreate Vulkan pipeline from stored SPIR-V
-          (let [pipeline-result (sdfx/recreate_pipeline_from_internal_spirv)]
+          ;; Step 2: Recreate Vulkan pipeline (pure jank!)
+          (let [pipeline-result (recreate-pipeline!)]
             (if (= pipeline-result 0)
               (println "Shader reloaded!")
               (println "Pipeline creation failed!"))))))))
