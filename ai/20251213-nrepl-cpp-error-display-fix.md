@@ -65,12 +65,39 @@ input_line_617:8:1000: error: cannot initialize a variable of type 'VkDescriptor
 (aka 'struct VkDescriptorSet_T *')
 ```
 
+## Test Fix
+
+After the initial fix, tests went from 1 failure to 6 failures. This was caused by leftover debug `std::cerr` statements in the `jank::error_ref` catch block in `eval.hpp`:
+
+```cpp
+// Removed these debug lines that were being captured as extra output:
+std::cerr << "err source line: " << err->source.start.line << '\n';
+if(!err->notes.empty())
+{
+  std::cerr << "first err note line: " << err->notes.front().source.start.line << '\n';
+}
+```
+
+After removing these, tests returned to 1 failure (pre-existing, unrelated to this fix).
+
+## Final Test Results
+
+```
+[doctest] test cases:  229 |  228 passed | 1 failed | 0 skipped
+[doctest] assertions: 2468 | 2467 passed | 1 failed |
+```
+
+The remaining failure is `arglists-str not found in info response` - pre-existing and unrelated.
+
 ## Commands
 
 ```bash
 # Build jank
 cd /Users/pfeodrippe/dev/jank/compiler+runtime
 ./bin/compile
+
+# Run tests
+./bin/test
 
 # Test in project
 make sdf

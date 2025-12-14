@@ -2,7 +2,7 @@
 # Manages builds, cache, and common operations
 
 .PHONY: clean clean-cache sdf integrated imgui jolt test tests help \
-        build-jolt build-imgui build-flecs build-deps
+        build-jolt build-imgui build-flecs build-raylib build-deps
 
 # Default target
 help:
@@ -57,7 +57,13 @@ build-flecs:
 		cd vendor/flecs/distr && clang -c -fPIC -o flecs.o flecs.c; \
 	fi
 
-build-deps: build-jolt build-imgui build-flecs
+build-raylib:
+	@if [ ! -f "vendor/raylib/distr/libraylib_jank.a" ]; then \
+		echo "Building Raylib..."; \
+		bash ./build_raylib.sh; \
+	fi
+
+build-deps: build-jolt build-imgui build-flecs build-raylib
 	@echo "All dependencies built."
 
 # Run targets (clean cache first to avoid stale module issues)

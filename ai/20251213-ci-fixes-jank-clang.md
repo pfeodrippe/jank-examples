@@ -40,6 +40,21 @@ When compiling C++ code that includes jank headers, always use jank's built clan
 ## Files Modified
 - `bin/run_tests.sh` - Dynamic path detection and use jank's clang
 - `.github/workflows/ci.yml` - Removed sed path replacement step
+- `build_raylib.sh` - New script to build raylib_jank library
+- `Makefile` - Added `build-raylib` target to `build-deps`
+
+## Second Issue: Missing raylib_jank library
+
+After fixing the clang issue, CI failed with:
+```
+error: Failed to load dynamic library 'raylib_jank': dlopen(raylib_jank, 0x0009): tried: 'raylib_jank' (no such file)
+```
+
+The `libraylib_jank.a` was present locally but not tracked in git. Created `build_raylib.sh` to:
+1. Extract object files from `libraylib.a` (if needed)
+2. Compile `raylib_jank_wrapper.cpp`
+3. Create `libraylib_jank.a` static library
+4. Create `libraylib_jank.dylib` dynamic library (macOS)
 
 ## Next Steps
 - Wait for CI to pass after user commits changes
