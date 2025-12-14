@@ -1920,27 +1920,6 @@ inline void set_continuous_mode(bool enabled) {
     }
 }
 
-// ============================================================================
-// ImGui API for Jank
-// ============================================================================
-
-inline void imgui_new_frame() {
-    auto* e = get_engine();
-    if (!e || !e->initialized) return;
-
-    ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
-}
-
-inline void imgui_render() {
-    ImGui::Render();
-}
-
-inline void imgui_render_draw_data(VkCommandBuffer cmd) {
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-}
-
 inline void set_dirty() {
     auto* e = get_engine();
     if (e) e->dirty = true;
@@ -2129,25 +2108,6 @@ inline VkCommandBuffer alloc_screenshot_cmd() {
     return cmd;
 }
 
-// Free command buffer
-inline void free_screenshot_cmd(VkCommandBuffer cmd) {
-    auto* e = get_engine();
-    if (!e) return;
-    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmd);
-}
-
-// Submit and wait for command buffer
-inline void submit_screenshot_cmd(VkCommandBuffer cmd) {
-    auto* e = get_engine();
-    if (!e) return;
-    VkSubmitInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    info.commandBufferCount = 1;
-    info.pCommandBuffers = &cmd;
-    vkQueueSubmit(e->graphicsQueue, 1, &info, VK_NULL_HANDLE);
-    vkQueueWaitIdle(e->graphicsQueue);
-}
-
 // Struct for returning screenshot buffer handles
 struct ScreenshotBuffer {
     VkBuffer buffer;
@@ -2181,30 +2141,6 @@ inline ScreenshotBuffer create_screenshot_buffer(VkDeviceSize size) {
     vkBindBufferMemory(e->device, result.buffer, result.memory, 0);
     result.success = true;
     return result;
-}
-
-// Cleanup staging buffer
-inline void destroy_screenshot_buffer(VkBuffer buffer, VkDeviceMemory memory) {
-    auto* e = get_engine();
-    if (!e) return;
-    vkDestroyBuffer(e->device, buffer, nullptr);
-    vkFreeMemory(e->device, memory, nullptr);
-}
-
-// Map memory
-inline void* map_screenshot_memory(VkDeviceMemory memory, VkDeviceSize size) {
-    auto* e = get_engine();
-    if (!e) return nullptr;
-    void* data;
-    vkMapMemory(e->device, memory, 0, size, 0, &data);
-    return data;
-}
-
-// Unmap memory
-inline void unmap_screenshot_memory(VkDeviceMemory memory) {
-    auto* e = get_engine();
-    if (!e) return;
-    vkUnmapMemory(e->device, memory);
 }
 
 // Write PNG with downsampling - single helper function for jank

@@ -9,19 +9,32 @@
 ;; Screenshot - jank implementation with boxing for Vulkan handles
 ;; ============================================================================
 
+;; alloc_screenshot_cmd stays in C++ because jank can't easily create a local
+;; VkCommandBuffer variable (VkCommandBuffer is already a pointer typedef)
 (defn alloc-cmd-buffer []
   (cpp/box (sdfx/alloc_screenshot_cmd)))
 
 (defn free-cmd-buffer! [cmd]
-  (sdfx/free_screenshot_cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
+  (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+        cmd-ptr (cpp/& vk-cmd)]
+    (vk/vkFreeCommandBuffers (sdfx/get_device) (sdfx/get_command_pool)
+                             (cpp/uint32_t. 1) cmd-ptr)))
 
 (defn submit-and-wait! [cmd]
-  (sdfx/submit_screenshot_cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
+  (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+        cmd-ptr (cpp/cast (cpp/type "VkCommandBuffer const*") (cpp/& vk-cmd))
+        queue (sdfx/get_graphics_queue)
+        info (cpp/VkSubmitInfo.)]
+    (u/merge* info {:sType vk/VK_STRUCTURE_TYPE_SUBMIT_INFO
+                    :commandBufferCount (cpp/uint32_t. 1)
+                    :pCommandBuffers cmd-ptr})
+    (vk/vkQueueSubmit queue (cpp/uint32_t. 1) (cpp/& info) cpp/VK_NULL_HANDLE)
+    (vk/vkQueueWaitIdle queue)))
 
 (defn begin-cmd-buffer! [cmd]
   (let [info (cpp/VkCommandBufferBeginInfo.)]
-    (cpp/= (cpp/.-sType info) vk/VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
-    (cpp/= (cpp/.-flags info) (cpp/VkCommandBufferUsageFlags. vk/VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+    (u/merge* info {:sType vk/VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+                    :flags (cpp/VkCommandBufferUsageFlags. vk/VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)})
     (vk/vkBeginCommandBuffer (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd) (cpp/& info))))
 
 (defn end-cmd-buffer! [cmd]
@@ -95,6 +108,8 @@
                       (cpp/uint32_t (/ (+ height 15) 16))
                       (cpp/uint32_t 1))))
 
+;; create_screenshot_buffer stays in C++ because Vulkan handle types (VkBuffer, VkDeviceMemory)
+;; are pointer typedefs, making it difficult to create local variables for output params in jank
 (defn create-staging-buffer [size]
   (let [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]
     (when (cpp/.-success result)
@@ -124,15 +139,22 @@
                                vk-buffer (cpp/uint32_t. 1) (cpp/& region))))
 
 (defn map-memory [memory size]
-  (cpp/box (sdfx/map_screenshot_memory (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)
-                                       (cpp/VkDeviceSize. size))))
+  (let [vk-memory (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)
+        data (cpp/new (cpp/type "void*"))]
+    (vk/vkMapMemory (sdfx/get_device) vk-memory
+                    (cpp/VkDeviceSize. 0) (cpp/VkDeviceSize. size)
+                    (cpp/VkMemoryMapFlags. 0) data)
+    (cpp/box (cpp/* data))))
 
 (defn unmap-memory! [memory]
-  (sdfx/unmap_screenshot_memory (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)))
+  (vk/vkUnmapMemory (sdfx/get_device) (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)))
 
 (defn destroy-staging-buffer! [buffer memory]
-  (sdfx/destroy_screenshot_buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
-                                  (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)))
+  (let [device (sdfx/get_device)
+        vk-buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
+        vk-memory (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)]
+    (vk/vkDestroyBuffer device vk-buffer cpp/nullptr)
+    (vk/vkFreeMemory device vk-memory cpp/nullptr)))
 
 ;; Use C++ helper for PNG writing (jank GC can't handle 230k loop iterations)
 (defn write-png-downsampled [filepath pixels width height scale]

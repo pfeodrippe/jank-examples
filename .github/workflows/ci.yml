@@ -212,6 +212,16 @@ jobs:
             ~/jank/compiler+runtime/build/lib
           key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v5
 
+      - name: Create swap space
+        if: steps.cache-jank.outputs.cache-hit != 'true'
+        run: |
+          # Create 8GB swap to handle PCH generation memory requirements
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: Build jank
         if: steps.cache-jank.outputs.cache-hit != 'true'
         run: |
@@ -221,8 +231,7 @@ jobs:
           # Use same flags as jank's CI
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
             -Djank_local_clang=on
-          # Limit parallel jobs to reduce memory pressure during PCH generation
-          ./bin/compile -j 2
+          ./bin/compile
           echo "jank build complete"
           ~/jank/compiler+runtime/build/jank check-health
 

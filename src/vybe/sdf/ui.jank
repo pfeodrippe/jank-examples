@@ -2,6 +2,8 @@
   (:require
    ["imgui.h" :as imgui :scope "ImGui"]
    ["imgui.h" :as imgui-h :scope ""]
+   ["imgui_impl_vulkan.h" :as imgui-vk :scope ""]
+   ["imgui_impl_sdl3.h" :as imgui-sdl :scope ""]
    ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
    [vybe.sdf.state :as state]))
 
@@ -11,12 +13,15 @@
 (defn new-frame!
   "Start a new ImGui frame. Call before any UI code."
   []
-  (sdfx/imgui_new_frame))
+  (when (sdfx/engine_initialized)
+    (imgui-vk/ImGui_ImplVulkan_NewFrame)
+    (imgui-sdl/ImGui_ImplSDL3_NewFrame)
+    (imgui/NewFrame)))
 
 (defn render!
   "Finalize ImGui rendering. Call after all UI code, before draw-frame!."
   []
-  (sdfx/imgui_render))
+  (imgui/Render))
 
 (defn draw-debug-ui!
   "Draw debug UI panel using direct ImGui header require."
