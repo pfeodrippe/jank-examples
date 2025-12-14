@@ -98,11 +98,11 @@ struct Camera {
     void pan(float dx, float dy) {
         // Calculate screen-space right and up vectors based on camera orientation
         float speed = distance * 0.002f;
-        
+
         // Right vector in world space (perpendicular to view direction in XZ plane)
         float rightX = cos(angleY);
         float rightZ = -sin(angleY);
-        
+
         // Up is just Y (we don't tilt)
         targetX += rightX * dx * speed;
         targetZ += rightZ * dx * speed;
@@ -2244,18 +2244,6 @@ inline void barrier_to_transfer_src(VkCommandBuffer cmd, VkImage image) {
     vkCmdPipelineBarrier(cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, nullptr, 0, nullptr, 1, &barrier);
-}
-
-// Dispatch compute shader for screenshot
-inline void dispatch_screenshot_compute(VkCommandBuffer cmd) {
-    auto* e = get_engine();
-    if (!e) return;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, e->computePipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-        e->computePipelineLayout, 0, 1, &e->descriptorSet, 0, nullptr);
-    vkCmdDispatch(cmd,
-        (e->swapchainExtent.width + 15) / 16,
-        (e->swapchainExtent.height + 15) / 16, 1);
 }
 
 // Copy image to buffer

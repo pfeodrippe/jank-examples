@@ -36,30 +36,20 @@
                                 (cpp/unbox (cpp/type "struct VkImage_T*") image)))
 
 (defn dispatch-compute! [cmd]
-  (sdfx/dispatch_screenshot_compute (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
-
-(comment
-
-  (defn dispatch-compute!-2 [cmd]
-    (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
-          #_(cpp/unbox vk/VkCommandBuffer cmd)
-          width (sdfx/get_swapchain_width)
-          height (sdfx/get_swapchain_height)
-          desc-set (sdfx/get_descriptor_set)
-          #_ #_desc-ptr (cpp/new vk/VkDescriptorSet desc-set)]
-      (vk/vkCmdBindPipeline vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE (sdfx/get_compute_pipeline))
-
-      #_(vk/vkCmdBindDescriptorSets vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE
-                                    (sdfx/get_compute_pipeline_layout)
-                                    (cpp/uint32_t. 0) (cpp/uint32_t. 1) desc-ptr
-                                    (cpp/uint32_t. 0) (cpp/type "uint32_t const*" nullptr))
-      #_(vk/vkCmdDispatch vk-cmd
-                          (cpp/uint32_t. (/ (+ width 15) 16))
-                          (cpp/uint32_t. (/ (+ height 15) 16))
-                          (cpp/uint32_t. 1)))
-    nil)
-
-  ())
+  (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+        width (sdfx/get_swapchain_width)
+        height (sdfx/get_swapchain_height)
+        desc-set (sdfx/get_descriptor_set)
+        desc-ptr (cpp/& desc-set)]
+    (vk/vkCmdBindPipeline vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE (sdfx/get_compute_pipeline))
+    (vk/vkCmdBindDescriptorSets vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE
+                                (sdfx/get_compute_pipeline_layout)
+                                (cpp/uint32_t. 0) (cpp/uint32_t. 1) desc-ptr
+                                (cpp/uint32_t. 0) (cpp/cast (cpp/type "uint32_t const*") cpp/nullptr))
+    (vk/vkCmdDispatch vk-cmd
+                      (cpp/uint32_t. (/ (+ width 15) 16))
+                      (cpp/uint32_t. (/ (+ height 15) 16))
+                      (cpp/uint32_t. 1))))
 
 (defn create-staging-buffer [size]
   (let* [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]

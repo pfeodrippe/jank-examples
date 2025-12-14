@@ -24,8 +24,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Determine jank paths - support both local dev and CI environments
+if [ -d "/Users/pfeodrippe/dev/jank/compiler+runtime" ]; then
+    JANK_SRC="/Users/pfeodrippe/dev/jank/compiler+runtime"
+elif [ -d "$HOME/jank/compiler+runtime" ]; then
+    JANK_SRC="$HOME/jank/compiler+runtime"
+else
+    echo "Error: Could not find jank source directory"
+    exit 1
+fi
+
 # jank installation paths
-JANK_DIR="/Users/pfeodrippe/dev/jank/compiler+runtime/build"
+JANK_DIR="$JANK_SRC/build"
 JANK_LIB_DIR="$JANK_DIR/llvm-install/usr/local/lib"
 
 # ============================================================================
@@ -580,7 +590,7 @@ CLANG_WRAPPER
 case "$(uname -s)" in
     Darwin)
         export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
-        export PATH="/Users/pfeodrippe/dev/jank/compiler+runtime/build:/usr/bin:/bin:$PATH"
+        export PATH="$JANK_DIR:/usr/bin:/bin:$PATH"
 
         # Vulkan environment for MoltenVK
         export VK_ICD_FILENAMES=/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json
@@ -633,16 +643,9 @@ fi
 # Build vybe_flecs_jank.o if needed (jank-runtime-dependent flecs helpers)
 if [ ! -f vendor/vybe/vybe_flecs_jank.o ] || [ vendor/vybe/vybe_flecs_jank.cpp -nt vendor/vybe/vybe_flecs_jank.o ]; then
     echo "Compiling vybe_flecs_jank..."
-    # Determine jank source path based on platform
-    case "$(uname -s)" in
-        Darwin)
-            JANK_SRC=/Users/pfeodrippe/dev/jank/compiler+runtime
-            ;;
-        Linux)
-            JANK_SRC=$HOME/jank/compiler+runtime
-            ;;
-    esac
-    clang++ -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
+    # Use jank's clang for header compatibility
+    JANK_CXX="$JANK_SRC/build/llvm-install/usr/local/bin/clang++"
+    "$JANK_CXX" -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
         -DIMMER_HAS_LIBGC=1 \
         -I$JANK_SRC/include/cpp \
         -I$JANK_SRC/third-party \
