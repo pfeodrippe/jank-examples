@@ -58,34 +58,26 @@
        :memory (cpp/box (cpp/.-memory result))})))
 
 (defn copy-image-to-buffer! [cmd image buffer width height]
-  (sdfx/copy_image_to_buffer (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
-                             (cpp/unbox (cpp/type "struct VkImage_T*") image)
-                             (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
-                             (cpp/uint32_t. width)
-                             (cpp/uint32_t. height)))
-
-#_(defn copy-image-to-buffer!-2 [cmd image buffer width height]
-    (let* [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
-           vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
-           vk-buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
-           region (cpp/VkBufferImageCopy.)
-           ]
-      (cpp/= (cpp/.-bufferOffset region) (cpp/VkDeviceSize. 0))
-      (cpp/= (cpp/.-bufferRowLength region) (cpp/uint32_t. 0))
-      (cpp/= (cpp/.-bufferImageHeight region) (cpp/uint32_t. 0))
-      (cpp/= (cpp/.-aspectMask (cpp/.-imageSubresource region)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
-      (cpp/= (cpp/.-mipLevel (cpp/.-imageSubresource region)) (cpp/uint32_t. 0))
-      (cpp/= (cpp/.-baseArrayLayer (cpp/.-imageSubresource region)) (cpp/uint32_t. 0))
-      (cpp/= (cpp/.-layerCount (cpp/.-imageSubresource region)) (cpp/uint32_t. 1))
-      (cpp/= (cpp/.-x (cpp/.-imageOffset region)) (cpp/int32_t. 0))
-      (cpp/= (cpp/.-y (cpp/.-imageOffset region)) (cpp/int32_t. 0))
-      (cpp/= (cpp/.-z (cpp/.-imageOffset region)) (cpp/int32_t. 0))
-      (cpp/= (cpp/.-width (cpp/.-imageExtent region)) (cpp/uint32_t. width))
-      (cpp/= (cpp/.-height (cpp/.-imageExtent region)) (cpp/uint32_t. height))
-      (cpp/= (cpp/.-depth (cpp/.-imageExtent region)) (cpp/uint32_t. 1))
-      (vk/vkCmdCopyImageToBuffer vk-cmd vk-image
-                                 vk/VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-                                 vk-buffer (cpp/uint32_t. 1) (cpp/& region))))
+  (let* [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+         vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
+         vk-buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
+         region (cpp/VkBufferImageCopy.)]
+    (cpp/= (cpp/.-bufferOffset region) (cpp/VkDeviceSize. 0))
+    (cpp/= (cpp/.-bufferRowLength region) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-bufferImageHeight region) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-aspectMask (cpp/.-imageSubresource region)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
+    (cpp/= (cpp/.-mipLevel (cpp/.-imageSubresource region)) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-baseArrayLayer (cpp/.-imageSubresource region)) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-layerCount (cpp/.-imageSubresource region)) (cpp/uint32_t. 1))
+    (cpp/= (cpp/.-x (cpp/.-imageOffset region)) (cpp/int32_t. 0))
+    (cpp/= (cpp/.-y (cpp/.-imageOffset region)) (cpp/int32_t. 0))
+    (cpp/= (cpp/.-z (cpp/.-imageOffset region)) (cpp/int32_t. 0))
+    (cpp/= (cpp/.-width (cpp/.-imageExtent region)) (cpp/uint32_t. width))
+    (cpp/= (cpp/.-height (cpp/.-imageExtent region)) (cpp/uint32_t. height))
+    (cpp/= (cpp/.-depth (cpp/.-imageExtent region)) (cpp/uint32_t. 1))
+    (vk/vkCmdCopyImageToBuffer vk-cmd vk-image
+                               vk/VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                               vk-buffer (cpp/uint32_t. 1) (cpp/& region))))
 
 (defn map-memory [memory size]
   (cpp/box (sdfx/map_screenshot_memory (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)
@@ -106,29 +98,29 @@
                               (cpp/uint32_t. scale)))
 
 #_(defn write-png-downsampled-2 [filepath pixels width height scale]
-    (let* [out-w (/ width scale)
-           out-h (/ height scale)
-           rgb-size (* out-w out-h 3)
-           rgb (cpp/new (cpp/type "uint8_t") rgb-size)
-           src (cpp/type "const uint8_t*" (cpp/unbox (cpp/type "void*") pixels))]
-      ;; Downsample with vertical flip
-      (loop [y 0]
-        (when (< y out-h)
-          (loop [x 0]
-            (when (< x out-w)
-              (let* [src-y (+ (* (- (- out-h 1) y) scale) (/ scale 2))
-                     src-x (+ (* x scale) (/ scale 2))
-                     src-idx (+ (* src-y width 4) (* src-x 4))
-                     dst-idx (* (+ (* y out-w) x) 3)]
-                (cpp/= (cpp/aget rgb dst-idx) (cpp/aget src src-idx))
-                (cpp/= (cpp/aget rgb (+ dst-idx 1)) (cpp/aget src (+ src-idx 1)))
-                (cpp/= (cpp/aget rgb (+ dst-idx 2)) (cpp/aget src (+ src-idx 2))))
-              (recur (+ x 1))))
-          (recur (+ y 1))))
-      (let [result (stb/stbi_write_png filepath (cpp/int. out-w) (cpp/int. out-h)
-                                       (cpp/int. 3) rgb (cpp/int. (* out-w 3)))]
-        (cpp/delete rgb)
-        result)))
+  (let* [out-w (/ width scale)
+         out-h (/ height scale)
+         rgb-size (* out-w out-h 3)
+         rgb (cpp/new (cpp/type "uint8_t") rgb-size)
+         src (cpp/cast (cpp/type "const uint8_t*") (cpp/unbox (cpp/type "void*") pixels))]
+    ;; Downsample with vertical flip
+    (loop [y 0]
+      (when (< y out-h)
+        (loop [x 0]
+          (when (< x out-w)
+            (let* [src-y (+ (* (- (- out-h 1) y) scale) (/ scale 2))
+                   src-x (+ (* x scale) (/ scale 2))
+                   src-idx (+ (* src-y width 4) (* src-x 4))
+                   dst-idx (* (+ (* y out-w) x) 3)]
+              (cpp/= (cpp/aget rgb dst-idx) (cpp/aget src src-idx))
+              (cpp/= (cpp/aget rgb (+ dst-idx 1)) (cpp/aget src (+ src-idx 1)))
+              (cpp/= (cpp/aget rgb (+ dst-idx 2)) (cpp/aget src (+ src-idx 2))))
+            (recur (+ x 1))))
+        (recur (+ y 1))))
+    (let [result (stb/stbi_write_png filepath (cpp/int. out-w) (cpp/int. out-h)
+                                     (cpp/int. 3) rgb (cpp/int. (* out-w 3)))]
+      (cpp/delete rgb)
+      result)))
 
 (defn save-screenshot!
   "Capture current frame and save to PNG file."

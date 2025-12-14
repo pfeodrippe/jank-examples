@@ -2246,22 +2246,6 @@ inline void barrier_to_transfer_src(VkCommandBuffer cmd, VkImage image) {
         0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
-// Copy image to buffer
-inline void copy_image_to_buffer(VkCommandBuffer cmd, VkImage image, VkBuffer buffer,
-                                  uint32_t width, uint32_t height) {
-    VkBufferImageCopy region{};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset = {0, 0, 0};
-    region.imageExtent = {width, height, 1};
-    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
-}
-
 // Write PNG with downsampling - handles void* to uint8_t* cast internally
 inline int write_png_downsampled(const char* filepath, const void* pixelsVoid,
                                   uint32_t width, uint32_t height, uint32_t scale) {
