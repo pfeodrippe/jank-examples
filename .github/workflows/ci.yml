@@ -210,21 +210,17 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v3
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v5
 
       - name: Build jank
         if: steps.cache-jank.outputs.cache-hit != 'true'
         run: |
           export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
           export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
-          # Use libc++ to avoid GCC 14's <any> header issue with Clang 22
-          # The GCC 14 header has private forward declarations but public definitions,
-          # which Clang rejects. Using libc++ from our LLVM build sidesteps this.
-          export CXXFLAGS="-stdlib=libc++"
-          export LDFLAGS="-stdlib=libc++ -lc++abi"
           cd ~/jank/compiler+runtime
+          # Use same flags as jank's CI
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
-            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
+            -Djank_local_clang=on
           ./bin/compile
           echo "jank build complete"
           ~/jank/compiler+runtime/build/jank check-health
@@ -269,7 +265,7 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v3
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v5
 
       - name: Verify jank
         run: |

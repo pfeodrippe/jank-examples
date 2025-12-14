@@ -1572,7 +1572,7 @@ inline bool should_close() {
 
 inline void poll_events() {
     auto* e = get_engine();
-    if (!e) return;
+    if (!e || !e->initialized) return;
 
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
