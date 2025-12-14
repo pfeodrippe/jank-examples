@@ -3,6 +3,10 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Use system clang (avoid inheriting jank's custom CC/CXX)
+export CC=/usr/bin/clang
+export CXX=/usr/bin/clang++
+
 echo "=== Building JoltPhysics Wrapper ==="
 
 # Create root CMakeLists.txt if it doesn't exist (needed for simple library build)

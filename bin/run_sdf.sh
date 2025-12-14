@@ -753,10 +753,10 @@ if [ "$STANDALONE" = true ]; then
     done
     JANK_ARGS+=(--jit-lib "$PWD/$SHARED_LIB")
 
-    # JIT also needs object files for symbol resolution during compilation
-    for obj in "${OBJ_FILES[@]}"; do
-        JANK_ARGS+=(--obj "$obj")
-    done
+    # NOTE: Don't pass object files via --obj for standalone builds!
+    # They're already in libsdf_deps.dylib. Including them twice causes
+    # ODR violations (duplicate ImGui global context _GImGui).
+    # The dylib is passed via --jit-lib above for JIT symbol resolution.
 
     # Dynamic libraries for AOT linker
     for lib in "${DYLIBS[@]}"; do

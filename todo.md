@@ -4,6 +4,7 @@
     - [x] (vk/vkCmdBindPipeline vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE (sdfx/get_compute_pipeline))
   - [x] copy-image-to-buffer!
   - [ ] write-png-downsampled
+    - [ ] gc-issue
   - [ ] macro to set multiple fields using map
 - [ ] sdf
   - [ ] sdf to obj in runtime
