@@ -764,7 +764,21 @@ if [ "$STANDALONE" = true ]; then
     done
     JANK_ARGS+=(--link-lib "$PWD/$SHARED_LIB")
 
+    # Debug: Show jank compile command for CI troubleshooting
+    echo "=== jank compile command ==="
+    echo "jank ${JANK_ARGS[@]} compile -o $OUTPUT_NAME vybe.sdf"
+    echo "=== end jank command ==="
+
     jank "${JANK_ARGS[@]}" compile -o "$OUTPUT_NAME" vybe.sdf
+
+    # Verify no ODR violations - main binary should have minimal ImGui symbols
+    IMGUI_SYMBOLS=$(nm "$OUTPUT_NAME"-bin 2>/dev/null | grep -E " [TtDdSs] " | grep -i imgui | wc -l)
+    echo "=== ODR check: $IMGUI_SYMBOLS ImGui symbols defined in main binary ==="
+    if [ "$IMGUI_SYMBOLS" -gt 10 ]; then
+        echo "WARNING: ODR violation detected! Main binary has $IMGUI_SYMBOLS ImGui symbols."
+        echo "Expected: symbols should be in dylib only, not main binary."
+        nm "$OUTPUT_NAME"-bin 2>/dev/null | grep "_GImGui" && echo "ERROR: _GImGui found in main binary!"
+    fi
 
     # Create platform-specific distribution
     case "$(uname -s)" in
