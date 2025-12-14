@@ -221,7 +221,8 @@ jobs:
           # Use same flags as jank's CI
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
             -Djank_local_clang=on
-          ./bin/compile
+          # Limit parallel jobs to reduce memory pressure during PCH generation
+          ./bin/compile -j 2
           echo "jank build complete"
           ~/jank/compiler+runtime/build/jank check-health
 
