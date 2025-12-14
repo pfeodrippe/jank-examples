@@ -1,36 +1,50 @@
-# CI Fix: Remove Unused Flecs Wrapper
+# CI Fix: Remove Unused Flecs Wrapper + Fix Hardcoded Paths
 
 ## Date: 2025-12-13
 
-## Problem
+## Problem 1: Missing flecs_jank_wrapper_native.o
 CI was failing with:
 ```
 Uncaught exception: failed to load object file: vendor/flecs/distr/flecs_jank_wrapper_native.o
 ```
 
-## Root Cause
-- `vendor/flecs` is a git submodule with `distr/flecs.c` and `distr/flecs.h` (part of official repo)
+### Root Cause
 - `flecs_jank_wrapper.cpp` was a local custom wrapper providing `jank_flecs_*` functions
-- **But nobody uses these wrapper functions!** The code uses direct header includes instead:
-  ```clojure
-  ["flecs.h" :as fl :scope ""]
-  ```
+- **But nobody uses these wrapper functions!** The code uses direct header includes instead
 
-## Solution
-Simply remove the unused wrapper from the build:
+### Solution
+Removed `flecs_jank_wrapper_native.o` from all scripts - it was dead code.
 
-1. Removed `flecs_jank_wrapper_native.o` from `run_tests.sh` OBJ_ARGS
-2. The flecs submodule provides `flecs.c` and `flecs.h` - that's all we need
+## Problem 2: Hardcoded jank paths in run_sdf.sh
+CI failed with:
+```
+cp: /Users/pfeodrippe/dev/jank/compiler+runtime/build/llvm-install/usr/local/lib/../bin/clang-22: No such file or directory
+```
+
+### Root Cause
+`run_sdf.sh` had hardcoded paths like `/Users/pfeodrippe/dev/jank/...` instead of detecting the jank location.
+
+### Solution
+Added path detection at the top of `run_sdf.sh`:
+```bash
+if [ -d "/Users/pfeodrippe/dev/jank/compiler+runtime" ]; then
+    JANK_SRC="/Users/pfeodrippe/dev/jank/compiler+runtime"
+elif [ -d "$HOME/jank/compiler+runtime" ]; then
+    JANK_SRC="$HOME/jank/compiler+runtime"
+fi
+```
 
 ## Files Modified
-- `bin/run_tests.sh` - Removed unused `flecs_jank_wrapper_native.o` from OBJ_ARGS
+- `bin/run_tests.sh` - Removed unused wrapper
+- `bin/run_sdf.sh` - Removed unused wrapper + dynamic jank path detection
+- `bin/run_integrated.sh` - Removed unused wrapper
 
-## Key Lesson
-Before tracking/building a file, check if it's actually used! The `jank_flecs_*` wrapper functions had zero callers.
+## CI Status: ✅ PASSED
+Both jobs completed successfully:
+- Build Clang - macOS: success (cached)
+- Build and Test - macOS: success
 
-## Commands to Commit
-```bash
-git add bin/run_tests.sh
-git commit -m "Fix CI: Remove unused flecs_jank_wrapper_native.o"
-git push
-```
+## Key Lessons
+1. Before tracking/building a file, check if it's actually used
+2. Use path detection logic to support both local dev and CI environments
+3. The flecs submodule already has `distr/flecs.c` and `distr/flecs.h` - no need to track separately

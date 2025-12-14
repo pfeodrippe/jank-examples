@@ -115,12 +115,82 @@ jobs:
           if-no-files-found: error
 
   # ============================================================================
-  # Linux Pipeline - DISABLED FOR NOW (focus on macOS first)
+  # Linux Pipeline (runs in parallel with macOS)
   # ============================================================================
-  # TODO: Re-enable when macOS pipeline is stable
-  # build-clang-linux:
-  #   name: Build Clang - Linux
-  #   ...
-  # build-linux:
-  #   name: Build and Test - Linux
-  #   ...
+  build-clang-linux:
+    name: Build Clang - Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - name: Clone jank
+        run: |
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install apt deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git build-essential libssl-dev pkg-config ninja-build cmake zlib1g-dev libffi-dev
+
+      - name: Cache Clang/LLVM
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-linux-x64-${{ env.JANK_REF }}-v1
+
+      - name: Build Clang/LLVM
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          cd ~/jank/compiler+runtime
+          ./bin/build-clang
+          ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
+
+  build-linux:
+    name: Build and Test - Linux
+    needs: build-clang-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Clone jank
+        run: |
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install apt deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git build-essential libssl-dev libdouble-conversion-dev \
+            pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
+            doctest-dev libgc-dev ccache patchelf
+          # SDL3 and Vulkan deps
+          sudo apt-get install -y libsdl2-dev libvulkan-dev glslang-tools libshaderc-dev
+
+      - name: Restore Clang/LLVM cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-linux-x64-${{ env.JANK_REF }}-v1
+
+      - name: Build jank
+        run: |
+          export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
+          export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
+          cd ~/jank/compiler+runtime
+          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
+          ./bin/compile
+          echo "jank build complete"
+          ~/jank/compiler+runtime/build/jank check-health
+
+      - name: Set up environment
+        run: |
+          echo "$HOME/jank/compiler+runtime/build" >> $GITHUB_PATH
+
+      - name: Run tests
+        run: |
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make test
