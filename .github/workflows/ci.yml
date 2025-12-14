@@ -18,10 +18,27 @@ concurrency:
 
 jobs:
   # ============================================================================
+  # Get jank commit hash for caching
+  # ============================================================================
+  get-jank-commit:
+    name: Get jank commit hash
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.get-commit.outputs.commit }}
+    steps:
+      - name: Get jank commit hash
+        id: get-commit
+        run: |
+          COMMIT=$(git ls-remote https://github.com/${{ env.JANK_REPO }}.git refs/heads/${{ env.JANK_REF }} | cut -f1)
+          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          echo "jank commit: $COMMIT"
+
+  # ============================================================================
   # macOS Pipeline (runs in parallel with Linux)
   # ============================================================================
-  build-clang-macos:
-    name: Build Clang - macOS
+  build-jank-macos:
+    name: Build jank - macOS
+    needs: get-jank-commit
     runs-on: macos-14
     timeout-minutes: 200
     steps:
@@ -31,8 +48,9 @@ jobs:
 
       - name: Install Homebrew deps
         run: |
-          brew install git pkg-config ninja python cmake zlib
+          brew install git pkg-config ninja python cmake zlib double-conversion boost openssl doctest
 
+      # Cache 1: Clang/LLVM (rarely changes, keyed by branch)
       - name: Cache Clang/LLVM
         id: cache-clang
         uses: actions/cache@v4
@@ -48,9 +66,36 @@ jobs:
           ./bin/build-clang
           ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
 
+      # Cache 2: jank build (keyed by commit hash)
+      - name: Cache jank build
+        id: cache-jank
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/CMakeCache.txt
+            ~/jank/compiler+runtime/build/CMakeFiles
+            ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.ninja
+            ~/jank/compiler+runtime/build/lib
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}
+
+      - name: Build jank
+        if: steps.cache-jank.outputs.cache-hit != 'true'
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
+          export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
+          cd ~/jank/compiler+runtime
+          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
+          ./bin/compile
+          echo "jank build complete"
+          ~/jank/compiler+runtime/build/jank check-health
+
   build-macos:
     name: Build and Test - macOS
-    needs: build-clang-macos
+    needs: [get-jank-commit, build-jank-macos]
     runs-on: macos-14
     timeout-minutes: 60
     steps:
@@ -64,7 +109,7 @@ jobs:
           git submodule update --init --recursive
           ls -la vendor/JoltPhysics/CMakeLists.txt || echo "WARNING: JoltPhysics not properly cloned"
 
-      - name: Clone jank
+      - name: Clone jank (for source files)
         run: |
           git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
 
@@ -79,16 +124,20 @@ jobs:
           path: ~/jank/compiler+runtime/build/llvm-install
           key: clang-macos-arm64-${{ env.JANK_REF }}-v1
 
-      - name: Build jank
+      - name: Restore jank build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/CMakeCache.txt
+            ~/jank/compiler+runtime/build/CMakeFiles
+            ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.ninja
+            ~/jank/compiler+runtime/build/lib
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}
+
+      - name: Verify jank
         run: |
-          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-          export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
-          export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
-          cd ~/jank/compiler+runtime
-          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
-            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
-          ./bin/compile
-          echo "jank build complete"
           ~/jank/compiler+runtime/build/jank check-health
 
       - name: Set up environment
@@ -117,8 +166,9 @@ jobs:
   # ============================================================================
   # Linux Pipeline (runs in parallel with macOS)
   # ============================================================================
-  build-clang-linux:
-    name: Build Clang - Linux
+  build-jank-linux:
+    name: Build jank - Linux
+    needs: get-jank-commit
     runs-on: ubuntu-24.04
     timeout-minutes: 200
     steps:
@@ -129,8 +179,11 @@ jobs:
       - name: Install apt deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git build-essential libssl-dev pkg-config ninja-build cmake zlib1g-dev libffi-dev
+          sudo apt-get install -y curl git build-essential libssl-dev libdouble-conversion-dev \
+            pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
+            doctest-dev libgc-dev
 
+      # Cache 1: Clang/LLVM (rarely changes, keyed by branch)
       - name: Cache Clang/LLVM
         id: cache-clang
         uses: actions/cache@v4
@@ -145,9 +198,35 @@ jobs:
           ./bin/build-clang
           ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
 
+      # Cache 2: jank build (keyed by commit hash)
+      - name: Cache jank build
+        id: cache-jank
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/CMakeCache.txt
+            ~/jank/compiler+runtime/build/CMakeFiles
+            ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.ninja
+            ~/jank/compiler+runtime/build/lib
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}
+
+      - name: Build jank
+        if: steps.cache-jank.outputs.cache-hit != 'true'
+        run: |
+          export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
+          export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
+          cd ~/jank/compiler+runtime
+          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
+            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
+          ./bin/compile
+          echo "jank build complete"
+          ~/jank/compiler+runtime/build/jank check-health
+
   build-linux:
     name: Build and Test - Linux
-    needs: build-clang-linux
+    needs: [get-jank-commit, build-jank-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -156,7 +235,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Clone jank
+      - name: Clone jank (for source files)
         run: |
           git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
 
@@ -175,15 +254,20 @@ jobs:
           path: ~/jank/compiler+runtime/build/llvm-install
           key: clang-linux-x64-${{ env.JANK_REF }}-v1
 
-      - name: Build jank
+      - name: Restore jank build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/CMakeCache.txt
+            ~/jank/compiler+runtime/build/CMakeFiles
+            ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.ninja
+            ~/jank/compiler+runtime/build/lib
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}
+
+      - name: Verify jank
         run: |
-          export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
-          export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
-          cd ~/jank/compiler+runtime
-          ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
-            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
-          ./bin/compile
-          echo "jank build complete"
           ~/jank/compiler+runtime/build/jank check-health
 
       - name: Set up environment
