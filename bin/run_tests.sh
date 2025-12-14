@@ -52,7 +52,6 @@ fi
 # Tests only need Flecs - no raylib, imgui, or jolt required
 OBJ_ARGS=""
 OBJ_ARGS="$OBJ_ARGS --obj vendor/flecs/distr/flecs.o"
-OBJ_ARGS="$OBJ_ARGS --obj vendor/flecs/distr/flecs_jank_wrapper_native.o"
 OBJ_ARGS="$OBJ_ARGS --obj vendor/vybe/vybe_flecs_jank.o"
 
 # Build jank arguments - minimal deps for tests

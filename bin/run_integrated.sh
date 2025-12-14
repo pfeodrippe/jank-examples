@@ -91,7 +91,6 @@ done
 
 # Add Flecs object files
 OBJ_ARGS="$OBJ_ARGS --obj vendor/flecs/distr/flecs.o"
-OBJ_ARGS="$OBJ_ARGS --obj vendor/flecs/distr/flecs_jank_wrapper_native.o"
 OBJ_ARGS="$OBJ_ARGS --obj vendor/vybe/vybe_flecs_jank.o"
 
 # Build jank arguments array

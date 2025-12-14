@@ -667,7 +667,6 @@ OBJ_FILES=(
     vulkan/imgui/imgui_impl_vulkan.o
     vulkan/stb_impl.o
     vendor/flecs/distr/flecs.o
-    vendor/flecs/distr/flecs_jank_wrapper_native.o
     vendor/vybe/vybe_flecs_jank.o
 )
 

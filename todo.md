@@ -1,5 +1,8 @@
 - [x] standalone sdf script
 - [ ] remove more stuff from sdf_engine.hpp
+  - [ ] dispatch-compute!
+    - [ ] (vk/vkCmdBindPipeline vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE (sdfx/get_compute_pipeline))
+  - [ ] macro to set multiple fields using map
 - [ ] sdf
   - [ ] sdf to obj in runtime
 - [ ] linux
@@ -15,3 +18,8 @@
 - [ ] ios sample
   - townscaper-like
 - [ ] how can we eliminate jit at all when not needed?
+
+
+# Jank
+
+- [ ] void as nil
