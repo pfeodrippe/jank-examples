@@ -32,52 +32,52 @@
   (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
         vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
         barrier (cpp/VkImageMemoryBarrier.)]
-    (cpp/= (cpp/.-sType barrier) vk/VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
-    (cpp/= (cpp/.-oldLayout barrier) vk/VK_IMAGE_LAYOUT_UNDEFINED)
-    (cpp/= (cpp/.-newLayout barrier) vk/VK_IMAGE_LAYOUT_GENERAL)
-    (cpp/= (cpp/.-srcQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
-    (cpp/= (cpp/.-dstQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
-    (cpp/= (cpp/.-image barrier) vk-image)
-    (cpp/= (cpp/.-aspectMask (cpp/.-subresourceRange barrier)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
-    (cpp/= (cpp/.-baseMipLevel (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-levelCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
-    (cpp/= (cpp/.-baseArrayLayer (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-layerCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
-    (cpp/= (cpp/.-srcAccessMask barrier) (cpp/VkAccessFlags. 0))
-    (cpp/= (cpp/.-dstAccessMask barrier) (cpp/VkAccessFlags. vk/VK_ACCESS_SHADER_WRITE_BIT))
+    (u/merge* barrier {:sType vk/VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+                       :oldLayout vk/VK_IMAGE_LAYOUT_UNDEFINED
+                       :newLayout vk/VK_IMAGE_LAYOUT_GENERAL
+                       :srcQueueFamilyIndex vk/VK_QUEUE_FAMILY_IGNORED
+                       :dstQueueFamilyIndex vk/VK_QUEUE_FAMILY_IGNORED
+                       :image vk-image
+                       :subresourceRange.aspectMask (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT)
+                       :subresourceRange.baseMipLevel (cpp/uint32_t 0)
+                       :subresourceRange.levelCount (cpp/uint32_t 1)
+                       :subresourceRange.baseArrayLayer (cpp/uint32_t 0)
+                       :subresourceRange.layerCount (cpp/uint32_t 1)
+                       :srcAccessMask (cpp/VkAccessFlags. 0)
+                       :dstAccessMask (cpp/VkAccessFlags. vk/VK_ACCESS_SHADER_WRITE_BIT)})
     (vk/vkCmdPipelineBarrier vk-cmd
                              vk/VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
                              vk/VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
                              (cpp/VkDependencyFlags. 0)
-                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkMemoryBarrier const*") cpp/nullptr)
-                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkBufferMemoryBarrier const*") cpp/nullptr)
-                             (cpp/uint32_t. 1) (cpp/& barrier))))
+                             (cpp/uint32_t 0) (cpp/cast (cpp/type "VkMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t 0) (cpp/cast (cpp/type "VkBufferMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t 1) (cpp/& barrier))))
 
 (defn barrier-to-transfer-src! "Pipeline barrier: GENERAL -> TRANSFER_SRC (after compute, for copy)"
   [cmd image]
   (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
         vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
         barrier (cpp/VkImageMemoryBarrier.)]
-    (cpp/= (cpp/.-sType barrier) vk/VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
-    (cpp/= (cpp/.-oldLayout barrier) vk/VK_IMAGE_LAYOUT_GENERAL)
-    (cpp/= (cpp/.-newLayout barrier) vk/VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-    (cpp/= (cpp/.-srcQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
-    (cpp/= (cpp/.-dstQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
-    (cpp/= (cpp/.-image barrier) vk-image)
-    (cpp/= (cpp/.-aspectMask (cpp/.-subresourceRange barrier)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
-    (cpp/= (cpp/.-baseMipLevel (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-levelCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
-    (cpp/= (cpp/.-baseArrayLayer (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-layerCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
-    (cpp/= (cpp/.-srcAccessMask barrier) (cpp/VkAccessFlags. vk/VK_ACCESS_SHADER_WRITE_BIT))
-    (cpp/= (cpp/.-dstAccessMask barrier) (cpp/VkAccessFlags. vk/VK_ACCESS_TRANSFER_READ_BIT))
+    (u/merge* barrier {:sType vk/VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER
+                       :oldLayout vk/VK_IMAGE_LAYOUT_GENERAL
+                       :newLayout vk/VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                       :srcQueueFamilyIndex vk/VK_QUEUE_FAMILY_IGNORED
+                       :dstQueueFamilyIndex vk/VK_QUEUE_FAMILY_IGNORED
+                       :image vk-image
+                       :subresourceRange.aspectMask (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT)
+                       :subresourceRange.baseMipLevel (cpp/uint32_t 0)
+                       :subresourceRange.levelCount (cpp/uint32_t 1)
+                       :subresourceRange.baseArrayLayer (cpp/uint32_t 0)
+                       :subresourceRange.layerCount (cpp/uint32_t 1)
+                       :srcAccessMask (cpp/VkAccessFlags. vk/VK_ACCESS_SHADER_WRITE_BIT)
+                       :dstAccessMask (cpp/VkAccessFlags. vk/VK_ACCESS_TRANSFER_READ_BIT)})
     (vk/vkCmdPipelineBarrier vk-cmd
                              vk/VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
                              vk/VK_PIPELINE_STAGE_TRANSFER_BIT
                              (cpp/VkDependencyFlags. 0)
-                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkMemoryBarrier const*") cpp/nullptr)
-                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkBufferMemoryBarrier const*") cpp/nullptr)
-                             (cpp/uint32_t. 1) (cpp/& barrier))))
+                             (cpp/uint32_t 0) (cpp/cast (cpp/type "VkMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t 0) (cpp/cast (cpp/type "VkBufferMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t 1) (cpp/& barrier))))
 
 (defn dispatch-compute! [cmd]
   (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
@@ -88,12 +88,12 @@
     (vk/vkCmdBindPipeline vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE (sdfx/get_compute_pipeline))
     (vk/vkCmdBindDescriptorSets vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE
                                 (sdfx/get_compute_pipeline_layout)
-                                (cpp/uint32_t. 0) (cpp/uint32_t. 1) desc-ptr
-                                (cpp/uint32_t. 0) (cpp/cast (cpp/type "uint32_t const*") cpp/nullptr))
+                                (cpp/uint32_t 0) (cpp/uint32_t 1) desc-ptr
+                                (cpp/uint32_t 0) (cpp/cast (cpp/type "uint32_t const*") cpp/nullptr))
     (vk/vkCmdDispatch vk-cmd
-                      (cpp/uint32_t. (/ (+ width 15) 16))
-                      (cpp/uint32_t. (/ (+ height 15) 16))
-                      (cpp/uint32_t. 1))))
+                      (cpp/uint32_t (/ (+ width 15) 16))
+                      (cpp/uint32_t (/ (+ height 15) 16))
+                      (cpp/uint32_t 1))))
 
 (defn create-staging-buffer [size]
   (let [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]
@@ -106,19 +106,19 @@
         vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
         vk-buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
         region (cpp/VkBufferImageCopy.)]
-    (cpp/= (cpp/.-bufferOffset region) (cpp/VkDeviceSize. 0))
-    (cpp/= (cpp/.-bufferRowLength region) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-bufferImageHeight region) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-aspectMask (cpp/.-imageSubresource region)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
-    (cpp/= (cpp/.-mipLevel (cpp/.-imageSubresource region)) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-baseArrayLayer (cpp/.-imageSubresource region)) (cpp/uint32_t. 0))
-    (cpp/= (cpp/.-layerCount (cpp/.-imageSubresource region)) (cpp/uint32_t. 1))
-    (cpp/= (cpp/.-x (cpp/.-imageOffset region)) (cpp/int32_t. 0))
-    (cpp/= (cpp/.-y (cpp/.-imageOffset region)) (cpp/int32_t. 0))
-    (cpp/= (cpp/.-z (cpp/.-imageOffset region)) (cpp/int32_t. 0))
-    (cpp/= (cpp/.-width (cpp/.-imageExtent region)) (cpp/uint32_t. width))
-    (cpp/= (cpp/.-height (cpp/.-imageExtent region)) (cpp/uint32_t. height))
-    (cpp/= (cpp/.-depth (cpp/.-imageExtent region)) (cpp/uint32_t. 1))
+    (u/merge* region {:bufferOffset (cpp/VkDeviceSize. 0)
+                      :bufferRowLength (cpp/uint32_t. 0)
+                      :bufferImageHeight (cpp/uint32_t. 0)
+                      :imageSubresource.aspectMask (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT)
+                      :imageSubresource.mipLevel (cpp/uint32_t. 0)
+                      :imageSubresource.baseArrayLayer (cpp/uint32_t. 0)
+                      :imageSubresource.layerCount (cpp/uint32_t. 1)
+                      :imageOffset.x (cpp/int32_t. 0)
+                      :imageOffset.y (cpp/int32_t. 0)
+                      :imageOffset.z (cpp/int32_t. 0)
+                      :imageExtent.width (cpp/uint32_t. width)
+                      :imageExtent.height (cpp/uint32_t. height)
+                      :imageExtent.depth (cpp/uint32_t. 1)})
     (vk/vkCmdCopyImageToBuffer vk-cmd vk-image
                                vk/VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
                                vk-buffer (cpp/uint32_t. 1) (cpp/& region))))
@@ -138,9 +138,9 @@
 (defn write-png-downsampled [filepath pixels width height scale]
   (sdfx/write_png_downsampled filepath
                               (cpp/unbox (cpp/type "void*") pixels)
-                              (cpp/uint32_t. width)
-                              (cpp/uint32_t. height)
-                              (cpp/uint32_t. scale)))
+                              (cpp/uint32_t width)
+                              (cpp/uint32_t height)
+                              (cpp/uint32_t scale)))
 
 (defn save-screenshot!
   "Capture current frame and save to PNG file."

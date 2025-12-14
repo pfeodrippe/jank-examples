@@ -112,6 +112,41 @@
                  %)
               tail)))
 
+;; (cpp/= (cpp/.-image barrier) vk-image)
+;; (cpp/= (cpp/.-aspectMask (cpp/.-subresourceRange barrier)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
+
+(defn- split-by-dot
+  "Split a string by dots, returns vector of parts."
+  [s]
+  (loop [remaining s
+         result []]
+    (let [idx (str/index-of remaining ".")]
+      (if idx
+        (recur (subs remaining (inc idx))
+               (conj result (subs remaining 0 idx)))
+        (conj result remaining)))))
+
+(defmacro merge*
+  "Merges a map of field assignments into a C++ struct.
+   Keys with dots expand to nested field access.
+
+   Example:
+     (merge* barrier {:image vk-image
+                      :subresourceRange.aspectMask (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT)})
+   Expands to:
+     (do
+       (cpp/= (->* barrier .-image) vk-image)
+       (cpp/= (->* barrier .-subresourceRange .-aspectMask) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT)))"
+  [struct m]
+  (let [assignments (for [[k v] m]
+                      (let [;; Split key by dots: :subresourceRange.aspectMask -> ["subresourceRange" "aspectMask"]
+                            parts (split-by-dot (name k))
+                            ;; Convert to .-field symbols
+                            field-syms (map #(symbol (str ".-" %)) parts)]
+                        ;; Generate (cpp/= (->* struct .-field1 .-field2 ...) value)
+                        `(cpp/= (->* ~struct ~@field-syms) ~v)))]
+    `(do ~@assignments)))
+
 ;; =============================================================================
 ;; defn* macro - for functions that return native C++ types
 ;; =============================================================================

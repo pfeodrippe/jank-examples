@@ -618,24 +618,30 @@ if [ ! -f vulkan/imgui/imgui.o ]; then
 fi
 
 # Compile blit shaders if needed
-# Use platform-specific glslang compiler
+# Use platform-specific shader compiler (glslangValidator or glslc from shaderc)
+GLSLC=""
+GLSLC_FLAGS=""
 if command -v glslangValidator &> /dev/null; then
     GLSLC=glslangValidator
+    GLSLC_FLAGS="-V"  # glslangValidator needs -V for SPIR-V output
 elif command -v glslangValidator4 &> /dev/null; then
     GLSLC=glslangValidator4
+    GLSLC_FLAGS="-V"
+elif command -v glslc &> /dev/null; then
+    GLSLC=glslc
+    GLSLC_FLAGS=""  # glslc auto-detects from file extension
 else
-    echo "Warning: glslangValidator not found, skipping shader compilation"
-    GLSLC=""
+    echo "Warning: No GLSL compiler found (glslangValidator or glslc), skipping shader compilation"
 fi
 
 if [ -n "$GLSLC" ]; then
     if [ ! -f vulkan_kim/blit.vert.spv ] || [ vulkan_kim/blit.vert -nt vulkan_kim/blit.vert.spv ]; then
-        echo "Compiling blit.vert..."
-        $GLSLC -V vulkan_kim/blit.vert -o vulkan_kim/blit.vert.spv
+        echo "Compiling blit.vert with $GLSLC..."
+        $GLSLC $GLSLC_FLAGS vulkan_kim/blit.vert -o vulkan_kim/blit.vert.spv
     fi
     if [ ! -f vulkan_kim/blit.frag.spv ] || [ vulkan_kim/blit.frag -nt vulkan_kim/blit.frag.spv ]; then
-        echo "Compiling blit.frag..."
-        $GLSLC -V vulkan_kim/blit.frag -o vulkan_kim/blit.frag.spv
+        echo "Compiling blit.frag with $GLSLC..."
+        $GLSLC $GLSLC_FLAGS vulkan_kim/blit.frag -o vulkan_kim/blit.frag.spv
     fi
 fi
 
