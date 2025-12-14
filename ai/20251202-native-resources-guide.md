@@ -333,26 +333,41 @@ When you need mutable C++ primitives that **persist across REPL evaluations** (e
 
 ### Void Return Handling
 
-For side-effect-only calls, you can often just call them sequentially in a function body:
+For side-effect-only calls, just call them sequentially in a function body - no need for `_` bindings:
 
 ```clojure
-;; SIMPLE: Just call sequentially for pure side effects
+;; GOOD: Just call sequentially for pure side effects
 (defn do-stuff! []
   (cpp/some_void_function arg1 arg2)
   (cpp/++ counter)
   (cpp/delete ptr)
   nil)
 
-;; WHEN let* IS NEEDED: When you need intermediate values
-(let* [foo (cpp/jank.some.foo.)   ;; Need foo for later
-       _ (cpp/++ foo)              ;; Side effect on foo
-       result (cpp/.-a foo)]       ;; Get value from foo
-  result)
+;; GOOD: Simple function - side effects in body
+(let [foo (cpp/jank.some.foo.)]
+  (cpp/++ foo)                    ;; Side effect - no binding needed
+  (cpp/.-a foo))                  ;; Return value
+
+;; GOOD: Complex function with sequential deps - use _ (do ...) to group
+(let [cmd (alloc-cmd-buffer)
+      _ (do (begin-cmd-buffer! cmd)
+            (barrier-to-general! cmd image)
+            (dispatch-compute! cmd))
+      staging (create-staging-buffer size)]
+  ...)
+
+;; BAD: Don't use let* with multiple _ bindings
+(let* [cmd (alloc-cmd-buffer)
+       _ (begin-cmd-buffer! cmd)
+       _ (barrier-to-general! cmd image)
+       _ (dispatch-compute! cmd)]
+  ...)
 ```
 
-**When to use `let*` with `_`:**
-- When you need to capture an intermediate value and also call side-effect functions
-- When mixing value bindings with void-returning operations
+**Style guidelines:**
+- Use `let` instead of `let*` - jank's `let` evaluates bindings sequentially
+- Simple functions: call side-effects directly in the body
+- Complex functions with sequential deps: use `_ (do ...)` to group side-effects
 
 ### Opaque Box: Wrapping C++ Pointers
 
@@ -899,6 +914,7 @@ rl/MOUSE_BUTTON_LEFT   ; Mouse button (0)
 | **Typedef pointer output params** | `cpp/new cpp/VkBuffer` creates VkBuffer** not VkBuffer* | Return struct from C++ |
 | **Enum/flag function params** | Values get boxed, cpp/unbox only works for pointers | Keep enum ops in C++, or use macros |
 | **void* to typed pointer cast** | cpp/cast doesn't work for void* source | Keep cast in C++ helper |
+| **Large loops (>10k iterations)** | GC corruption with native type operations | Keep loop in C++ helper function |
 
 **Note:** C-style variadic functions (like `printf`, `ImGui::Text`) **DO work** - see next section.
 
@@ -1173,6 +1189,87 @@ When converting C++ code to jank, these patterns are essential:
 (cpp/raw "{ ImGuiIO& io = ImGui::GetIO(); int c = GetCharPressed(); while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); } }")
 ```
 
+### 2b. ⚠️ CRITICAL: Large Loops (>10k iterations) Corrupt GC
+
+jank's GC **cannot handle large loops** (~10k+ iterations) with native type operations. Each iteration creates GC-managed objects for array indices, intermediate calculations, and loop variables. At high iteration counts, this corrupts the garbage collector:
+
+```
+EXC_BAD_ACCESS in GC_generic_malloc_many
+EXC_BAD_ACCESS in GC_clear_fl_marks
+```
+
+**Example: Pixel processing (230k iterations)**
+
+```clojure
+;; CRASHES: 640×360 = 230,400 iterations corrupts GC
+(dotimes [y out-h]
+  (dotimes [x out-w]
+    (let* [src-idx (cpp/size_t. (* (+ (* y width) x) 4))
+           dst-idx (cpp/size_t. (* (+ (* y out-w) x) 3))]
+      (cpp/= (cpp/aget rgb dst-idx) (cpp/aget src src-idx))
+      ...)))
+
+;; ALSO CRASHES: loop/recur has same problem
+(loop [i (cpp/size_t. 0)]
+  (when (< i total-pixels)
+    ;; pixel operations...
+    (recur (cpp/+ i (cpp/size_t. 1)))))
+```
+
+**Solution: Keep performance-critical loops in C++ header files**
+
+```cpp
+// In your .hpp file - not cpp/raw!
+inline int write_png_downsampled(const char* filepath, const void* pixelsVoid,
+                                  uint32_t width, uint32_t height, uint32_t scale) {
+    const uint8_t* pixels = static_cast<const uint8_t*>(pixelsVoid);
+    uint32_t out_w = width / scale;
+    uint32_t out_h = height / scale;
+    uint8_t* rgb = new uint8_t[out_w * out_h * 3];
+
+    for (uint32_t y = 0; y < out_h; y++) {
+        for (uint32_t x = 0; x < out_w; x++) {
+            // pixel copy logic - ~230k iterations is fine in C++
+        }
+    }
+
+    int result = stbi_write_png(filepath, out_w, out_h, 3, rgb, out_w * 3);
+    delete[] rgb;
+    return result;
+}
+```
+
+```clojure
+;; Call from jank - everything else can be jank!
+(defn write-png-downsampled [filepath pixels width height scale]
+  (sdfx/write_png_downsampled filepath
+                              (cpp/unbox (cpp/type "void*") pixels)
+                              (cpp/uint32_t. width)
+                              (cpp/uint32_t. height)
+                              (cpp/uint32_t. scale)))
+```
+
+**⚠️ WARNING: cpp/raw helpers also cause GC corruption!**
+
+Even moving the loop to a `cpp/raw` inline function causes GC corruption after the function returns:
+
+```clojure
+;; STILL CRASHES later with GC corruption!
+(cpp/raw "
+inline void downsample_pixels(uint8_t* rgb, const uint8_t* src, ...) {
+    for (...) { ... }  // Loop itself works
+}
+")
+(cpp/downsample_pixels ...)  ;; GC corrupts AFTER this returns
+```
+
+**The ONLY reliable solution:** Keep loops in header files that are included via `:require`, not in `cpp/raw` blocks.
+
+**Safe iteration counts:**
+- < 1,000 iterations: Generally safe
+- 1,000 - 10,000: May work, test thoroughly
+- > 10,000 iterations: Use C++ helper in header file
+
 ### 3. Array Indexing with `->*`
 
 ```clojure
@@ -1277,6 +1374,7 @@ Use two imports for namespaced C++ with constants:
 - Callbacks
 - **Enum/flag operations passed through jank functions** (values get boxed)
 - **void* to typed pointer casts** (cpp/cast doesn't work)
+- **Large loops (>10k iterations)** - GC corruption; use C++ helper in header file (NOT cpp/raw!)
 
 ### Key Patterns for Vulkan/Graphics APIs:
 1. **Boxing handles:** `(cpp/box (sdfx/get_handle))`
@@ -1294,3 +1392,4 @@ Use two imports for namespaced C++ with constants:
 6. Output parameter support → Handle APIs with out params
 7. **cpp/unbox for value types** → Enable unboxing enums/ints
 8. **cpp/cast from void*** → Enable void* to typed pointer casts
+9. **GC optimization for native loops** → Enable large loops without corruption

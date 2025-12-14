@@ -3,8 +3,9 @@
   - [x] dispatch-compute!
     - [x] (vk/vkCmdBindPipeline vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE (sdfx/get_compute_pipeline))
   - [x] copy-image-to-buffer!
-  - [ ] write-png-downsampled
-    - [ ] gc-issue
+  - [-] write-png-downsampled
+    - [-] gc-issue
+      - unable to fix it, see ai/20251214-jank-gc-large-loops.md
   - [ ] macro to set multiple fields using map
 - [ ] sdf
   - [ ] sdf to obj in runtime

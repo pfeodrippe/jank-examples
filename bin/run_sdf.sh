@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 # Parse arguments
 STANDALONE=false
 OUTPUT_NAME="sdf-viewer"
+USE_LLDB=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --standalone)
@@ -16,9 +17,13 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_NAME="$2"
             shift 2
             ;;
+        --lldb)
+            USE_LLDB=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--standalone] [-o|--output <name>]"
+            echo "Usage: $0 [--standalone] [-o|--output <name>] [--lldb]"
             exit 1
             ;;
     esac
@@ -800,5 +805,9 @@ else
     for lib in "${DYLIBS[@]}"; do
         JANK_ARGS+=(--lib "$lib")
     done
-    jank "${JANK_ARGS[@]}" run-main vybe.sdf -main
+    if [ "$USE_LLDB" = true ]; then
+        lldb -b -o "run" -k "bt" -k "quit" -- jank "${JANK_ARGS[@]}" run-main vybe.sdf -main
+    else
+        jank "${JANK_ARGS[@]}" run-main vybe.sdf -main
+    fi
 fi

@@ -19,21 +19,65 @@
   (sdfx/submit_screenshot_cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
 
 (defn begin-cmd-buffer! [cmd]
-  (let* [info (cpp/VkCommandBufferBeginInfo.)
-         _ (cpp/= (cpp/.-sType info) vk/VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
-         _ (cpp/= (cpp/.-flags info) (cpp/VkCommandBufferUsageFlags. vk/VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))]
+  (let [info (cpp/VkCommandBufferBeginInfo.)]
+    (cpp/= (cpp/.-sType info) vk/VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
+    (cpp/= (cpp/.-flags info) (cpp/VkCommandBufferUsageFlags. vk/VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
     (vk/vkBeginCommandBuffer (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd) (cpp/& info))))
 
 (defn end-cmd-buffer! [cmd]
   (vk/vkEndCommandBuffer (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)))
 
-(defn barrier-to-general! [cmd image]
-  (sdfx/barrier_to_general (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
-                           (cpp/unbox (cpp/type "struct VkImage_T*") image)))
+(defn barrier-to-general! "Pipeline barrier: UNDEFINED -> GENERAL (for compute write)"
+  [cmd image]
+  (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+        vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
+        barrier (cpp/VkImageMemoryBarrier.)]
+    (cpp/= (cpp/.-sType barrier) vk/VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+    (cpp/= (cpp/.-oldLayout barrier) vk/VK_IMAGE_LAYOUT_UNDEFINED)
+    (cpp/= (cpp/.-newLayout barrier) vk/VK_IMAGE_LAYOUT_GENERAL)
+    (cpp/= (cpp/.-srcQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
+    (cpp/= (cpp/.-dstQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
+    (cpp/= (cpp/.-image barrier) vk-image)
+    (cpp/= (cpp/.-aspectMask (cpp/.-subresourceRange barrier)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
+    (cpp/= (cpp/.-baseMipLevel (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-levelCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
+    (cpp/= (cpp/.-baseArrayLayer (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-layerCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
+    (cpp/= (cpp/.-srcAccessMask barrier) (cpp/VkAccessFlags. 0))
+    (cpp/= (cpp/.-dstAccessMask barrier) (cpp/VkAccessFlags. vk/VK_ACCESS_SHADER_WRITE_BIT))
+    (vk/vkCmdPipelineBarrier vk-cmd
+                             vk/VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                             vk/VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                             (cpp/VkDependencyFlags. 0)
+                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkBufferMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t. 1) (cpp/& barrier))))
 
-(defn barrier-to-transfer-src! [cmd image]
-  (sdfx/barrier_to_transfer_src (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
-                                (cpp/unbox (cpp/type "struct VkImage_T*") image)))
+(defn barrier-to-transfer-src! "Pipeline barrier: GENERAL -> TRANSFER_SRC (after compute, for copy)"
+  [cmd image]
+  (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+        vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
+        barrier (cpp/VkImageMemoryBarrier.)]
+    (cpp/= (cpp/.-sType barrier) vk/VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+    (cpp/= (cpp/.-oldLayout barrier) vk/VK_IMAGE_LAYOUT_GENERAL)
+    (cpp/= (cpp/.-newLayout barrier) vk/VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+    (cpp/= (cpp/.-srcQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
+    (cpp/= (cpp/.-dstQueueFamilyIndex barrier) vk/VK_QUEUE_FAMILY_IGNORED)
+    (cpp/= (cpp/.-image barrier) vk-image)
+    (cpp/= (cpp/.-aspectMask (cpp/.-subresourceRange barrier)) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT))
+    (cpp/= (cpp/.-baseMipLevel (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-levelCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
+    (cpp/= (cpp/.-baseArrayLayer (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 0))
+    (cpp/= (cpp/.-layerCount (cpp/.-subresourceRange barrier)) (cpp/uint32_t. 1))
+    (cpp/= (cpp/.-srcAccessMask barrier) (cpp/VkAccessFlags. vk/VK_ACCESS_SHADER_WRITE_BIT))
+    (cpp/= (cpp/.-dstAccessMask barrier) (cpp/VkAccessFlags. vk/VK_ACCESS_TRANSFER_READ_BIT))
+    (vk/vkCmdPipelineBarrier vk-cmd
+                             vk/VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                             vk/VK_PIPELINE_STAGE_TRANSFER_BIT
+                             (cpp/VkDependencyFlags. 0)
+                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t. 0) (cpp/cast (cpp/type "VkBufferMemoryBarrier const*") cpp/nullptr)
+                             (cpp/uint32_t. 1) (cpp/& barrier))))
 
 (defn dispatch-compute! [cmd]
   (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
@@ -52,16 +96,16 @@
                       (cpp/uint32_t. 1))))
 
 (defn create-staging-buffer [size]
-  (let* [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]
+  (let [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]
     (when (cpp/.-success result)
       {:buffer (cpp/box (cpp/.-buffer result))
        :memory (cpp/box (cpp/.-memory result))})))
 
 (defn copy-image-to-buffer! [cmd image buffer width height]
-  (let* [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
-         vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
-         vk-buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
-         region (cpp/VkBufferImageCopy.)]
+  (let [vk-cmd (cpp/unbox (cpp/type "struct VkCommandBuffer_T*") cmd)
+        vk-image (cpp/unbox (cpp/type "struct VkImage_T*") image)
+        vk-buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
+        region (cpp/VkBufferImageCopy.)]
     (cpp/= (cpp/.-bufferOffset region) (cpp/VkDeviceSize. 0))
     (cpp/= (cpp/.-bufferRowLength region) (cpp/uint32_t. 0))
     (cpp/= (cpp/.-bufferImageHeight region) (cpp/uint32_t. 0))
@@ -90,37 +134,13 @@
   (sdfx/destroy_screenshot_buffer (cpp/unbox (cpp/type "struct VkBuffer_T*") buffer)
                                   (cpp/unbox (cpp/type "struct VkDeviceMemory_T*") memory)))
 
+;; Use C++ helper for PNG writing (jank GC can't handle 230k loop iterations)
 (defn write-png-downsampled [filepath pixels width height scale]
   (sdfx/write_png_downsampled filepath
                               (cpp/unbox (cpp/type "void*") pixels)
                               (cpp/uint32_t. width)
                               (cpp/uint32_t. height)
                               (cpp/uint32_t. scale)))
-
-#_(defn write-png-downsampled-2 [filepath pixels width height scale]
-  (let* [out-w (/ width scale)
-         out-h (/ height scale)
-         rgb-size (* out-w out-h 3)
-         rgb (cpp/new (cpp/type "uint8_t") rgb-size)
-         src (cpp/cast (cpp/type "const uint8_t*") (cpp/unbox (cpp/type "void*") pixels))]
-    ;; Downsample with vertical flip
-    (loop [y 0]
-      (when (< y out-h)
-        (loop [x 0]
-          (when (< x out-w)
-            (let* [src-y (+ (* (- (- out-h 1) y) scale) (/ scale 2))
-                   src-x (+ (* x scale) (/ scale 2))
-                   src-idx (+ (* src-y width 4) (* src-x 4))
-                   dst-idx (* (+ (* y out-w) x) 3)]
-              (cpp/= (cpp/aget rgb dst-idx) (cpp/aget src src-idx))
-              (cpp/= (cpp/aget rgb (+ dst-idx 1)) (cpp/aget src (+ src-idx 1)))
-              (cpp/= (cpp/aget rgb (+ dst-idx 2)) (cpp/aget src (+ src-idx 2))))
-            (recur (+ x 1))))
-        (recur (+ y 1))))
-    (let [result (stb/stbi_write_png filepath (cpp/int. out-w) (cpp/int. out-h)
-                                     (cpp/int. 3) rgb (cpp/int. (* out-w 3)))]
-      (cpp/delete rgb)
-      result)))
 
 (defn save-screenshot!
   "Capture current frame and save to PNG file."
@@ -129,34 +149,27 @@
     (do
       (println "Screenshot failed - engine not initialized")
       false)
-    (let* [width (sdfx/get_swapchain_width)
-           height (sdfx/get_swapchain_height)
-           image-size (* width height 4)
-           image (cpp/box (sdfx/get_compute_image))
-           ;; Allocate command buffer
-           cmd (alloc-cmd-buffer)
-           _ (begin-cmd-buffer! cmd)
-           ;; Transition image: UNDEFINED -> GENERAL for compute
-           _ (barrier-to-general! cmd image)
-           ;; Dispatch compute shader
-           _ (dispatch-compute! cmd)
-           ;; Transition image: GENERAL -> TRANSFER_SRC
-           _ (barrier-to-transfer-src! cmd image)
-           ;; Create staging buffer
-           staging (create-staging-buffer image-size)
-           buffer (:buffer staging)
-           memory (:memory staging)
-           ;; Copy image to buffer
-           _ (copy-image-to-buffer! cmd image buffer width height)
-           _ (end-cmd-buffer! cmd)
-           _ (submit-and-wait! cmd)
-           ;; Map memory and write PNG
-           pixels (map-memory memory image-size)
-           scale 4
-           result (write-png-downsampled filepath pixels width height scale)
-           _ (unmap-memory! memory)
-           _ (destroy-staging-buffer! buffer memory)
-           _ (free-cmd-buffer! cmd)]
+    (let [width (sdfx/get_swapchain_width)
+          height (sdfx/get_swapchain_height)
+          image-size (* width height 4)
+          image (cpp/box (sdfx/get_compute_image))
+          cmd (alloc-cmd-buffer)
+          _ (do (begin-cmd-buffer! cmd)
+                (barrier-to-general! cmd image)
+                (dispatch-compute! cmd)
+                (barrier-to-transfer-src! cmd image))
+          staging (create-staging-buffer image-size)
+          buffer (:buffer staging)
+          memory (:memory staging)
+          _ (do (copy-image-to-buffer! cmd image buffer width height)
+                (end-cmd-buffer! cmd)
+                (submit-and-wait! cmd))
+          pixels (map-memory memory image-size)
+          scale 4
+          result (write-png-downsampled filepath pixels width height scale)
+          _ (do (unmap-memory! memory)
+                (destroy-staging-buffer! buffer memory)
+                (free-cmd-buffer! cmd))]
       (if (> result 0)
         (do
           (println "Screenshot saved to" filepath (str "(" (/ width scale) "x" (/ height scale) ")"))
