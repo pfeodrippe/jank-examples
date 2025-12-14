@@ -47,15 +47,74 @@ Cleaned up dead C++ code that is no longer needed since event handling is in jan
 
 ---
 
-## Phase 3 Status: IN PROGRESS
+## Phase 3 Status: COMPLETED (Shader Index Management)
 
-Mouse handlers (`handle_mouse_button`, `handle_mouse_motion`) remain in C++ because they contain complex 3D math for gizmo interaction:
-- `raycast_gizmo` - ray-box intersection for axis selection
-- Camera basis vector calculations
-- Projection of mouse movement onto world-space axes
-- Rotation/translation transform calculations
+Moved shader index management from C++ to jank.
 
-These could potentially be moved to jank but would require significant math library support.
+**New C++ APIs added:**
+- `get_shader_count()` - returns number of shaders
+- `get_shader_name_at(idx)` - returns shader name at index
+- `get_current_shader_index()` - returns current shader index
+- `load_shader_at_index(idx)` - loads shader at specific index
+
+**Moved to jank:**
+- `switch-shader!` now does index wrap-around logic in jank, calls `load_shader_at_index`
+
+**Dead code removed:**
+- `switch_shader(int direction)` - logic now in jank
+
+---
+
+## Phase 4 Status: COMPLETED (Shader Auto-Reload)
+
+Moved shader auto-reload check from C++ to jank.
+
+**New C++ APIs added:**
+- `get_shader_dir()` - returns shader directory path
+- `get_file_mod_time(path)` - returns file modification time
+- `get_last_shader_mod_time()` / `set_last_shader_mod_time(t)` - track last shader mod time
+
+**Moved to jank:**
+- `check-shader-reload!` in render.jank - checks if shader file changed and calls `reload_shader`
+- Called from main loop in sdf.jank
+
+**Dead code removed:**
+- `check_shader_reload()` - logic now in jank
+- Removed call from `update_uniforms()`
+
+**Note:** Mouse handlers (`handle_mouse_button`, `handle_mouse_motion`) remain in C++ because they contain complex 3D math for gizmo interaction (raycast_gizmo, camera basis vectors, projection math). These could potentially be moved to jank but would require significant math library support.
+
+---
+
+## Phase 5 Status: COMPLETED (Shader Reload to Jank)
+
+Fully moved shader reload logic to jank by creating a new `shader.jank` namespace to break circular dependencies.
+
+**New namespace created:**
+- `src/vybe/sdf/shader.jank` - centralized shader management
+
+**Functions moved to shader.jank:**
+- `reload-shader!` - reads shader file via C++ `read_text_file`, calls `compile_and_recreate_pipeline`
+- `check-shader-reload!` - checks file modification time and calls `reload-shader!`
+- `switch-shader!` - index management and wrap-around logic
+- All shader getter/setter functions
+
+**C++ functions kept:**
+- `compile_and_recreate_pipeline(glsl_source, shader_name)` - compiles GLSL and recreates Vulkan pipeline
+- `read_text_file(path)` - reads file contents (used instead of jank's buggy `slurp`)
+
+**C++ functions removed:**
+- `reload_shader()` - logic now in shader.jank
+
+**Architecture:**
+```
+All shader operations now go through shader.jank:
+  events.jank -> shader/reload-shader! -> sdfx/read_text_file + sdfx/compile_and_recreate_pipeline
+  sdf.jank    -> shader/check-shader-reload! -> shader/reload-shader!
+  sdf.jank    -> shader/switch-shader! -> sdfx/load_shader_at_index
+```
+
+**Bug workaround:** jank's `slurp` function has a bug with larger files (causes segfault). Used C++ `read_text_file` instead.
 
 ---
 
@@ -293,9 +352,11 @@ inline bool recreate_compute_pipeline_from_spirv(const uint32_t* spirv, size_t s
 ## Success Criteria
 
 After migration:
-- [ ] Event loop runs from jank
-- [ ] Key handling logic in jank
-- [ ] Mouse handling logic in jank (calling C++ raycast helper)
-- [ ] Shader reload orchestration in jank
-- [ ] C++ sdf_engine.hpp significantly smaller
-- [ ] All functionality preserved
+- [x] Event loop runs from jank (poll_events_only + jank dispatch)
+- [x] Key handling logic in jank (handle-key-down! in events.jank)
+- [x] Scroll handling in jank (handle-scroll! in events.jank)
+- [x] Shader switching index management in jank (switch-shader! in render.jank)
+- [x] Shader auto-reload in jank (check-shader-reload! in render.jank)
+- [x] Shader reload logic in jank (reload-shader! in render.jank, with C++ wrapper for events.jank)
+- [ ] Mouse handling logic in jank (currently delegates to C++ for raycast_gizmo)
+- [x] All functionality preserved

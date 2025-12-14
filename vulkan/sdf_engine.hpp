@@ -216,6 +216,9 @@ struct Engine {
     bool resetTransformRequested = false;
     int pendingShaderSwitch = 0;  // 0=none, 1=next, -1=previous (consumed by Jank)
 
+    // Temporary SPIR-V storage for jank-orchestrated pipeline creation
+    std::vector<uint32_t> pendingSpirvData;
+
     // Initialize default scene objects
     void initDefaultScene() {
         objects.clear();
@@ -613,8 +616,6 @@ inline void handle_mouse_motion(float x, float y, float xrel, float yrel) {
 }
 
 // Forward declarations
-inline void reload_shader();
-inline void check_shader_reload();
 inline std::vector<char> read_file(const std::string& filename);
 
 inline void select_object(Engine* e, int id) {
@@ -1591,8 +1592,7 @@ inline void update_uniforms(double dt) {
     auto* e = get_engine();
     if (!e) return;
 
-    // Check for shader file changes
-    check_shader_reload();
+    // Note: shader reload check moved to jank (render/check-shader-reload!)
 
     e->time += static_cast<float>(dt);
 
@@ -1815,25 +1815,29 @@ inline void cleanup() {
     std::cout << "Cleaned up" << std::endl;
 }
 
-inline void reload_shader() {
+// Step 1: Compile GLSL to SPIR-V and store internally
+// Returns: 0 = success, 1 = compile error
+inline int compile_shader_to_internal_spirv(const char* glsl_source, const char* shader_name) {
     auto* e = get_engine();
-    if (!e || !e->initialized) return;
+    if (!e || !e->initialized) return 1;
+
+    auto spirv = compile_glsl_to_spirv(glsl_source, shader_name, shaderc_compute_shader);
+    if (spirv.empty()) {
+        return 1;  // Compile error
+    }
+
+    e->pendingSpirvData = std::move(spirv);
+    return 0;  // Success
+}
+
+// Step 2: Recreate pipeline from internally stored SPIR-V
+// Returns: 0 = success, 2 = pipeline error
+inline int recreate_pipeline_from_internal_spirv() {
+    auto* e = get_engine();
+    if (!e || !e->initialized) return 2;
+    if (e->pendingSpirvData.empty()) return 2;
 
     vkDeviceWaitIdle(e->device);
-
-    // Read GLSL source and compile to SPIR-V in memory (no file writes!)
-    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
-    std::string glslSource = read_text_file(shaderPath);
-    if (glslSource.empty()) {
-        std::cerr << "Failed to read shader source: " << shaderPath << std::endl;
-        return;
-    }
-
-    auto spirv = compile_glsl_to_spirv(glslSource, (e->currentShaderName + ".comp").c_str(), shaderc_compute_shader);
-    if (spirv.empty()) {
-        std::cerr << "Shader compilation failed!" << std::endl;
-        return;
-    }
 
     // Destroy old pipeline and shader module
     vkDestroyPipeline(e->device, e->computePipeline, nullptr);
@@ -1842,12 +1846,11 @@ inline void reload_shader() {
 
     VkShaderModuleCreateInfo shaderModuleInfo{};
     shaderModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderModuleInfo.codeSize = spirv.size() * sizeof(uint32_t);
-    shaderModuleInfo.pCode = spirv.data();
+    shaderModuleInfo.codeSize = e->pendingSpirvData.size() * sizeof(uint32_t);
+    shaderModuleInfo.pCode = e->pendingSpirvData.data();
 
     if (vkCreateShaderModule(e->device, &shaderModuleInfo, nullptr, &e->computeShaderModule) != VK_SUCCESS) {
-        std::cerr << "Shader module creation failed" << std::endl;
-        return;
+        return 2;  // Pipeline error
     }
 
     VkPipelineShaderStageCreateInfo shaderStageInfo{};
@@ -1868,25 +1871,14 @@ inline void reload_shader() {
     pipelineInfo.stage = shaderStageInfo;
     pipelineInfo.layout = e->computePipelineLayout;
 
-    vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &e->computePipeline);
-
-    e->dirty = true;
-    std::cout << "Shader reloaded (in-memory compilation)!" << std::endl;
-}
-
-inline void check_shader_reload() {
-    auto* e = get_engine();
-    if (!e || !e->initialized) return;
-
-    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
-    struct stat st;
-    if (stat(shaderPath.c_str(), &st) == 0) {
-        if (e->lastShaderModTime != 0 && st.st_mtime != e->lastShaderModTime) {
-            std::cout << "Shader file changed, reloading..." << std::endl;
-            reload_shader();
-        }
-        e->lastShaderModTime = st.st_mtime;
+    if (vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &e->computePipeline) != VK_SUCCESS) {
+        return 2;  // Pipeline error
     }
+
+    // Clear stored SPIR-V and mark dirty
+    e->pendingSpirvData.clear();
+    e->dirty = true;
+    return 0;  // Success
 }
 
 inline double get_time() {
@@ -2042,6 +2034,30 @@ inline void load_shader_at_index(int idx) {
         e->currentShaderIndex = idx;
         load_shader_by_name(e->shaderList[idx]);
     }
+}
+
+// Shader reload helpers - allows jank to manage auto-reload
+inline const char* get_shader_dir() {
+    auto* e = get_engine();
+    return e ? e->shaderDir.c_str() : "";
+}
+
+inline int64_t get_file_mod_time(const char* path) {
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return static_cast<int64_t>(st.st_mtime);
+    }
+    return 0;
+}
+
+inline int64_t get_last_shader_mod_time() {
+    auto* e = get_engine();
+    return e ? static_cast<int64_t>(e->lastShaderModTime) : 0;
+}
+
+inline void set_last_shader_mod_time(int64_t t) {
+    auto* e = get_engine();
+    if (e) e->lastShaderModTime = static_cast<time_t>(t);
 }
 
 // Pending shader switch - consumed by Jank main loop

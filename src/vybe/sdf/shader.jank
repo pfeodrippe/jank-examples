@@ -1,0 +1,103 @@
+(ns vybe.sdf.shader
+  (:require
+   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]))
+
+;; =============================================================================
+;; Shader Management - centralized to avoid circular dependencies
+;; =============================================================================
+
+(defn get-shader-dir
+  []
+  (sdfx/get_shader_dir))
+
+(defn get-current-shader-name
+  []
+  (sdfx/get_current_shader_name))
+
+(defn get-shader-count
+  []
+  (sdfx/get_shader_count))
+
+(defn get-shader-name-at
+  [idx]
+  (sdfx/get_shader_name_at (cpp/int. idx)))
+
+(defn get-current-shader-index
+  []
+  (sdfx/get_current_shader_index))
+
+(defn load-shader-at-index!
+  [idx]
+  (sdfx/load_shader_at_index (cpp/int. idx)))
+
+;; Shader reload - orchestration in jank, low-level ops in C++
+(defn reload-shader!
+  "Reload the current shader. Reads GLSL source, compiles to SPIR-V, recreates pipeline.
+   Orchestration is in jank, low-level Vulkan/shaderc operations stay in C++."
+  []
+  (let [shader-dir (str (sdfx/get_shader_dir))
+        shader-name (str (sdfx/get_current_shader_name))
+        shader-path (str shader-dir "/" shader-name ".comp")
+        glsl-source (str (sdfx/read_text_file shader-path))]
+    (if (empty? glsl-source)
+      (println "Failed to read shader source:" shader-path)
+      ;; Step 1: Compile GLSL to SPIR-V (stored internally in C++)
+      (let [compile-result (sdfx/compile_shader_to_internal_spirv glsl-source (str shader-name ".comp"))]
+        (if (not= compile-result 0)
+          (println "Shader compilation failed!")
+          ;; Step 2: Recreate Vulkan pipeline from stored SPIR-V
+          (let [pipeline-result (sdfx/recreate_pipeline_from_internal_spirv)]
+            (if (= pipeline-result 0)
+              (println "Shader reloaded!")
+              (println "Pipeline creation failed!"))))))))
+
+;; Shader switching - index management in jank
+(defn switch-shader!
+  "Switch shader by direction (-1 = previous, 1 = next). Index management in jank."
+  [direction]
+  (let [count (get-shader-count)
+        current-idx (get-current-shader-index)
+        new-idx (+ current-idx direction)
+        ;; Wrap around
+        wrapped-idx (cond
+                      (< new-idx 0) (- count 1)
+                      (>= new-idx count) 0
+                      :else new-idx)]
+    (when (> count 0)
+      (load-shader-at-index! wrapped-idx))))
+
+;; Shader auto-reload helpers
+(defn get-file-mod-time
+  [path]
+  (sdfx/get_file_mod_time path))
+
+(defn get-last-shader-mod-time
+  []
+  (sdfx/get_last_shader_mod_time))
+
+(defn set-last-shader-mod-time!
+  [t]
+  (sdfx/set_last_shader_mod_time (cpp/long. t)))
+
+(defn check-shader-reload!
+  "Check if current shader file was modified and reload if so."
+  []
+  (let [shader-dir (str (get-shader-dir))
+        shader-name (str (get-current-shader-name))
+        shader-path (str shader-dir "/" shader-name ".comp")
+        current-mod-time (get-file-mod-time shader-path)
+        last-mod-time (get-last-shader-mod-time)]
+    (when (and (not= last-mod-time 0)
+               (not= current-mod-time last-mod-time))
+      (println "Shader file changed, reloading...")
+      (reload-shader!))
+    (set-last-shader-mod-time! current-mod-time)))
+
+;; Pending shader switch (for deferred switching from event handlers)
+(defn get-pending-shader-switch
+  []
+  (sdfx/get_pending_shader_switch))
+
+(defn clear-pending-shader-switch!
+  []
+  (sdfx/clear_pending_shader_switch))

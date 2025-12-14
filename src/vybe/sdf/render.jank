@@ -84,45 +84,6 @@
     (state/set-objects!
      (vec (map read-object-from-cpp (range count))))))
 
-;; Shader Management - index logic now in jank
-(defn get-current-shader-name
-  []
-  (sdfx/get_current_shader_name))
-
-(defn get-shader-count
-  []
-  (sdfx/get_shader_count))
-
-(defn get-shader-name-at
-  [idx]
-  (sdfx/get_shader_name_at (cpp/int. idx)))
-
-(defn get-current-shader-index
-  []
-  (sdfx/get_current_shader_index))
-
-(defn switch-shader!
-  "Switch shader by direction (-1 = previous, 1 = next). Index management in jank."
-  [direction]
-  (let [count (get-shader-count)
-        current-idx (get-current-shader-index)
-        new-idx (+ current-idx direction)
-        ;; Wrap around
-        wrapped-idx (cond
-                      (< new-idx 0) (- count 1)
-                      (>= new-idx count) 0
-                      :else new-idx)]
-    (when (> count 0)
-      (sdfx/load_shader_at_index (cpp/int. wrapped-idx)))))
-
-(defn get-pending-shader-switch
-  []
-  (sdfx/get_pending_shader_switch))
-
-(defn clear-pending-shader-switch!
-  []
-  (sdfx/clear_pending_shader_switch))
-
 ;; Render Mode
 (defn set-continuous-mode!
   [enabled]

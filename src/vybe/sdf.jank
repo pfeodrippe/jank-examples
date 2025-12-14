@@ -3,6 +3,7 @@
   (:require
    [vybe.sdf.math :as m]
    [vybe.sdf.state :as state]
+   [vybe.sdf.shader :as shader]
    [vybe.sdf.render :as render]
    [vybe.sdf.ui :as ui]
    [vybe.flecs :as vf]
@@ -17,21 +18,21 @@
   ;; Sync camera from C++ to jank state before saving
   (render/sync-camera-from-cpp!)
   ;; Save current camera state before switching
-  (let [current-shader (render/get-current-shader-name)]
+  (let [current-shader (shader/get-current-shader-name)]
     (state/save-camera-preset! current-shader))
   ;; Switch to new shader
-  (render/switch-shader! direction)
+  (shader/switch-shader! direction)
   ;; Load camera state for new shader and sync to C++
-  (let [shader-name (render/get-current-shader-name)]
+  (let [shader-name (shader/get-current-shader-name)]
     (println "Shader:" shader-name)
     (state/load-camera-preset! shader-name)
     (render/sync-camera-to-cpp!)))
 
 (defn process-pending-shader-switch!
   []
-  (let [direction (render/get-pending-shader-switch)]
+  (let [direction (shader/get-pending-shader-switch)]
     (when (not= direction 0)
-      (render/clear-pending-shader-switch!)
+      (shader/clear-pending-shader-switch!)
       (switch-shader-with-preset! direction))))
 
 ;; ============================================================================
@@ -65,7 +66,7 @@
   (println "Continuous rendering enabled for animations")
 
   ;; Sync camera and objects state
-  (let [shader-name (render/get-current-shader-name)]
+  (let [shader-name (shader/get-current-shader-name)]
     (println "Default shader:" shader-name)
     (state/load-camera-preset! shader-name)
     (render/sync-camera-to-cpp!))
@@ -89,6 +90,7 @@
         (render/sync-edit-mode-from-cpp!)
         (render/sync-camera-from-cpp!)
         (process-pending-shader-switch!)
+        (shader/check-shader-reload!)
         (ui/new-frame!)
         (ui/draw-debug-ui!)
         (render/update-uniforms! 0.016)

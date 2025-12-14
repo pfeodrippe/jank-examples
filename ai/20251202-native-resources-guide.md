@@ -915,6 +915,7 @@ rl/MOUSE_BUTTON_LEFT   ; Mouse button (0)
 | **Enum/flag function params** | Values get boxed, cpp/unbox only works for pointers | Keep enum ops in C++, or use macros |
 | **void* to typed pointer cast** | cpp/cast doesn't work for void* source | Keep cast in C++ helper |
 | **Large loops (>10k iterations)** | GC corruption with native type operations | Keep loop in C++ helper function |
+| **jank's `slurp` with large files** | Segfaults on files >~1KB (bug in jank's slurp implementation) | Use C++ `read_text_file` helper or other file reading |
 
 **Note:** C-style variadic functions (like `printf`, `ImGui::Text`) **DO work** - see next section.
 

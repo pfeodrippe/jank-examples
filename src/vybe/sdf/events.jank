@@ -1,7 +1,8 @@
 (ns vybe.sdf.events
   (:require
    ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
-   [vybe.sdf.state :as state]))
+   [vybe.sdf.state :as state]
+   [vybe.sdf.shader :as shader]))
 
 ;; =============================================================================
 ;; Event Constants - accessed as values (constexpr in C++)
@@ -103,7 +104,7 @@
 
       ;; R - reload shader
       (= key-code KEY_R)
-      (sdfx/reload_shader)
+      (shader/reload-shader!)
 
       ;; E - toggle edit mode
       (= key-code KEY_E)
