@@ -44,17 +44,30 @@ JIT mode still uses `--obj` flags because:
 
 ## Linux CI Status
 
-Linux CI fails during **jank compiler build** (not this project):
+Linux CI was failing during **jank compiler build** with:
 ```
 /usr/include/c++/14/any:371:14: error: '_Manager_internal' redeclared with 'public' access
 ```
 
-This is a GCC 14 / Clang 22 incompatibility issue with Boost.Asio's use of `<any>`.
-Needs to be fixed upstream in the jank repository.
+### Root Cause
+GCC 14's `<any>` header (on Ubuntu 24.04) has forward declarations with `private` access,
+but definitions with `public` access. Clang 22 is stricter about this than GCC.
 
-## macOS CI Status: PASSED
+### Fix
+Use **libc++** (Clang's standard library) instead of **libstdc++** (GCC's):
+```bash
+export CXXFLAGS="-stdlib=libc++"
+export LDFLAGS="-stdlib=libc++ -lc++abi"
+```
 
-Both jobs completed successfully after the ODR fix.
+This uses the libc++ headers that come with our LLVM build, avoiding GCC 14's problematic headers.
+No Ubuntu downgrade needed - stays on 24.04.
+
+## macOS CI Status: ✅ PASSED
+
+- Build jank - macOS: **6m34s** (Clang cached!)
+- Build and Test - macOS: **4m52s**
+- Total: ~13 min (vs 90+ min without cache)
 
 ## Files Modified
 - `bin/run_sdf.sh` - Removed duplicate `--obj` flags in standalone section

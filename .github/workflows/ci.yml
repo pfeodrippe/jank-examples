@@ -217,6 +217,8 @@ jobs:
         run: |
           export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
           export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
+          # Suppress GCC 14 <any> header incompatibility (access specifier mismatch error)
+          export CXXFLAGS="-Wno-error=redeclared-class-member"
           cd ~/jank/compiler+runtime
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
             -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
