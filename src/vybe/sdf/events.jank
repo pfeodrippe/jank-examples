@@ -1,0 +1,185 @@
+(ns vybe.sdf.events
+  (:require
+   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
+   [vybe.sdf.state :as state]))
+
+;; =============================================================================
+;; Event Constants - accessed as values (constexpr in C++)
+;; =============================================================================
+
+(def EVENT_QUIT sdfx/EVENT_QUIT)
+(def EVENT_KEY_DOWN sdfx/EVENT_KEY_DOWN)
+(def EVENT_KEY_UP sdfx/EVENT_KEY_UP)
+(def EVENT_MOUSE_BUTTON_DOWN sdfx/EVENT_MOUSE_BUTTON_DOWN)
+(def EVENT_MOUSE_BUTTON_UP sdfx/EVENT_MOUSE_BUTTON_UP)
+(def EVENT_MOUSE_MOTION sdfx/EVENT_MOUSE_MOTION)
+(def EVENT_MOUSE_WHEEL sdfx/EVENT_MOUSE_WHEEL)
+
+;; Key codes - these are functions that return the SDL key codes
+(def KEY_ESCAPE (sdfx/key_code_escape))
+(def KEY_R (sdfx/key_code_r))
+(def KEY_E (sdfx/key_code_e))
+(def KEY_Z (sdfx/key_code_z))
+(def KEY_D (sdfx/key_code_d))
+(def KEY_BACKSPACE (sdfx/key_code_backspace))
+(def KEY_DELETE (sdfx/key_code_delete))
+(def KEY_0 (sdfx/key_code_0))
+(def KEY_1 (sdfx/key_code_1))
+(def KEY_9 (sdfx/key_code_9))
+(def KEY_PAGE_UP (sdfx/key_code_page_up))
+(def KEY_PAGE_DOWN (sdfx/key_code_page_down))
+(def KEY_LEFT (sdfx/key_code_left))
+(def KEY_RIGHT (sdfx/key_code_right))
+
+;; Key modifiers
+(def MOD_GUI (sdfx/key_mod_gui))
+(def MOD_SHIFT (sdfx/key_mod_shift))
+
+;; Mouse buttons
+(def MOUSE_LEFT (sdfx/mouse_button_left))
+(def MOUSE_RIGHT (sdfx/mouse_button_right))
+(def MOUSE_MIDDLE (sdfx/mouse_button_middle))
+
+;; =============================================================================
+;; Event Accessors
+;; =============================================================================
+
+(defn get-event
+  "Get event data at index as a map."
+  [idx]
+  {:type (sdfx/get_event_type (cpp/int. idx))
+   :key-code (sdfx/get_event_key_code (cpp/int. idx))
+   :key-mod (sdfx/get_event_key_mod (cpp/int. idx))
+   :mouse-button (sdfx/get_event_mouse_button (cpp/int. idx))
+   :mouse-x (sdfx/get_event_mouse_x (cpp/int. idx))
+   :mouse-y (sdfx/get_event_mouse_y (cpp/int. idx))
+   :mouse-xrel (sdfx/get_event_mouse_xrel (cpp/int. idx))
+   :mouse-yrel (sdfx/get_event_mouse_yrel (cpp/int. idx))
+   :scroll-x (sdfx/get_event_scroll_x (cpp/int. idx))
+   :scroll-y (sdfx/get_event_scroll_y (cpp/int. idx))
+   :imgui-wants-keyboard (sdfx/get_event_imgui_wants_keyboard (cpp/int. idx))
+   :imgui-wants-mouse (sdfx/get_event_imgui_wants_mouse (cpp/int. idx))})
+
+;; =============================================================================
+;; Event Handlers (moved from C++)
+;; =============================================================================
+
+(defn handle-scroll!
+  "Handle mouse wheel scroll - updates camera zoom."
+  [scroll-y]
+  ;; Get current distance from C++, update it, set it back
+  (let [current-distance (sdfx/get_camera_distance)
+        new-distance (max 0.5 (min 50.0 (- current-distance (* scroll-y 0.5))))]
+    (sdfx/set_camera_distance (cpp/float. new-distance))
+    (sdfx/set_dirty)))
+
+(defn handle-key-down!
+  "Handle key press events."
+  [key-code key-mod]
+  (let [has-gui-mod (not= 0 (cpp/int. (bit-and (cpp/int. key-mod) (cpp/int. MOD_GUI))))
+        has-shift-mod (not= 0 (cpp/int. (bit-and (cpp/int. key-mod) (cpp/int. MOD_SHIFT))))]
+    (cond
+      ;; Escape - quit (handled by C++)
+      (= key-code KEY_ESCAPE)
+      nil
+
+      ;; Cmd+Z - undo, Cmd+Shift+Z - redo
+      (and (= key-code KEY_Z) has-gui-mod)
+      (if has-shift-mod
+        (sdfx/request_redo)
+        (sdfx/request_undo))
+
+      ;; Cmd+D - duplicate
+      (and (= key-code KEY_D) has-gui-mod)
+      (sdfx/request_duplicate)
+
+      ;; Backspace/Delete - delete selected
+      (or (= key-code KEY_BACKSPACE) (= key-code KEY_DELETE))
+      (sdfx/request_delete)
+
+      ;; Cmd+0 - reset transform
+      (and (= key-code KEY_0) has-gui-mod)
+      (sdfx/request_reset_transform)
+
+      ;; R - reload shader
+      (= key-code KEY_R)
+      (sdfx/reload_shader)
+
+      ;; E - toggle edit mode
+      (= key-code KEY_E)
+      (sdfx/toggle_edit_mode)
+
+      ;; 1-9 - select object
+      (and (>= key-code KEY_1) (<= key-code KEY_9))
+      (sdfx/select_object_by_id (cpp/int. (+ 1 (- key-code KEY_1))))
+
+      ;; Page Up/Down or Left/Right - switch shader
+      (or (= key-code KEY_PAGE_UP) (= key-code KEY_LEFT))
+      (sdfx/set_pending_shader_switch (cpp/int. -1))
+
+      (or (= key-code KEY_PAGE_DOWN) (= key-code KEY_RIGHT))
+      (sdfx/set_pending_shader_switch (cpp/int. 1)))))
+
+(defn handle-mouse-button!
+  "Handle mouse button press/release."
+  [button pressed x y]
+  ;; Delegate to C++ for now - raycast_gizmo is complex
+  (sdfx/handle_mouse_button (cpp/uint8_t. button) pressed
+                            (cpp/float. x) (cpp/float. y)))
+
+(defn handle-mouse-motion!
+  "Handle mouse movement."
+  [x y xrel yrel]
+  ;; Delegate to C++ for now - raycast_gizmo is complex
+  (sdfx/handle_mouse_motion (cpp/float. x) (cpp/float. y)
+                            (cpp/float. xrel) (cpp/float. yrel)))
+
+;; =============================================================================
+;; Event Processing
+;; =============================================================================
+
+(defn process-event!
+  "Process a single event. Returns true if event was handled."
+  [event]
+  (let [{:keys [type key-code key-mod mouse-button mouse-x mouse-y
+                mouse-xrel mouse-yrel scroll-x scroll-y
+                imgui-wants-keyboard imgui-wants-mouse]} event]
+    (cond
+      ;; Key down
+      (= type EVENT_KEY_DOWN)
+      (when (or (not imgui-wants-keyboard) (= key-code KEY_ESCAPE))
+        (handle-key-down! key-code key-mod)
+        true)
+
+      ;; Mouse button down
+      (= type EVENT_MOUSE_BUTTON_DOWN)
+      (when (not imgui-wants-mouse)
+        (handle-mouse-button! mouse-button true mouse-x mouse-y)
+        true)
+
+      ;; Mouse button up
+      (= type EVENT_MOUSE_BUTTON_UP)
+      (when (not imgui-wants-mouse)
+        (handle-mouse-button! mouse-button false mouse-x mouse-y)
+        true)
+
+      ;; Mouse motion
+      (= type EVENT_MOUSE_MOTION)
+      (when (not imgui-wants-mouse)
+        (handle-mouse-motion! mouse-x mouse-y mouse-xrel mouse-yrel)
+        true)
+
+      ;; Mouse wheel
+      (= type EVENT_MOUSE_WHEEL)
+      (when (not imgui-wants-mouse)
+        (handle-scroll! scroll-y)
+        true)
+
+      :else nil)))
+
+(defn poll-and-process-events!
+  "Poll SDL events and process them in jank."
+  []
+  (let [count (sdfx/poll_events_only)]
+    (dotimes [i count]
+      (process-event! (get-event i)))))

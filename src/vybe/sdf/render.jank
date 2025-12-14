@@ -2,6 +2,7 @@
   (:require
    [vybe.sdf.state :as state]
    [vybe.sdf.screenshot :as screenshot]
+   [vybe.sdf.events :as events]
    ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]))
 
 ;; Core Lifecycle
@@ -18,9 +19,10 @@
   (sdfx/should_close))
 
 ;; Frame Rendering
-(defn poll-events!
+(defn poll-events-jank!
+  "Poll events with jank-based event handling (new)."
   []
-  (sdfx/poll_events))
+  (events/poll-and-process-events!))
 
 (defn update-uniforms!
   [dt]
@@ -82,14 +84,36 @@
     (state/set-objects!
      (vec (map read-object-from-cpp (range count))))))
 
-;; Shader Management
+;; Shader Management - index logic now in jank
 (defn get-current-shader-name
   []
   (sdfx/get_current_shader_name))
 
+(defn get-shader-count
+  []
+  (sdfx/get_shader_count))
+
+(defn get-shader-name-at
+  [idx]
+  (sdfx/get_shader_name_at (cpp/int. idx)))
+
+(defn get-current-shader-index
+  []
+  (sdfx/get_current_shader_index))
+
 (defn switch-shader!
+  "Switch shader by direction (-1 = previous, 1 = next). Index management in jank."
   [direction]
-  (sdfx/switch_shader (cpp/int. direction)))
+  (let [count (get-shader-count)
+        current-idx (get-current-shader-index)
+        new-idx (+ current-idx direction)
+        ;; Wrap around
+        wrapped-idx (cond
+                      (< new-idx 0) (- count 1)
+                      (>= new-idx count) 0
+                      :else new-idx)]
+    (when (> count 0)
+      (sdfx/load_shader_at_index (cpp/int. wrapped-idx)))))
 
 (defn get-pending-shader-switch
   []

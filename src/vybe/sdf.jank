@@ -84,7 +84,8 @@
     (println "Starting viewer...")
     (loop [frame-count 0]
       (when-not (render/should-close?)
-        (render/poll-events!)
+        ;; Use jank-based event handling (events processed in jank!)
+        (render/poll-events-jank!)
         (render/sync-edit-mode-from-cpp!)
         (render/sync-camera-from-cpp!)
         (process-pending-shader-switch!)

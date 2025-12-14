@@ -198,7 +198,7 @@ jobs:
           ./bin/build-clang
           ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
 
-      # Cache 2: jank build (keyed by commit hash)
+      # Cache 2: jank build (keyed by commit hash) - includes PCH to avoid 50+ min rebuild
       - name: Cache jank build
         id: cache-jank
         uses: actions/cache@v4
@@ -210,10 +210,10 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v5
+            ~/jank/compiler+runtime/build/incremental.pch
+          key: jank-build-linux-x64-${{ env.JANK_REF }}-v7
 
       - name: Create swap space
-        if: steps.cache-jank.outputs.cache-hit != 'true'
         run: |
           # Create 8GB swap to handle PCH generation memory requirements
           sudo fallocate -l 8G /swapfile
@@ -223,7 +223,6 @@ jobs:
           free -h
 
       - name: Build jank
-        if: steps.cache-jank.outputs.cache-hit != 'true'
         run: |
           export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
           export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
@@ -275,7 +274,8 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v5
+            ~/jank/compiler+runtime/build/incremental.pch
+          key: jank-build-linux-x64-${{ env.JANK_REF }}-v7
 
       - name: Verify jank
         run: |

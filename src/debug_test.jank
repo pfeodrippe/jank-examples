@@ -9,8 +9,7 @@
   (println "About to trigger type error on line 10...")
   ;; BeginScissorMode expects (int, int, int, int) but we pass floats
   ;; This should trigger: "invalid object type (expected integer found real)"
-  (let* [_ (rl/BeginScissorMode 1.5 2.5 100.5 50.5)]
-    nil))
+  (rl/BeginScissorMode 1.5 2.5 100.5 50.5))
 
 (defn inner-fn []
   (println "In inner-fn (line 16)")

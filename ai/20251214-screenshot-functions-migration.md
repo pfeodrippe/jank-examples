@@ -2,7 +2,7 @@
 
 ## Summary
 
-Successfully migrated several C++ screenshot helper functions to pure jank and **removed the C++ versions** from `vulkan/sdf_engine.hpp`. Some functions must remain in C++ due to jank limitations with Vulkan handle types.
+Successfully migrated several C++ screenshot helper functions to pure jank and **removed the C++ versions** from `vulkan/sdf_engine.hpp`. Total: **10 C++ functions removed**. Some functions must remain in C++ due to jank limitations with Vulkan handle types.
 
 ## Successfully Moved to jank (C++ removed)
 
@@ -15,16 +15,32 @@ Successfully migrated several C++ screenshot helper functions to pure jank and *
 | `map_screenshot_memory` | `map-memory` | Uses `cpp/new` for output pointer |
 | `imgui_new_frame` | `new-frame!` (ui.jank) | Calls ImGui impl functions directly |
 | `imgui_render` | `render!` (ui.jank) | Calls `ImGui::Render` directly |
-| `imgui_render_draw_data` | N/A | Removed - was unused |
+
+## Dead Code Removed (no replacement needed)
+
+| Removed C++ Function | Notes |
+|---------------------|-------|
+| `imgui_render_draw_data` | Was unused - ImGui draw data handled elsewhere |
+| `find_memory_type_for_screenshot` | Was unused after refactoring |
+| `get_physical_device` | Was unused - no external callers |
 
 ## Must Stay in C++
 
 | Function | Reason |
 |----------|--------|
 | `alloc_screenshot_cmd` | `VkCommandBuffer` is a pointer typedef (`struct VkCommandBuffer_T*`), can't create local variable for output param |
-| `create_screenshot_buffer` | `VkBuffer` and `VkDeviceMemory` are pointer typedefs |
+| `create_screenshot_buffer` | `VkBuffer` and `VkDeviceMemory` are pointer typedefs, output params don't work in jank |
 | `write_png_downsampled` | GC can't handle ~230k loop iterations |
-| `find_memory_type_for_screenshot` | Used by `create_screenshot_buffer` |
+| `find_memory_type` | Used by Vulkan buffer creation, bitwise operations on native types complex in jank |
+
+## Cannot Be Removed - Core Engine Functions
+
+All remaining functions in `sdf_engine.hpp` are either:
+1. **Core engine operations**: `init`, `cleanup`, `poll_events`, `update_uniforms`, `draw_frame`
+2. **Event handlers**: `handle_mouse_button`, `handle_mouse_motion`, `handle_scroll`, `handle_key_down`, `process_event`
+3. **Shader operations**: `reload_shader`, `check_shader_reload`, `scan_shaders`, `load_shader_by_name`, `switch_shader`, `compile_glsl_to_spirv`
+4. **Engine struct accessors**: All `get_*` and `set_*` functions access the internal C++ `Engine` struct
+5. **Internal utilities**: `get_engine`, `raycast_gizmo`, `select_object`, `read_file`, `read_text_file`
 
 ## Key Learnings
 

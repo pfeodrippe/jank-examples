@@ -9,8 +9,8 @@
 ;; Screenshot - jank implementation with boxing for Vulkan handles
 ;; ============================================================================
 
-;; alloc_screenshot_cmd stays in C++ because jank can't easily create a local
-;; VkCommandBuffer variable (VkCommandBuffer is already a pointer typedef)
+;; alloc_screenshot_cmd stays in C++ - VkCommandBuffer is a pointer typedef,
+;; so jank can't create a local variable for the output parameter
 (defn alloc-cmd-buffer []
   (cpp/box (sdfx/alloc_screenshot_cmd)))
 
@@ -108,8 +108,8 @@
                       (cpp/uint32_t (/ (+ height 15) 16))
                       (cpp/uint32_t 1))))
 
-;; create_screenshot_buffer stays in C++ because Vulkan handle types (VkBuffer, VkDeviceMemory)
-;; are pointer typedefs, making it difficult to create local variables for output params in jank
+;; create_screenshot_buffer stays in C++ - uses find_memory_type which requires
+;; iterating over memory types with bitwise operations on native types
 (defn create-staging-buffer [size]
   (let [result (sdfx/create_screenshot_buffer (cpp/VkDeviceSize. size))]
     (when (cpp/.-success result)

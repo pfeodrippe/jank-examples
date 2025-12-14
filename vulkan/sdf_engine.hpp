@@ -612,13 +612,6 @@ inline void handle_mouse_motion(float x, float y, float xrel, float yrel) {
     e->lastMouseY = y;
 }
 
-inline void handle_scroll(float dx, float dy) {
-    auto* e = get_engine();
-    if (!e) return;
-    e->camera.update(0, 0, dy);
-    e->dirty = true;
-}
-
 // Forward declarations
 inline void reload_shader();
 inline void check_shader_reload();
@@ -645,43 +638,6 @@ inline void select_object(Engine* e, int id) {
 // Forward declarations for shader switching
 inline void scan_shaders();
 inline void load_shader_by_name(const std::string& name);
-inline void switch_shader(int direction);
-
-inline void handle_key_down(SDL_Keycode key) {
-    auto* e = get_engine();
-    if (!e) return;
-
-    switch (key) {
-        case SDLK_ESCAPE:
-            e->running = false;
-            break;
-        case SDLK_R:
-            std::cout << "Reloading shader..." << std::endl;
-            reload_shader();
-            break;
-        case SDLK_E:
-            e->editMode = !e->editMode;
-            e->dirty = true;
-            if (e->editMode) {
-                std::cout << "EDIT MODE ON - Press 1-5 to select objects, drag gizmo to move" << std::endl;
-            } else {
-                std::cout << "EDIT MODE OFF" << std::endl;
-                e->selectedObject = -1;
-            }
-            break;
-        case SDLK_LEFT:
-            e->pendingShaderSwitch = -1;  // Request previous shader (consumed by Jank)
-            break;
-        case SDLK_RIGHT:
-            e->pendingShaderSwitch = 1;   // Request next shader (consumed by Jank)
-            break;
-        default:
-            if (e->editMode && key >= SDLK_1 && key <= SDLK_5) {
-                select_object(e, key - SDLK_1 + 1);
-            }
-            break;
-    }
-}
 
 // ============================================================================
 // Shader switching functions
@@ -816,89 +772,6 @@ inline void load_shader_by_name(const std::string& name) {
     }
 
     std::cout << "[DEBUG] load_shader_by_name: COMPLETE! Loaded shader: " << name << std::endl;
-}
-
-inline void switch_shader(int direction) {
-    auto* e = get_engine();
-    if (!e || e->shaderList.empty()) {
-        // First time - scan for shaders
-        scan_shaders();
-    }
-    if (!e || e->shaderList.empty()) return;
-
-    int newIndex = e->currentShaderIndex + direction;
-    // Wrap around
-    if (newIndex < 0) newIndex = static_cast<int>(e->shaderList.size()) - 1;
-    if (newIndex >= static_cast<int>(e->shaderList.size())) newIndex = 0;
-
-    e->currentShaderIndex = newIndex;
-    std::cout << "Switching to shader [" << newIndex << "]: " << e->shaderList[newIndex] << std::endl;
-    load_shader_by_name(e->shaderList[newIndex]);
-}
-
-// Main event processing function
-inline void process_event(const SDL_Event& event) {
-    auto* e = get_engine();
-    if (!e) return;
-
-    // Let ImGui process first
-    ImGui_ImplSDL3_ProcessEvent(&event);
-
-    switch (event.type) {
-        case SDL_EVENT_QUIT:
-            e->running = false;
-            break;
-
-        case SDL_EVENT_KEY_DOWN:
-            if (ImGui::GetIO().WantCaptureKeyboard && event.key.key != SDLK_ESCAPE) break;
-            // Undo/Redo: Cmd+Z / Cmd+Shift+Z (macOS)
-            if (event.key.key == SDLK_Z && (event.key.mod & SDL_KMOD_GUI)) {
-                if (event.key.mod & SDL_KMOD_SHIFT) e->redoRequested = true;
-                else e->undoRequested = true;
-                break;
-            }
-            // Duplicate: Cmd+D
-            if (event.key.key == SDLK_D && (event.key.mod & SDL_KMOD_GUI)) {
-                e->duplicateRequested = true;
-                break;
-            }
-            // Delete: Backspace or Delete key
-            if (event.key.key == SDLK_BACKSPACE || event.key.key == SDLK_DELETE) {
-                e->deleteRequested = true;
-                break;
-            }
-            // Reset Transform: Cmd+0
-            if (event.key.key == SDLK_0 && (event.key.mod & SDL_KMOD_GUI)) {
-                e->resetTransformRequested = true;
-                break;
-            }
-            handle_key_down(event.key.key);
-            break;
-
-        case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (ImGui::GetIO().WantCaptureMouse) break;
-            handle_mouse_button(event.button.button, true, event.button.x, event.button.y);
-            break;
-
-        case SDL_EVENT_MOUSE_BUTTON_UP:
-            if (ImGui::GetIO().WantCaptureMouse) break;
-            handle_mouse_button(event.button.button, false, event.button.x, event.button.y);
-            break;
-
-        case SDL_EVENT_MOUSE_MOTION:
-            if (ImGui::GetIO().WantCaptureMouse) {
-                e->lastMouseX = event.motion.x;
-                e->lastMouseY = event.motion.y;
-                break;
-            }
-            handle_mouse_motion(event.motion.x, event.motion.y, event.motion.xrel, event.motion.yrel);
-            break;
-
-        case SDL_EVENT_MOUSE_WHEEL:
-            if (ImGui::GetIO().WantCaptureMouse) break;
-            handle_scroll(event.wheel.x, event.wheel.y);
-            break;
-    }
 }
 
 inline uint32_t find_memory_type(Engine* e, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -1570,19 +1443,149 @@ inline bool should_close() {
     return !e || !e->window || !e->running || g_sigint_received;
 }
 
-inline void poll_events() {
-    auto* e = get_engine();
-    if (!e || !e->initialized) return;
+// =============================================================================
+// Event Buffer System - allows jank to handle event dispatch
+// =============================================================================
 
+constexpr int MAX_EVENTS_PER_FRAME = 64;
+
+// Event types matching SDL3
+constexpr uint32_t EVENT_QUIT = SDL_EVENT_QUIT;
+constexpr uint32_t EVENT_KEY_DOWN = SDL_EVENT_KEY_DOWN;
+constexpr uint32_t EVENT_KEY_UP = SDL_EVENT_KEY_UP;
+constexpr uint32_t EVENT_MOUSE_BUTTON_DOWN = SDL_EVENT_MOUSE_BUTTON_DOWN;
+constexpr uint32_t EVENT_MOUSE_BUTTON_UP = SDL_EVENT_MOUSE_BUTTON_UP;
+constexpr uint32_t EVENT_MOUSE_MOTION = SDL_EVENT_MOUSE_MOTION;
+constexpr uint32_t EVENT_MOUSE_WHEEL = SDL_EVENT_MOUSE_WHEEL;
+
+struct EventData {
+    uint32_t type;
+    // Key event data
+    int32_t key_code;
+    uint16_t key_mod;
+    // Mouse button data
+    uint8_t mouse_button;
+    float mouse_x;
+    float mouse_y;
+    // Mouse motion data
+    float mouse_xrel;
+    float mouse_yrel;
+    // Scroll data
+    float scroll_x;
+    float scroll_y;
+    // ImGui capture flags (set at event poll time)
+    bool imgui_wants_keyboard;
+    bool imgui_wants_mouse;
+};
+
+// Global event buffer
+inline EventData g_event_buffer[MAX_EVENTS_PER_FRAME];
+inline int g_event_count = 0;
+
+// Poll all SDL events into buffer, let ImGui process them, but don't dispatch to handlers
+inline int poll_events_only() {
+    auto* e = get_engine();
+    if (!e || !e->initialized) return 0;
+
+    g_event_count = 0;
     SDL_Event event;
-    while (SDL_PollEvent(&event)) {
+
+    while (SDL_PollEvent(&event) && g_event_count < MAX_EVENTS_PER_FRAME) {
         // Let ImGui process the event first
         ImGui_ImplSDL3_ProcessEvent(&event);
 
-        // Process the event for our application
-        process_event(event);
+        // Store event data for jank to process
+        EventData& ed = g_event_buffer[g_event_count];
+        ed.type = event.type;
+        ed.key_code = 0;
+        ed.key_mod = 0;
+        ed.mouse_button = 0;
+        ed.mouse_x = 0;
+        ed.mouse_y = 0;
+        ed.mouse_xrel = 0;
+        ed.mouse_yrel = 0;
+        ed.scroll_x = 0;
+        ed.scroll_y = 0;
+        ed.imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard;
+        ed.imgui_wants_mouse = ImGui::GetIO().WantCaptureMouse;
+
+        switch (event.type) {
+            case SDL_EVENT_QUIT:
+                e->running = false;
+                break;
+
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP:
+                ed.key_code = event.key.key;
+                ed.key_mod = event.key.mod;
+                break;
+
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                ed.mouse_button = event.button.button;
+                ed.mouse_x = event.button.x;
+                ed.mouse_y = event.button.y;
+                break;
+
+            case SDL_EVENT_MOUSE_MOTION:
+                ed.mouse_x = event.motion.x;
+                ed.mouse_y = event.motion.y;
+                ed.mouse_xrel = event.motion.xrel;
+                ed.mouse_yrel = event.motion.yrel;
+                // Update lastMouse for internal tracking
+                e->lastMouseX = event.motion.x;
+                e->lastMouseY = event.motion.y;
+                break;
+
+            case SDL_EVENT_MOUSE_WHEEL:
+                ed.scroll_x = event.wheel.x;
+                ed.scroll_y = event.wheel.y;
+                break;
+        }
+
+        g_event_count++;
     }
+
+    return g_event_count;
 }
+
+// Event buffer accessors for jank
+inline int get_event_count() { return g_event_count; }
+inline uint32_t get_event_type(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].type : 0; }
+inline int32_t get_event_key_code(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].key_code : 0; }
+inline uint16_t get_event_key_mod(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].key_mod : 0; }
+inline uint8_t get_event_mouse_button(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].mouse_button : 0; }
+inline float get_event_mouse_x(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].mouse_x : 0; }
+inline float get_event_mouse_y(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].mouse_y : 0; }
+inline float get_event_mouse_xrel(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].mouse_xrel : 0; }
+inline float get_event_mouse_yrel(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].mouse_yrel : 0; }
+inline float get_event_scroll_x(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].scroll_x : 0; }
+inline float get_event_scroll_y(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].scroll_y : 0; }
+inline bool get_event_imgui_wants_keyboard(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].imgui_wants_keyboard : false; }
+inline bool get_event_imgui_wants_mouse(int idx) { return (idx >= 0 && idx < g_event_count) ? g_event_buffer[idx].imgui_wants_mouse : false; }
+
+// Key code constants for jank
+inline int32_t key_code_escape() { return SDLK_ESCAPE; }
+inline int32_t key_code_r() { return SDLK_R; }
+inline int32_t key_code_e() { return SDLK_E; }
+inline int32_t key_code_z() { return SDLK_Z; }
+inline int32_t key_code_d() { return SDLK_D; }
+inline int32_t key_code_backspace() { return SDLK_BACKSPACE; }
+inline int32_t key_code_delete() { return SDLK_DELETE; }
+inline int32_t key_code_0() { return SDLK_0; }
+inline int32_t key_code_1() { return SDLK_1; }
+inline int32_t key_code_9() { return SDLK_9; }
+inline int32_t key_code_page_up() { return SDLK_PAGEUP; }
+inline int32_t key_code_page_down() { return SDLK_PAGEDOWN; }
+inline int32_t key_code_left() { return SDLK_LEFT; }
+inline int32_t key_code_right() { return SDLK_RIGHT; }
+inline uint16_t key_mod_gui() { return SDL_KMOD_GUI; }
+inline uint16_t key_mod_shift() { return SDL_KMOD_SHIFT; }
+
+// Mouse button constants
+inline uint8_t mouse_button_left() { return SDL_BUTTON_LEFT; }
+inline uint8_t mouse_button_right() { return SDL_BUTTON_RIGHT; }
+inline uint8_t mouse_button_middle() { return SDL_BUTTON_MIDDLE; }
 
 inline void update_uniforms(double dt) {
     auto* e = get_engine();
@@ -1925,6 +1928,50 @@ inline void set_dirty() {
     if (e) e->dirty = true;
 }
 
+// Edit mode helpers for jank event handling
+inline void toggle_edit_mode() {
+    auto* e = get_engine();
+    if (!e) return;
+    e->editMode = !e->editMode;
+    e->dirty = true;
+    if (e->editMode) {
+        std::cout << "Edit mode enabled" << std::endl;
+    } else {
+        std::cout << "Edit mode disabled" << std::endl;
+    }
+}
+
+inline void select_object_by_id(int id) {
+    auto* e = get_engine();
+    if (!e) return;
+    select_object(e, id);
+}
+
+inline void request_undo() {
+    auto* e = get_engine();
+    if (e) e->undoRequested = true;
+}
+
+inline void request_redo() {
+    auto* e = get_engine();
+    if (e) e->redoRequested = true;
+}
+
+inline void request_duplicate() {
+    auto* e = get_engine();
+    if (e) e->duplicateRequested = true;
+}
+
+inline void request_delete() {
+    auto* e = get_engine();
+    if (e) e->deleteRequested = true;
+}
+
+inline void request_reset_transform() {
+    auto* e = get_engine();
+    if (e) e->resetTransformRequested = true;
+}
+
 inline float get_camera_distance() {
     auto* e = get_engine();
     return e ? e->camera.distance : 10.0f;
@@ -1970,6 +2017,33 @@ inline const char* get_current_shader_name() {
     return e ? e->currentShaderName.c_str() : "";
 }
 
+// Shader list management - allows jank to manage shader switching
+inline int get_shader_count() {
+    auto* e = get_engine();
+    return e ? static_cast<int>(e->shaderList.size()) : 0;
+}
+
+inline const char* get_shader_name_at(int idx) {
+    auto* e = get_engine();
+    if (e && idx >= 0 && idx < static_cast<int>(e->shaderList.size())) {
+        return e->shaderList[idx].c_str();
+    }
+    return "";
+}
+
+inline int get_current_shader_index() {
+    auto* e = get_engine();
+    return e ? e->currentShaderIndex : 0;
+}
+
+inline void load_shader_at_index(int idx) {
+    auto* e = get_engine();
+    if (e && idx >= 0 && idx < static_cast<int>(e->shaderList.size())) {
+        e->currentShaderIndex = idx;
+        load_shader_by_name(e->shaderList[idx]);
+    }
+}
+
 // Pending shader switch - consumed by Jank main loop
 inline int get_pending_shader_switch() {
     auto* e = get_engine();
@@ -1979,6 +2053,11 @@ inline int get_pending_shader_switch() {
 inline void clear_pending_shader_switch() {
     auto* e = get_engine();
     if (e) e->pendingShaderSwitch = 0;
+}
+
+inline void set_pending_shader_switch(int direction) {
+    auto* e = get_engine();
+    if (e) e->pendingShaderSwitch = direction;
 }
 
 // Individual component accessors for jank
@@ -2042,11 +2121,6 @@ inline VkDevice get_device() {
     return e ? e->device : VK_NULL_HANDLE;
 }
 
-inline VkPhysicalDevice get_physical_device() {
-    auto* e = get_engine();
-    return e ? e->physicalDevice : VK_NULL_HANDLE;
-}
-
 inline VkCommandPool get_command_pool() {
     auto* e = get_engine();
     return e ? e->commandPool : VK_NULL_HANDLE;
@@ -2085,13 +2159,6 @@ inline uint32_t get_swapchain_width() {
 inline uint32_t get_swapchain_height() {
     auto* e = get_engine();
     return e ? e->swapchainExtent.height : 0;
-}
-
-// find_memory_type wrapper for jank screenshot
-inline uint32_t find_memory_type_for_screenshot(uint32_t typeFilter, uint32_t properties) {
-    auto* e = get_engine();
-    if (!e) return 0;
-    return find_memory_type(e, typeFilter, static_cast<VkMemoryPropertyFlags>(properties));
 }
 
 // Allocate a single command buffer - needed because jank can't handle VkCommandBuffer output params
