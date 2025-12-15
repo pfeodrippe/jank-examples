@@ -3,28 +3,23 @@
 // SDF SAMPLER - Generic SDF sampling compute shader
 // Used for mesh export via marching cubes
 //
-// This shader samples the current scene's SDF at a grid of points
-// for use in CPU-side marching cubes mesh generation.
+// MEMORY OPTIMIZED: Positions computed on-the-fly from grid parameters
+// instead of passing a huge positions buffer (saves 2GB+ for 512^3 grids)
 //
 
 layout(local_size_x = 64) in;
 
-// Input: grid of 3D points to sample
-layout(std430, binding = 0) readonly buffer InputPositions {
-    vec4 positions[];  // xyz = position, w = unused
-};
-
 // Output: SDF distances at each point
-layout(std430, binding = 1) writeonly buffer OutputDistances {
+layout(std430, binding = 0) writeonly buffer OutputDistances {
     float distances[];
 };
 
-// Grid parameters
-layout(std140, binding = 2) uniform SamplerParams {
-    uint numPoints;     // Total number of points to sample
-    float time;         // Time value for animated SDFs (frozen at export time)
-    float padding2;
-    float padding3;
+// Grid parameters - compute positions from these instead of passing positions buffer
+layout(std140, binding = 1) uniform SamplerParams {
+    uint resolution;    // Grid resolution (e.g., 512)
+    float time;         // Time value for animated SDFs
+    float minX, minY, minZ;  // Bounds min
+    float maxX, maxY, maxZ;  // Bounds max
 };
 
 // Provide ubo-like struct for compatibility with extracted scene code
@@ -55,13 +50,30 @@ float sceneSDF(vec3 p) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
+    uint totalPoints = resolution * resolution * resolution;
 
-    if (idx >= numPoints) return;
+    if (idx >= totalPoints) return;
 
     // Set up ubo compatibility (time in resolution.z)
     ubo.resolution = vec4(1.0, 1.0, time, 1.0);
     ubo.lightDir = vec4(0.5, 0.8, 0.6, 0.0);
 
-    vec3 p = positions[idx].xyz;
+    // Compute 3D grid position from linear index (no positions buffer needed!)
+    uint res = resolution;
+    uint ix = idx % res;
+    uint iy = (idx / res) % res;
+    uint iz = idx / (res * res);
+
+    // Compute world position from grid coordinates
+    float stepX = (maxX - minX) / float(res - 1u);
+    float stepY = (maxY - minY) / float(res - 1u);
+    float stepZ = (maxZ - minZ) / float(res - 1u);
+
+    vec3 p = vec3(
+        minX + float(ix) * stepX,
+        minY + float(iy) * stepY,
+        minZ + float(iz) * stepZ
+    );
+
     distances[idx] = sceneSDF(p);
 }

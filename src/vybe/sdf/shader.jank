@@ -182,6 +182,12 @@ inline VkPipeline create_compute_pipeline_jank(VkDevice device, VkComputePipelin
       (reload-shader!))
     (set-last-shader-mod-time! current-mod-time)))
 
+;; TODO: Fix JIT compilation issue with this function
+;; (defn check-mesh-shader-reload!
+;;   "Check if mesh shaders changed and reload pipeline if so."
+;;   []
+;;   (sdfx/check_mesh_shader_reload))
+
 ;; Pending shader switch (for deferred switching from event handlers)
 (defn get-pending-shader-switch
   []

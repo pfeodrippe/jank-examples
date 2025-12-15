@@ -19,10 +19,17 @@
 #include <array>
 #include <fstream>
 #include <cmath>
+#include <cfloat>
 #include <locale>
 #include <thread>
 #include <mutex>
 #include <atomic>
+
+// tinygltf for GLB export with vertex colors
+#define TINYGLTF_IMPLEMENTATION
+#define TINYGLTF_NO_STB_IMAGE
+#define TINYGLTF_NO_STB_IMAGE_WRITE
+#include "tinygltf/tiny_gltf.h"
 
 namespace mc {
 
@@ -688,6 +695,182 @@ inline bool exportOBJ(const std::string& filename, const Mesh& mesh,
 
     file.close();
     return true;
+}
+
+// Export mesh to GLB (binary GLTF) with proper vertex color support
+inline bool exportGLB(const std::string& filename, const Mesh& mesh,
+                      bool includeColors = true) {
+    if (mesh.vertices.empty()) return false;
+
+    tinygltf::Model model;
+    tinygltf::Scene scene;
+    tinygltf::Mesh gltfMesh;
+    tinygltf::Primitive primitive;
+    tinygltf::Buffer buffer;
+    tinygltf::BufferView positionView, normalView, colorView, indexView;
+    tinygltf::Accessor positionAccessor, normalAccessor, colorAccessor, indexAccessor;
+
+    // Calculate buffer sizes
+    size_t vertexCount = mesh.vertices.size();
+    size_t indexCount = mesh.indices.size();
+    size_t positionSize = vertexCount * 3 * sizeof(float);
+    size_t normalSize = mesh.hasNormals() ? vertexCount * 3 * sizeof(float) : 0;
+    size_t colorSize = (includeColors && mesh.hasColors()) ? vertexCount * 4 * sizeof(float) : 0;
+    size_t indexSize = indexCount * sizeof(uint32_t);
+
+    // Create buffer data
+    size_t offset = 0;
+    buffer.data.resize(positionSize + normalSize + colorSize + indexSize);
+
+    // Positions
+    std::vector<float> positions(vertexCount * 3);
+    float minPos[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+    float maxPos[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (size_t i = 0; i < vertexCount; i++) {
+        positions[i * 3 + 0] = mesh.vertices[i].x;
+        positions[i * 3 + 1] = mesh.vertices[i].y;
+        positions[i * 3 + 2] = mesh.vertices[i].z;
+        minPos[0] = std::min(minPos[0], mesh.vertices[i].x);
+        minPos[1] = std::min(minPos[1], mesh.vertices[i].y);
+        minPos[2] = std::min(minPos[2], mesh.vertices[i].z);
+        maxPos[0] = std::max(maxPos[0], mesh.vertices[i].x);
+        maxPos[1] = std::max(maxPos[1], mesh.vertices[i].y);
+        maxPos[2] = std::max(maxPos[2], mesh.vertices[i].z);
+    }
+    memcpy(buffer.data.data() + offset, positions.data(), positionSize);
+
+    positionView.buffer = 0;
+    positionView.byteOffset = offset;
+    positionView.byteLength = positionSize;
+    positionView.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+    offset += positionSize;
+
+    positionAccessor.bufferView = 0;
+    positionAccessor.byteOffset = 0;
+    positionAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    positionAccessor.count = vertexCount;
+    positionAccessor.type = TINYGLTF_TYPE_VEC3;
+    positionAccessor.minValues = {minPos[0], minPos[1], minPos[2]};
+    positionAccessor.maxValues = {maxPos[0], maxPos[1], maxPos[2]};
+
+    // Normals
+    int normalAccessorIdx = -1;
+    if (mesh.hasNormals()) {
+        std::vector<float> normals(vertexCount * 3);
+        for (size_t i = 0; i < vertexCount; i++) {
+            normals[i * 3 + 0] = mesh.normals[i].x;
+            normals[i * 3 + 1] = mesh.normals[i].y;
+            normals[i * 3 + 2] = mesh.normals[i].z;
+        }
+        memcpy(buffer.data.data() + offset, normals.data(), normalSize);
+
+        normalView.buffer = 0;
+        normalView.byteOffset = offset;
+        normalView.byteLength = normalSize;
+        normalView.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+        offset += normalSize;
+
+        normalAccessor.bufferView = 1;
+        normalAccessor.byteOffset = 0;
+        normalAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+        normalAccessor.count = vertexCount;
+        normalAccessor.type = TINYGLTF_TYPE_VEC3;
+        normalAccessorIdx = 1;
+    }
+
+    // Colors (RGBA float)
+    int colorAccessorIdx = -1;
+    if (includeColors && mesh.hasColors()) {
+        std::vector<float> colors(vertexCount * 4);
+        for (size_t i = 0; i < vertexCount; i++) {
+            colors[i * 4 + 0] = mesh.colors[i].r;
+            colors[i * 4 + 1] = mesh.colors[i].g;
+            colors[i * 4 + 2] = mesh.colors[i].b;
+            colors[i * 4 + 3] = 1.0f;  // Alpha
+        }
+        memcpy(buffer.data.data() + offset, colors.data(), colorSize);
+
+        colorView.buffer = 0;
+        colorView.byteOffset = offset;
+        colorView.byteLength = colorSize;
+        colorView.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+        offset += colorSize;
+
+        colorAccessor.bufferView = mesh.hasNormals() ? 2 : 1;
+        colorAccessor.byteOffset = 0;
+        colorAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+        colorAccessor.count = vertexCount;
+        colorAccessor.type = TINYGLTF_TYPE_VEC4;
+        colorAccessorIdx = mesh.hasNormals() ? 2 : 1;
+    }
+
+    // Indices
+    memcpy(buffer.data.data() + offset, mesh.indices.data(), indexSize);
+
+    indexView.buffer = 0;
+    indexView.byteOffset = offset;
+    indexView.byteLength = indexSize;
+    indexView.target = TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER;
+
+    int indexViewIdx = 0;
+    if (mesh.hasNormals()) indexViewIdx++;
+    if (includeColors && mesh.hasColors()) indexViewIdx++;
+
+    indexAccessor.bufferView = indexViewIdx + 1;
+    indexAccessor.byteOffset = 0;
+    indexAccessor.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
+    indexAccessor.count = indexCount;
+    indexAccessor.type = TINYGLTF_TYPE_SCALAR;
+
+    // Build model
+    model.buffers.push_back(buffer);
+    model.bufferViews.push_back(positionView);
+    if (mesh.hasNormals()) model.bufferViews.push_back(normalView);
+    if (includeColors && mesh.hasColors()) model.bufferViews.push_back(colorView);
+    model.bufferViews.push_back(indexView);
+
+    model.accessors.push_back(positionAccessor);
+    if (mesh.hasNormals()) model.accessors.push_back(normalAccessor);
+    if (includeColors && mesh.hasColors()) model.accessors.push_back(colorAccessor);
+    model.accessors.push_back(indexAccessor);
+
+    // Material that uses vertex colors
+    tinygltf::Material material;
+    material.name = "VertexColorMaterial";
+    material.pbrMetallicRoughness.baseColorFactor = {1.0, 1.0, 1.0, 1.0};  // White base, vertex colors multiply
+    material.pbrMetallicRoughness.metallicFactor = 0.0;
+    material.pbrMetallicRoughness.roughnessFactor = 0.8;
+    material.doubleSided = true;
+    model.materials.push_back(material);
+
+    // Primitive
+    primitive.attributes["POSITION"] = 0;
+    if (normalAccessorIdx >= 0) primitive.attributes["NORMAL"] = normalAccessorIdx;
+    if (colorAccessorIdx >= 0) primitive.attributes["COLOR_0"] = colorAccessorIdx;
+    primitive.indices = static_cast<int>(model.accessors.size() - 1);
+    primitive.mode = TINYGLTF_MODE_TRIANGLES;
+    primitive.material = 0;  // Use the vertex color material
+
+    gltfMesh.primitives.push_back(primitive);
+    model.meshes.push_back(gltfMesh);
+
+    // Node
+    tinygltf::Node node;
+    node.mesh = 0;
+    model.nodes.push_back(node);
+
+    // Scene
+    scene.nodes.push_back(0);
+    model.scenes.push_back(scene);
+    model.defaultScene = 0;
+
+    // Asset info
+    model.asset.version = "2.0";
+    model.asset.generator = "Marching Cubes Exporter";
+
+    // Write GLB
+    tinygltf::TinyGLTF gltf;
+    return gltf.WriteGltfSceneToFile(&model, filename, true, true, true, true);
 }
 
 // Generate mesh from an SDF function (CPU evaluation)

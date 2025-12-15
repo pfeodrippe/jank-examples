@@ -91,6 +91,7 @@
         (render/sync-camera-from-cpp!)
         (process-pending-shader-switch!)
         (shader/check-shader-reload!)
+        ;; (shader/check-mesh-shader-reload!)  ;; Hot reload for mesh shaders - TODO: fix JIT issue
         (ui/new-frame!)
         (ui/draw-debug-ui!)
         (render/update-uniforms! 0.016)

@@ -3,17 +3,20 @@
 // Vertex input
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
+layout(location = 2) in vec3 inColor;
 
 // Output to fragment shader
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec3 fragWorldPos;
+layout(location = 2) out vec3 fragColor;
 
 // Camera/Transform UBO - matches main UBO structure
 layout(binding = 0) uniform MeshUBO {
     vec4 cameraPos;      // xyz = position, w = fov
     vec4 cameraTarget;   // xyz = target
     vec4 lightDir;       // xyz = direction
-    vec4 resolution;     // xy = resolution, z = time
+    vec4 resolution;     // xy = resolution, z = time, w = scale
+    vec4 options;        // x = useVertexColors (0 or 1)
 } ubo;
 
 // Simple view-projection calculation
@@ -60,4 +63,5 @@ void main() {
 
     fragNormal = inNormal;
     fragWorldPos = scaledPos;
+    fragColor = inColor;
 }

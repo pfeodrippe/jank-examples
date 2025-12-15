@@ -37,6 +37,7 @@ layout(std140, binding = 1) uniform UBO {
     vec4 cameraTarget;   // xyz = target
     vec4 lightDir;       // xyz = direction (normalized)
     vec4 resolution;     // xy = width/height, z = time
+    vec4 options;        // x = useVertexColors (mesh preview), y/z/w = unused
     vec4 editMode;       // x = enabled, y = selectedObject, z = hoveredAxis, w = objectCount
     vec4 gizmoPos;       // xyz = gizmo position
     vec4 gizmoRot;       // xyz = selected object rotation (for preview)

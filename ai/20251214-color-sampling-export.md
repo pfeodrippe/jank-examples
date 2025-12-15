@@ -37,7 +37,11 @@ Modified export functions to use GPU color sampling instead of default gray.
    - Ambient occlusion
    - Rim lighting
    - Specular highlights
+   - **Painterly effects** (brush strokes, posterization, color variation)
+   - **Edge darkening**
 4. Colors are read back and stored in mesh
+
+The painterly effects match the main shader's visual style, giving exported meshes the same artistic look as the live render.
 
 ## Shader Extraction
 

@@ -696,6 +696,13 @@ if [ ! -f vulkan/stb_impl.o ] || [ vulkan/stb_impl.c -nt vulkan/stb_impl.o ]; th
     clang -fPIC -c vulkan/stb_impl.c -o vulkan/stb_impl.o
 fi
 
+# Build tinygltf_impl.o if needed (for GLB/glTF export in standalone builds)
+if [ ! -f vulkan/tinygltf_impl.o ] || [ vulkan/tinygltf_impl.cpp -nt vulkan/tinygltf_impl.o ] || [ vulkan/marching_cubes.hpp -nt vulkan/tinygltf_impl.o ]; then
+    echo "Compiling tinygltf_impl..."
+    clang++ -fPIC -c vulkan/tinygltf_impl.cpp -o vulkan/tinygltf_impl.o \
+        -I. -Ivendor -std=c++17
+fi
+
 # Build vybe_flecs_jank.o if needed (jank-runtime-dependent flecs helpers)
 if [ ! -f vendor/vybe/vybe_flecs_jank.o ] || [ vendor/vybe/vybe_flecs_jank.cpp -nt vendor/vybe/vybe_flecs_jank.o ]; then
     echo "Compiling vybe_flecs_jank..."
@@ -727,6 +734,13 @@ OBJ_FILES=(
     vulkan/stb_impl.o
     vendor/flecs/distr/flecs.o
     vendor/vybe/vybe_flecs_jank.o
+)
+
+# Additional object files only needed for standalone (AOT) builds
+# tinygltf_impl.o is only needed for AOT linking - in JIT mode, the
+# implementation comes from the JIT-compiled marching_cubes.hpp header
+STANDALONE_OBJ_FILES=(
+    vulkan/tinygltf_impl.o
 )
 
 # Build jank arguments for SDF viewer (platform-specific)
@@ -787,18 +801,21 @@ if [ "$STANDALONE" = true ]; then
     echo "Building standalone executable: $OUTPUT_NAME"
 
     # Create a shared library from object files for JIT loading and AOT linking
+    # For standalone builds, include STANDALONE_OBJ_FILES (like tinygltf_impl.o)
     SHARED_LIB="vulkan/libsdf_deps.$SHARED_LIB_EXT"
     echo "Creating shared library..."
 
+    ALL_OBJ_FILES=("${OBJ_FILES[@]}" "${STANDALONE_OBJ_FILES[@]}")
+
     case "$(uname -s)" in
         Darwin)
-            clang++ -dynamiclib -o "$SHARED_LIB" "${OBJ_FILES[@]}" \
+            clang++ -dynamiclib -o "$SHARED_LIB" "${ALL_OBJ_FILES[@]}" \
                 -framework Cocoa -framework IOKit -framework IOSurface -framework Metal -framework QuartzCore \
                 -L/opt/homebrew/lib -lvulkan -lSDL3 -lshaderc_shared \
                 -Wl,-undefined,dynamic_lookup
             ;;
         Linux)
-            clang++ -shared -fPIC -o "$SHARED_LIB" "${OBJ_FILES[@]}" \
+            clang++ -shared -fPIC -o "$SHARED_LIB" "${ALL_OBJ_FILES[@]}" \
                 -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/aarch64-linux-gnu -L/usr/local/lib \
                 -lvulkan -lSDL3 -lshaderc \
                 -Wl,--allow-shlib-undefined

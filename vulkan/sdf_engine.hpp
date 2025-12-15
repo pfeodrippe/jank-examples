@@ -72,6 +72,8 @@ struct UBO {
     float cameraTarget[4];
     float lightDir[4];
     float resolution[4];
+    // Mesh preview options
+    float options[4];       // x=useVertexColors (for mesh preview), y/z/w=unused
     // Edit mode uniforms
     float editMode[4];      // x=enabled, y=selectedObject, z=hoveredAxis, w=objectCount
     float gizmoPos[4];      // xyz=position of gizmo, w=unused
@@ -231,6 +233,7 @@ struct Engine {
     // Mesh preview state
     bool meshPreviewVisible = false;
     bool meshRenderSolid = true;  // true = solid, false = wireframe
+    bool meshUseVertexColors = false;  // true = use sampled vertex colors
     float meshScale = 1.0f;       // Scale factor for mesh preview
     int meshPreviewResolution = 256;
     VkBuffer meshVertexBuffer = VK_NULL_HANDLE;
@@ -1699,6 +1702,12 @@ inline void update_uniforms(double dt) {
     ubo.resolution[2] = e->time;
     ubo.resolution[3] = e->meshScale;  // Mesh scale in w component
 
+    // Mesh preview options
+    ubo.options[0] = e->meshUseVertexColors ? 1.0f : 0.0f;
+    ubo.options[1] = 0.0f;
+    ubo.options[2] = 0.0f;
+    ubo.options[3] = 0.0f;
+
     // Edit mode uniforms
     ubo.editMode[0] = e->editMode ? 1.0f : 0.0f;
     ubo.editMode[1] = static_cast<float>(e->selectedObject);
@@ -2377,8 +2386,7 @@ struct MeshExportResult {
 
 struct SDFSampler {
     bool initialized = false;
-    VkBuffer inputBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory inputMemory = VK_NULL_HANDLE;
+    // No more inputBuffer - positions computed on-the-fly in shader!
     VkBuffer outputBuffer = VK_NULL_HANDLE;
     VkDeviceMemory outputMemory = VK_NULL_HANDLE;
     VkBuffer paramsBuffer = VK_NULL_HANDLE;
@@ -2391,6 +2399,7 @@ struct SDFSampler {
     VkShaderModule shaderModule = VK_NULL_HANDLE;
     size_t maxPoints = 0;
     std::string cachedShaderName;
+    time_t cachedShaderModTime = 0;  // Track shader modification for hot reload
 };
 
 inline SDFSampler* g_sampler = nullptr;
@@ -2495,8 +2504,7 @@ inline void cleanup_sampler() {
     if (s->descriptorPool) vkDestroyDescriptorPool(e->device, s->descriptorPool, nullptr);
     if (s->descriptorSetLayout) vkDestroyDescriptorSetLayout(e->device, s->descriptorSetLayout, nullptr);
 
-    if (s->inputBuffer) vkDestroyBuffer(e->device, s->inputBuffer, nullptr);
-    if (s->inputMemory) vkFreeMemory(e->device, s->inputMemory, nullptr);
+    // No more inputBuffer - positions computed on-the-fly in shader
     if (s->outputBuffer) vkDestroyBuffer(e->device, s->outputBuffer, nullptr);
     if (s->outputMemory) vkFreeMemory(e->device, s->outputMemory, nullptr);
     if (s->paramsBuffer) vkDestroyBuffer(e->device, s->paramsBuffer, nullptr);
@@ -2515,7 +2523,17 @@ inline bool init_sampler(size_t numPoints) {
         return false;
     }
 
-    if (s->initialized && s->maxPoints >= numPoints && s->cachedShaderName == e->currentShaderName) {
+    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
+    time_t currentModTime = 0;
+    struct stat st;
+    if (stat(shaderPath.c_str(), &st) == 0) {
+        currentModTime = st.st_mtime;
+    }
+
+    // Check if we can reuse cached sampler (same shader name, same mod time, enough capacity)
+    if (s->initialized && s->maxPoints >= numPoints &&
+        s->cachedShaderName == e->currentShaderName &&
+        s->cachedShaderModTime == currentModTime) {
         return true;
     }
 
@@ -2525,7 +2543,6 @@ inline bool init_sampler(size_t numPoints) {
 
     std::cout << "Initializing SDF sampler for " << numPoints << " points..." << std::endl;
 
-    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
     std::string samplerSrc = build_sampler_shader(shaderPath);
     if (samplerSrc.empty()) {
         return false;
@@ -2547,22 +2564,25 @@ inline bool init_sampler(size_t numPoints) {
         return false;
     }
 
-    VkDeviceSize inputSize = numPoints * sizeof(float) * 4;
+    // MEMORY OPTIMIZED: No more input buffer - positions computed in shader!
+    // Only need output buffer for distances and params buffer for grid parameters
     VkDeviceSize outputSize = numPoints * sizeof(float);
-    VkDeviceSize paramsSize = 16;
+    // Params: resolution(uint) + time(float) + minXYZ(3 floats) + maxXYZ(3 floats) = 32 bytes
+    VkDeviceSize paramsSize = 32;
 
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = inputSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &s->inputBuffer) != VK_SUCCESS) {
+    // Output buffer (distances)
+    bufferInfo.size = outputSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &s->outputBuffer) != VK_SUCCESS) {
         return false;
     }
 
     VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(e->device, s->inputBuffer, &memReq);
+    vkGetBufferMemoryRequirements(e->device, s->outputBuffer, &memReq);
 
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -2570,24 +2590,12 @@ inline bool init_sampler(size_t numPoints) {
     allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &s->inputMemory) != VK_SUCCESS) {
-        return false;
-    }
-    vkBindBufferMemory(e->device, s->inputBuffer, s->inputMemory, 0);
-
-    bufferInfo.size = outputSize;
-    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &s->outputBuffer) != VK_SUCCESS) {
-        return false;
-    }
-
-    vkGetBufferMemoryRequirements(e->device, s->outputBuffer, &memReq);
-    allocInfo.allocationSize = memReq.size;
-
     if (vkAllocateMemory(e->device, &allocInfo, nullptr, &s->outputMemory) != VK_SUCCESS) {
         return false;
     }
     vkBindBufferMemory(e->device, s->outputBuffer, s->outputMemory, 0);
 
+    // Params buffer (uniform)
     bufferInfo.size = paramsSize;
     bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &s->paramsBuffer) != VK_SUCCESS) {
@@ -2602,14 +2610,14 @@ inline bool init_sampler(size_t numPoints) {
     }
     vkBindBufferMemory(e->device, s->paramsBuffer, s->paramsMemory, 0);
 
-    VkDescriptorSetLayoutBinding bindings[3] = {};
+    // Descriptor layout: binding 0 = output (storage), binding 1 = params (uniform)
+    VkDescriptorSetLayoutBinding bindings[2] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[2] = {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 3;
+    layoutInfo.bindingCount = 2;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &s->descriptorSetLayout) != VK_SUCCESS) {
@@ -2617,7 +2625,7 @@ inline bool init_sampler(size_t numPoints) {
     }
 
     VkDescriptorPoolSize poolSizes[2] = {};
-    poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
     poolSizes[1] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
 
     VkDescriptorPoolCreateInfo poolInfo{};
@@ -2640,16 +2648,14 @@ inline bool init_sampler(size_t numPoints) {
         return false;
     }
 
-    VkDescriptorBufferInfo inputBufferInfo{s->inputBuffer, 0, inputSize};
     VkDescriptorBufferInfo outputBufferInfo{s->outputBuffer, 0, outputSize};
     VkDescriptorBufferInfo paramsBufferInfo{s->paramsBuffer, 0, paramsSize};
 
-    VkWriteDescriptorSet writes[3] = {};
-    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inputBufferInfo, nullptr};
-    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &outputBufferInfo, nullptr};
-    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsBufferInfo, nullptr};
+    VkWriteDescriptorSet writes[2] = {};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &outputBufferInfo, nullptr};
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsBufferInfo, nullptr};
 
-    vkUpdateDescriptorSets(e->device, 3, writes, 0, nullptr);
+    vkUpdateDescriptorSets(e->device, 2, writes, 0, nullptr);
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2677,37 +2683,53 @@ inline bool init_sampler(size_t numPoints) {
 
     s->maxPoints = numPoints;
     s->cachedShaderName = e->currentShaderName;
+    s->cachedShaderModTime = currentModTime;  // Track mod time for hot reload
     s->initialized = true;
 
-    std::cout << "SDF sampler initialized successfully" << std::endl;
+    std::cout << "SDF sampler initialized (memory optimized - no positions buffer!)" << std::endl;
     return true;
 }
 
-// Sample SDF at given points, return distances
-inline std::vector<float> sample_sdf(const std::vector<float>& positions) {
+// Sample SDF on a regular 3D grid for marching cubes (memory optimized - positions computed in shader)
+inline std::vector<float> sample_sdf_grid(
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    int res) {
+
     auto* s = get_sampler();
     auto* e = get_engine();
 
-    size_t numPoints = positions.size() / 4;
-    if (numPoints == 0) return {};
+    size_t totalPoints = static_cast<size_t>(res) * res * res;
+    if (totalPoints == 0) return {};
 
-    if (!init_sampler(numPoints)) {
+    std::cout << "Sampling " << totalPoints << " SDF points on GPU (memory optimized)..." << std::endl;
+    auto start = std::chrono::high_resolution_clock::now();
+
+    if (!init_sampler(totalPoints)) {
         std::cerr << "Failed to initialize sampler" << std::endl;
         return {};
     }
 
-    void* data;
-    vkMapMemory(e->device, s->inputMemory, 0, positions.size() * sizeof(float), 0, &data);
-    memcpy(data, positions.data(), positions.size() * sizeof(float));
-    vkUnmapMemory(e->device, s->inputMemory);
-
-    struct { uint32_t numPoints; float time, pad2, pad3; } params = {
-        static_cast<uint32_t>(numPoints), e->time, 0, 0
+    // Upload grid parameters to uniform buffer (no positions buffer needed!)
+    // Struct matches shader: resolution(uint), time(float), minXYZ(3 floats), maxXYZ(3 floats)
+    struct SamplerParams {
+        uint32_t resolution;
+        float time;
+        float minX, minY, minZ;
+        float maxX, maxY, maxZ;
+    } params = {
+        static_cast<uint32_t>(res),
+        e->time,
+        minX, minY, minZ,
+        maxX, maxY, maxZ
     };
+
+    void* data;
     vkMapMemory(e->device, s->paramsMemory, 0, sizeof(params), 0, &data);
     memcpy(data, &params, sizeof(params));
     vkUnmapMemory(e->device, s->paramsMemory);
 
+    // Execute compute shader
     VkCommandBufferAllocateInfo cmdAllocInfo{};
     cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cmdAllocInfo.commandPool = e->commandPool;
@@ -2726,7 +2748,7 @@ inline std::vector<float> sample_sdf(const std::vector<float>& positions) {
     vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             s->pipelineLayout, 0, 1, &s->descriptorSet, 0, nullptr);
 
-    uint32_t groupCount = (static_cast<uint32_t>(numPoints) + 63) / 64;
+    uint32_t groupCount = (static_cast<uint32_t>(totalPoints) + 63) / 64;
     vkCmdDispatch(cmdBuffer, groupCount, 1, 1);
 
     VkMemoryBarrier barrier{};
@@ -2751,43 +2773,11 @@ inline std::vector<float> sample_sdf(const std::vector<float>& positions) {
 
     vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmdBuffer);
 
-    std::vector<float> results(numPoints);
-    vkMapMemory(e->device, s->outputMemory, 0, numPoints * sizeof(float), 0, &data);
-    memcpy(results.data(), data, numPoints * sizeof(float));
+    // Read back results
+    std::vector<float> results(totalPoints);
+    vkMapMemory(e->device, s->outputMemory, 0, totalPoints * sizeof(float), 0, &data);
+    memcpy(results.data(), data, totalPoints * sizeof(float));
     vkUnmapMemory(e->device, s->outputMemory);
-
-    return results;
-}
-
-// Sample SDF on a regular 3D grid for marching cubes
-inline std::vector<float> sample_sdf_grid(
-    float minX, float minY, float minZ,
-    float maxX, float maxY, float maxZ,
-    int res) {
-
-    size_t totalPoints = static_cast<size_t>(res) * res * res;
-    std::vector<float> positions(totalPoints * 4);
-
-    float stepX = (maxX - minX) / (res - 1);
-    float stepY = (maxY - minY) / (res - 1);
-    float stepZ = (maxZ - minZ) / (res - 1);
-
-    size_t idx = 0;
-    for (int iz = 0; iz < res; iz++) {
-        for (int iy = 0; iy < res; iy++) {
-            for (int ix = 0; ix < res; ix++) {
-                positions[idx++] = minX + ix * stepX;
-                positions[idx++] = minY + iy * stepY;
-                positions[idx++] = minZ + iz * stepZ;
-                positions[idx++] = 0.0f;
-            }
-        }
-    }
-
-    std::cout << "Sampling " << totalPoints << " SDF points on GPU..." << std::endl;
-    auto start = std::chrono::high_resolution_clock::now();
-
-    auto results = sample_sdf(positions);
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -2818,6 +2808,7 @@ struct ColorSampler {
     VkShaderModule shaderModule = VK_NULL_HANDLE;
     size_t maxPoints = 0;
     std::string cachedShaderName;
+    time_t cachedShaderModTime = 0;  // Track shader modification for hot reload
 };
 
 inline ColorSampler* g_colorSampler = nullptr;
@@ -2849,60 +2840,24 @@ inline std::string extract_scene_for_colors(const std::string& shaderSource) {
         return "";
     }
 
-    // Find sceneSDF function
-    size_t sceneSdfPos = shaderSource.find("float sceneSDF(vec3 p)");
-    if (sceneSdfPos == std::string::npos) {
-        sceneSdfPos = shaderSource.find("float sceneSDF(");
+    // Find the end - we want everything up to main() or setCamera()
+    size_t endPos = shaderSource.find("void main()");
+    if (endPos == std::string::npos) {
+        endPos = shaderSource.find("mat3 setCamera");
     }
-    if (sceneSdfPos == std::string::npos) {
-        std::cerr << "Could not find sceneSDF function" << std::endl;
+    if (endPos == std::string::npos) {
+        endPos = shaderSource.find("// RAYMARCHING");
+    }
+    if (endPos == std::string::npos) {
+        std::cerr << "Could not find end of extractable code" << std::endl;
         return "";
     }
 
-    // Find sceneSDF_mat function
-    size_t sceneSdfMatPos = shaderSource.find("vec2 sceneSDF_mat(vec3 p)");
-    if (sceneSdfMatPos == std::string::npos) {
-        sceneSdfMatPos = shaderSource.find("vec2 sceneSDF_mat(");
-    }
-
-    // Find getMaterialColor function
-    size_t getMaterialPos = shaderSource.find("vec3 getMaterialColor(");
-
-    // Find the end position - look for the RAYMARCHING section or render function
-    size_t endPos = shaderSource.find("// RAYMARCHING");
-    if (endPos == std::string::npos) {
-        endPos = shaderSource.find("vec3 render(");
-    }
-    if (endPos == std::string::npos) {
-        // Fallback: find end of getMaterialColor function
-        if (getMaterialPos != std::string::npos) {
-            size_t braceCount = 0;
-            size_t funcStart = shaderSource.find('{', getMaterialPos);
-            if (funcStart != std::string::npos) {
-                for (size_t i = funcStart; i < shaderSource.size(); i++) {
-                    if (shaderSource[i] == '{') braceCount++;
-                    else if (shaderSource[i] == '}') {
-                        braceCount--;
-                        if (braceCount == 0) {
-                            endPos = i + 1;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (endPos == std::string::npos) {
-        std::cerr << "Could not find end of scene code" << std::endl;
-        return "";
-    }
-
-    // Extract everything from helpers to end
+    // Extract everything from helpers to end (includes SDF, materials, noise, lighting, painterly)
     result = shaderSource.substr(helperStart, endPos - helperStart);
 
-    // If getMaterialColor wasn't found, add a default
-    if (getMaterialPos == std::string::npos || getMaterialPos >= endPos) {
+    // Check for required functions and add defaults if missing
+    if (result.find("vec3 getMaterialColor(") == std::string::npos) {
         result += R"(
 
 vec3 getMaterialColor(int matID, vec3 p) {
@@ -2911,12 +2866,109 @@ vec3 getMaterialColor(int matID, vec3 p) {
 )";
     }
 
-    // If sceneSDF_mat wasn't found, add a default that uses sceneSDF
-    if (sceneSdfMatPos == std::string::npos || sceneSdfMatPos >= endPos) {
+    if (result.find("vec2 sceneSDF_mat(") == std::string::npos) {
         result += R"(
 
 vec2 sceneSDF_mat(vec3 p) {
     return vec2(sceneSDF(p), 1.0);
+}
+)";
+    }
+
+    if (result.find("float calcSoftShadow(") == std::string::npos) {
+        result += R"(
+
+float calcSoftShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
+    float res = 1.0;
+    float t = mint;
+    for (int i = 0; i < 64 && t < maxt; i++) {
+        float h = sceneSDF(ro + rd * t);
+        if (h < 0.001) return 0.0;
+        res = min(res, k * h / t);
+        t += clamp(h, 0.02, 0.1);
+    }
+    return res;
+}
+)";
+    }
+
+    if (result.find("float calcAO(") == std::string::npos) {
+        result += R"(
+
+float calcAO(vec3 pos, vec3 nor) {
+    float occ = 0.0;
+    float sca = 1.0;
+    for (int i = 0; i < 5; i++) {
+        float h = 0.01 + 0.12 * float(i);
+        float d = sceneSDF(pos + h * nor);
+        occ += (h - d) * sca;
+        sca *= 0.95;
+    }
+    return clamp(1.0 - 3.0 * occ, 0.0, 1.0);
+}
+)";
+    }
+
+    // Add noise/painterly defaults if not found
+    if (result.find("float hash2D(") == std::string::npos) {
+        result += R"(
+
+float hash2D(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+)";
+    }
+
+    if (result.find("float noise2D(") == std::string::npos) {
+        result += R"(
+
+float noise2D(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash2D(i);
+    float b = hash2D(i + vec2(1.0, 0.0));
+    float c = hash2D(i + vec2(0.0, 1.0));
+    float d = hash2D(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+)";
+    }
+
+    if (result.find("float fbm(") == std::string::npos) {
+        result += R"(
+
+float fbm(vec2 p) {
+    float f = 0.0;
+    f += 0.5 * noise2D(p); p *= 2.0;
+    f += 0.25 * noise2D(p); p *= 2.0;
+    f += 0.125 * noise2D(p);
+    return f;
+}
+)";
+    }
+
+    if (result.find("vec3 posterize(") == std::string::npos) {
+        result += R"(
+
+vec3 posterize(vec3 col, float levels) {
+    return floor(col * levels + 0.5) / levels;
+}
+)";
+    }
+
+    if (result.find("float brushStroke(") == std::string::npos) {
+        result += R"(
+
+float brushStroke(vec2 uv, vec3 normal, float scale) {
+    vec2 dir = normalize(normal.xy + 0.001);
+    float angle = atan(dir.y, dir.x);
+    vec2 rotUV = vec2(
+        uv.x * cos(angle) - uv.y * sin(angle),
+        uv.x * sin(angle) + uv.y * cos(angle)
+    );
+    rotUV.x *= 3.0;
+    return fbm(rotUV * scale);
 }
 )";
     }
@@ -2992,7 +3044,17 @@ inline bool init_color_sampler(size_t numPoints) {
         return false;
     }
 
-    if (s->initialized && s->maxPoints >= numPoints && s->cachedShaderName == e->currentShaderName) {
+    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
+    time_t currentModTime = 0;
+    struct stat st;
+    if (stat(shaderPath.c_str(), &st) == 0) {
+        currentModTime = st.st_mtime;
+    }
+
+    // Check if we can reuse cached sampler (same shader name, same mod time, enough capacity)
+    if (s->initialized && s->maxPoints >= numPoints &&
+        s->cachedShaderName == e->currentShaderName &&
+        s->cachedShaderModTime == currentModTime) {
         return true;
     }
 
@@ -3001,8 +3063,6 @@ inline bool init_color_sampler(size_t numPoints) {
     }
 
     std::cout << "Initializing color sampler for " << numPoints << " points..." << std::endl;
-
-    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
     std::string samplerSrc = build_color_sampler_shader(shaderPath);
     if (samplerSrc.empty()) {
         return false;
@@ -3140,6 +3200,7 @@ inline bool init_color_sampler(size_t numPoints) {
 
     s->maxPoints = numPoints;
     s->cachedShaderName = e->currentShaderName;
+    s->cachedShaderModTime = currentModTime;  // Track mod time for hot reload
     s->initialized = true;
 
     std::cout << "Color sampler initialized successfully" << std::endl;
@@ -3365,15 +3426,25 @@ inline MeshExportResult export_scene_mesh_gpu(
     result.vertices = mesh.vertices.size();
     result.triangles = mesh.indices.size() / 3;
 
-    // Export to OBJ
-    if (mc::exportOBJ(filepath, mesh, includeColors, includeUVs)) {
+    // Export based on file extension
+    std::string path(filepath);
+    bool isGLB = path.size() > 4 && (path.substr(path.size() - 4) == ".glb" || path.substr(path.size() - 5) == ".gltf");
+
+    bool exportSuccess = false;
+    if (isGLB) {
+        exportSuccess = mc::exportGLB(filepath, mesh, includeColors);
+    } else {
+        exportSuccess = mc::exportOBJ(filepath, mesh, includeColors, includeUVs);
+    }
+
+    if (exportSuccess) {
         result.success = true;
         result.message = "Export successful";
         std::cout << "Exported to " << filepath << std::endl;
         std::cout << "  Vertices: " << result.vertices << std::endl;
         std::cout << "  Triangles: " << result.triangles << std::endl;
     } else {
-        result.message = "Failed to write OBJ file";
+        result.message = isGLB ? "Failed to write GLB file" : "Failed to write OBJ file";
     }
 
     return result;
@@ -3429,14 +3500,25 @@ inline MeshExportResult export_scene_mesh_gpu(
         result.vertices = exportMesh.vertices.size();
         result.triangles = exportMesh.indices.size() / 3;
 
-        if (mc::exportOBJ(filepath, exportMesh, includeColors, includeUVs)) {
+        // Export based on file extension
+        std::string path(filepath);
+        bool isGLB = path.size() > 4 && (path.substr(path.size() - 4) == ".glb" || path.substr(path.size() - 5) == ".gltf");
+
+        bool exportSuccess = false;
+        if (isGLB) {
+            exportSuccess = mc::exportGLB(filepath, exportMesh, includeColors);
+        } else {
+            exportSuccess = mc::exportOBJ(filepath, exportMesh, includeColors, includeUVs);
+        }
+
+        if (exportSuccess) {
             result.success = true;
             result.message = "Export successful";
             std::cout << "Exported to " << filepath << std::endl;
             std::cout << "  Vertices: " << result.vertices << std::endl;
             std::cout << "  Triangles: " << result.triangles << std::endl;
         } else {
-            result.message = "Failed to write OBJ file";
+            result.message = isGLB ? "Failed to write GLB file" : "Failed to write OBJ file";
         }
         return result;
     }
@@ -3454,7 +3536,8 @@ inline MeshExportResult export_scene_mesh_gpu(
 struct MeshVertex {
     float pos[3];
     float normal[3];
-};
+    float color[3];
+};;
 
 inline void cleanup_mesh_preview() {
     auto* e = get_engine();
@@ -3594,17 +3677,18 @@ inline bool init_mesh_pipeline() {
     shaderStages[1].module = fragModule;
     shaderStages[1].pName = "main";
 
-    // Vertex input: position (vec3) + normal (vec3)
+    // Vertex input: position (vec3) + normal (vec3) + color (vec3)
     VkVertexInputBindingDescription bindingDesc{0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attrDescs[2] = {
+    VkVertexInputAttributeDescription attrDescs[3] = {
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)},
-        {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal)}
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal)},
+        {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, color)}
     };
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
-    vertexInputInfo.vertexAttributeDescriptionCount = 2;
+    vertexInputInfo.vertexAttributeDescriptionCount = 3;
     vertexInputInfo.pVertexAttributeDescriptions = attrDescs;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -3677,7 +3761,7 @@ inline bool init_mesh_pipeline() {
 }
 
 // Upload mesh data to GPU buffers
-inline bool upload_mesh_preview(const mc::Mesh& mesh) {
+inline bool upload_mesh_preview(const mc::Mesh& mesh, const std::vector<mc::Color3>& colors = {}) {
     auto* e = get_engine();
     if (!e || !e->initialized) return false;
 
@@ -3736,6 +3820,9 @@ inline bool upload_mesh_preview(const mc::Mesh& mesh) {
         }
     }
 
+    // Check if we have valid colors
+    bool hasColors = !colors.empty() && colors.size() == mesh.vertices.size();
+
     // Create interleaved vertex data
     std::vector<MeshVertex> vertices(mesh.vertices.size());
     for (size_t i = 0; i < mesh.vertices.size(); i++) {
@@ -3745,6 +3832,15 @@ inline bool upload_mesh_preview(const mc::Mesh& mesh) {
         vertices[i].normal[0] = normals[i].x;
         vertices[i].normal[1] = normals[i].y;
         vertices[i].normal[2] = normals[i].z;
+        if (hasColors) {
+            vertices[i].color[0] = colors[i].r;
+            vertices[i].color[1] = colors[i].g;
+            vertices[i].color[2] = colors[i].b;
+        } else {
+            vertices[i].color[0] = 0.0f;
+            vertices[i].color[1] = 0.0f;
+            vertices[i].color[2] = 0.0f;
+        }
     }
 
     VkDeviceSize vertexBufferSize = sizeof(MeshVertex) * vertices.size();
@@ -3853,8 +3949,22 @@ inline bool generate_mesh_preview(int resolution = -1) {
         }
     }
 
+    // Sample vertex colors if enabled
+    std::vector<mc::Color3> colors;
+    if (e->meshUseVertexColors) {
+        std::cout << "Sampling vertex colors..." << std::endl;
+        // Compute normals (required for color sampling)
+        mc::computeNormals(e->currentMesh);
+        colors = sample_vertex_colors(e->currentMesh);
+        if (colors.empty()) {
+            std::cerr << "Warning: Failed to sample colors, using default" << std::endl;
+        } else {
+            std::cout << "Sampled " << colors.size() << " vertex colors" << std::endl;
+        }
+    }
+
     // Upload to GPU
-    return upload_mesh_preview(e->currentMesh);
+    return upload_mesh_preview(e->currentMesh, colors);
 }
 
 // Render mesh preview (called from draw_frame)
@@ -3912,6 +4022,21 @@ inline void set_mesh_scale(float scale) {
     if (!e) return;
     if (e->meshScale != scale) {
         e->meshScale = scale;
+        e->dirty = true;
+    }
+}
+
+inline bool get_mesh_use_vertex_colors() {
+    auto* e = get_engine();
+    return e ? e->meshUseVertexColors : false;
+}
+
+inline void set_mesh_use_vertex_colors(bool useColors) {
+    auto* e = get_engine();
+    if (!e) return;
+    if (e->meshUseVertexColors != useColors) {
+        e->meshUseVertexColors = useColors;
+        e->meshNeedsRegenerate = true;  // Need to regenerate with/without colors
         e->dirty = true;
     }
 }

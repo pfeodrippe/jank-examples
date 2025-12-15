@@ -35,3 +35,4 @@
 ## Others
 
 - [ ] jank-focused llm
+- [ ] check flecs

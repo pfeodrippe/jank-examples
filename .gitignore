@@ -21,3 +21,4 @@ sdf-viewer*
 .DS_Store
 
 *.obj
+*.glb

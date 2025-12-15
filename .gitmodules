@@ -19,3 +19,6 @@
 [submodule "vendor/libfive"]
 	path = vendor/libfive
 	url = https://github.com/libfive/libfive.git
+[submodule "vendor/tinygltf"]
+	path = vendor/tinygltf
+	url = https://github.com/syoyo/tinygltf.git

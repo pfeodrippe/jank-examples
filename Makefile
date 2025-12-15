@@ -30,7 +30,7 @@ clean-cache:
 # Clean all build artifacts
 clean: clean-cache
 	@echo "Cleaning build artifacts..."
-	rm -rf vulkan/imgui/*.o vulkan/stb_impl.o vulkan/libsdf_deps.dylib
+	rm -rf vulkan/imgui/*.o vulkan/stb_impl.o vulkan/tinygltf_impl.o vulkan/libsdf_deps.dylib
 	rm -rf vendor/imgui/build/*.o
 	rm -rf vendor/jolt_wrapper.o
 	rm -rf vendor/JoltPhysics/build
