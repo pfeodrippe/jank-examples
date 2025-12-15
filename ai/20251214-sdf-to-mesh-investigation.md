@@ -699,9 +699,39 @@ The GPU-based approach samples the actual rendered SDF shader, ensuring the expo
 - Mesh exactly matches rendered output
 - Works with any shader (auto-extracts sceneSDF function)
 
-### Next Steps
+### Mesh Preview Feature (2024-12-14)
 
-- Add resolution slider to UI
-- Add custom filename input
+Added real-time mesh preview that renders as a wireframe overlay on the SDF:
+
+**New Files:**
+- `vulkan_kim/mesh.vert` - Vertex shader with camera/projection matrices
+- `vulkan_kim/mesh.frag` - Fragment shader with basic lighting
+
+**Engine Changes:**
+- Added mesh preview state to Engine struct (visibility, resolution, buffers, pipeline)
+- Added `init_mesh_pipeline()` - Creates wireframe rendering pipeline
+- Added `upload_mesh_preview()` - Uploads mesh data to GPU buffers
+- Added `generate_mesh_preview()` - Samples SDF and generates mesh for preview
+- Added `render_mesh_preview()` - Renders mesh in draw_frame if visible
+- Added API functions: `toggle_mesh_preview()`, `get/set_mesh_preview_visible()`, `get/set_mesh_preview_resolution()`
+
+**UI Controls:**
+- "Show Mesh" / "Hide Mesh" toggle button
+- Resolution +/- buttons (16-256)
+- Current mesh stats (vertices, triangles)
+- "Regenerate Mesh" button
+
+**Usage:**
+```clojure
+;; From jank:
+(sdfx/toggle_mesh_preview)  ; Toggle visibility
+(sdfx/generate_mesh_preview (cpp/int. -1))  ; Regenerate at current resolution
+(sdfx/set_mesh_preview_resolution (cpp/int. 128))  ; Set resolution
+```
+
+### Future Enhancements
+
+- Add custom filename input for export
 - Add STL export option
 - Add progress indicator for large exports
+- Add depth buffer for proper mesh occlusion

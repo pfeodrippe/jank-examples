@@ -46,19 +46,41 @@
     (imgui/Separator)
     (imgui/Text #cpp "Objects: %d" (cpp/int. (count objs)))
     (imgui/Separator)
+    (imgui/Text #cpp "Mesh Preview:")
+    ;; Mesh preview toggle button
+    (let [visible (sdfx/get_mesh_preview_visible)]
+      (when (imgui/Button (if visible "Hide Mesh" "Show Mesh"))
+        (sdfx/toggle_mesh_preview)))
+    ;; Resolution controls (step size scales with resolution)
+    (let [res (sdfx/get_mesh_preview_resolution)
+          step (cond
+                 (< res 64) 8
+                 (< res 128) 16
+                 (< res 256) 32
+                 :else 64)]
+      (imgui/Text #cpp "Resolution: %d" (cpp/int. res))
+      (imgui/SameLine)
+      (when (imgui/Button "-")
+        (sdfx/set_mesh_preview_resolution (cpp/int. (- res step))))
+      (imgui/SameLine)
+      (when (imgui/Button "+")
+        (sdfx/set_mesh_preview_resolution (cpp/int. (+ res step)))))
+    ;; Show current mesh stats
+    (let [verts (sdfx/get_mesh_preview_vertex_count)
+          tris (sdfx/get_mesh_preview_triangle_count)]
+      (imgui/Text #cpp "  Verts: %d  Tris: %d" (cpp/int. verts) (cpp/int. tris)))
+    ;; Regenerate button
+    (when (imgui/Button "Regenerate Mesh")
+      (sdfx/generate_mesh_preview (cpp/int. -1)))
+    (imgui/Separator)
     (imgui/Text #cpp "Mesh Export:")
-    ;; GPU-based scene export (uses actual rendered SDF - no code duplication!)
-    (when (imgui/Button "Export Scene (GPU)")
-      (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. 64))]
-        (if (cpp/.-success result)
-          (println "Exported scene:" (cpp/.-vertices result) "verts,"
-                   (cpp/.-triangles result) "tris")
-          (println "Export failed:" (cpp/.-message result)))))
-    (when (imgui/Button "Export Scene HD (GPU)")
-      (let [result (sdfx/export_scene_mesh_gpu "exported_scene_hd.obj" (cpp/int. 128))]
-        (if (cpp/.-success result)
-          (println "Exported scene HD:" (cpp/.-vertices result) "verts,"
-                   (cpp/.-triangles result) "tris")
-          (println "Export failed:" (cpp/.-message result)))))
+    ;; GPU-based scene export using current resolution
+    (let [res (sdfx/get_mesh_preview_resolution)]
+      (when (imgui/Button "Export OBJ")
+        (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. res))]
+          (if (cpp/.-success result)
+            (println "Exported at" res "res:" (cpp/.-vertices result) "verts,"
+                     (cpp/.-triangles result) "tris")
+            (println "Export failed:" (cpp/.-message result))))))
     (imgui/End)
     nil))

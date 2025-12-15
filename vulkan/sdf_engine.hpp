@@ -222,6 +222,27 @@ struct Engine {
     // Temporary SPIR-V storage for jank-orchestrated pipeline creation
     std::vector<uint32_t> pendingSpirvData;
 
+    // Mesh preview state
+    bool meshPreviewVisible = false;
+    int meshPreviewResolution = 256;
+    VkBuffer meshVertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory meshVertexMemory = VK_NULL_HANDLE;
+    VkBuffer meshIndexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory meshIndexMemory = VK_NULL_HANDLE;
+    uint32_t meshIndexCount = 0;
+    uint32_t meshVertexCount = 0;
+    VkPipeline meshPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout meshPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout meshDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool meshDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet meshDescriptorSet = VK_NULL_HANDLE;
+    bool meshPipelineInitialized = false;
+    bool meshNeedsRegenerate = false;
+
+    // Stored mesh for export (shared between preview and export)
+    mc::Mesh currentMesh;
+    int currentMeshResolution = 0;  // Resolution at which currentMesh was generated
+
     // Initialize default scene objects
     void initDefaultScene() {
         objects.clear();
@@ -1660,6 +1681,10 @@ inline void update_uniforms(double dt) {
     memcpy(e->uniformMapped, &ubo, sizeof(UBO));
 }
 
+// Forward declarations for mesh preview
+inline void render_mesh_preview(VkCommandBuffer cmd);
+inline void cleanup_mesh_preview();
+
 inline void draw_frame() {
     auto* e = get_engine();
     if (!e || !e->initialized) return;
@@ -1733,6 +1758,9 @@ inline void draw_frame() {
                            0, 1, &e->blitDescriptorSet, 0, nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
 
+    // Render mesh preview overlay if visible
+    render_mesh_preview(cmd);
+
     // Render ImGui draw data (if imgui_render was called before draw_frame)
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
 
@@ -1775,6 +1803,9 @@ inline void cleanup() {
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     vkDestroyDescriptorPool(e->device, e->imguiDescriptorPool, nullptr);
+
+    // Cleanup mesh preview
+    cleanup_mesh_preview();
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(e->device, e->imageAvailableSemaphores[i], nullptr);
@@ -2756,8 +2787,523 @@ inline MeshExportResult export_scene_mesh_gpu(
 }
 
 // Convenience wrapper with default bounds
+// Convenience wrapper - uses stored mesh if available at matching resolution
 inline MeshExportResult export_scene_mesh_gpu(const char* filepath, int resolution = 64) {
+    auto* e = get_engine();
+    MeshExportResult result{false, 0, 0, ""};
+
+    if (!e || !e->initialized) {
+        result.message = "Engine not initialized";
+        return result;
+    }
+
+    // If we have a stored mesh at the requested resolution, just export it
+    if (e->currentMeshResolution == resolution && !e->currentMesh.vertices.empty()) {
+        std::cout << "Exporting stored mesh (resolution " << resolution << ")..." << std::endl;
+
+        result.vertices = e->currentMesh.vertices.size();
+        result.triangles = e->currentMesh.indices.size() / 3;
+
+        if (mc::exportOBJ(filepath, e->currentMesh)) {
+            result.success = true;
+            result.message = "Export successful";
+            std::cout << "Exported to " << filepath << std::endl;
+            std::cout << "  Vertices: " << result.vertices << std::endl;
+            std::cout << "  Triangles: " << result.triangles << std::endl;
+        } else {
+            result.message = "Failed to write OBJ file";
+        }
+        return result;
+    }
+
+    // Otherwise, regenerate mesh at requested resolution
     return export_scene_mesh_gpu(filepath, -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, resolution);
+}
+
+// ============================================================================
+// Mesh Preview Rendering System
+// ============================================================================
+
+// Mesh vertex structure (position + normal)
+struct MeshVertex {
+    float pos[3];
+    float normal[3];
+};
+
+inline void cleanup_mesh_preview() {
+    auto* e = get_engine();
+    if (!e || !e->device) return;
+
+    vkDeviceWaitIdle(e->device);
+
+    if (e->meshVertexBuffer) vkDestroyBuffer(e->device, e->meshVertexBuffer, nullptr);
+    if (e->meshVertexMemory) vkFreeMemory(e->device, e->meshVertexMemory, nullptr);
+    if (e->meshIndexBuffer) vkDestroyBuffer(e->device, e->meshIndexBuffer, nullptr);
+    if (e->meshIndexMemory) vkFreeMemory(e->device, e->meshIndexMemory, nullptr);
+    if (e->meshPipeline) vkDestroyPipeline(e->device, e->meshPipeline, nullptr);
+    if (e->meshPipelineLayout) vkDestroyPipelineLayout(e->device, e->meshPipelineLayout, nullptr);
+    if (e->meshDescriptorPool) vkDestroyDescriptorPool(e->device, e->meshDescriptorPool, nullptr);
+    if (e->meshDescriptorSetLayout) vkDestroyDescriptorSetLayout(e->device, e->meshDescriptorSetLayout, nullptr);
+
+    e->meshVertexBuffer = VK_NULL_HANDLE;
+    e->meshVertexMemory = VK_NULL_HANDLE;
+    e->meshIndexBuffer = VK_NULL_HANDLE;
+    e->meshIndexMemory = VK_NULL_HANDLE;
+    e->meshPipeline = VK_NULL_HANDLE;
+    e->meshPipelineLayout = VK_NULL_HANDLE;
+    e->meshDescriptorPool = VK_NULL_HANDLE;
+    e->meshDescriptorSetLayout = VK_NULL_HANDLE;
+    e->meshDescriptorSet = VK_NULL_HANDLE;
+    e->meshIndexCount = 0;
+    e->meshVertexCount = 0;
+    e->meshPipelineInitialized = false;
+}
+
+inline bool init_mesh_pipeline() {
+    auto* e = get_engine();
+    if (!e || !e->initialized) return false;
+    if (e->meshPipelineInitialized) return true;
+
+    std::cout << "Initializing mesh preview pipeline..." << std::endl;
+
+    // Load mesh shaders
+    auto vertCode = read_file(e->shaderDir + "/mesh.vert.spv");
+    auto fragCode = read_file(e->shaderDir + "/mesh.frag.spv");
+
+    if (vertCode.empty() || fragCode.empty()) {
+        std::cerr << "Failed to load mesh shaders" << std::endl;
+        return false;
+    }
+
+    VkShaderModule vertModule, fragModule;
+    VkShaderModuleCreateInfo vertInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    vertInfo.codeSize = vertCode.size();
+    vertInfo.pCode = reinterpret_cast<const uint32_t*>(vertCode.data());
+    if (vkCreateShaderModule(e->device, &vertInfo, nullptr, &vertModule) != VK_SUCCESS) {
+        std::cerr << "Failed to create mesh vertex shader module" << std::endl;
+        return false;
+    }
+
+    VkShaderModuleCreateInfo fragInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    fragInfo.codeSize = fragCode.size();
+    fragInfo.pCode = reinterpret_cast<const uint32_t*>(fragCode.data());
+    if (vkCreateShaderModule(e->device, &fragInfo, nullptr, &fragModule) != VK_SUCCESS) {
+        vkDestroyShaderModule(e->device, vertModule, nullptr);
+        std::cerr << "Failed to create mesh fragment shader module" << std::endl;
+        return false;
+    }
+
+    // Create descriptor set layout (uniform buffer for camera)
+    VkDescriptorSetLayoutBinding uboBinding = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &uboBinding;
+
+    if (vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &e->meshDescriptorSetLayout) != VK_SUCCESS) {
+        vkDestroyShaderModule(e->device, vertModule, nullptr);
+        vkDestroyShaderModule(e->device, fragModule, nullptr);
+        return false;
+    }
+
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSize = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+
+    if (vkCreateDescriptorPool(e->device, &poolInfo, nullptr, &e->meshDescriptorPool) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(e->device, e->meshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(e->device, vertModule, nullptr);
+        vkDestroyShaderModule(e->device, fragModule, nullptr);
+        return false;
+    }
+
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo dsAllocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    dsAllocInfo.descriptorPool = e->meshDescriptorPool;
+    dsAllocInfo.descriptorSetCount = 1;
+    dsAllocInfo.pSetLayouts = &e->meshDescriptorSetLayout;
+
+    if (vkAllocateDescriptorSets(e->device, &dsAllocInfo, &e->meshDescriptorSet) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(e->device, e->meshDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(e->device, e->meshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(e->device, vertModule, nullptr);
+        vkDestroyShaderModule(e->device, fragModule, nullptr);
+        return false;
+    }
+
+    // Update descriptor set to point to the uniform buffer
+    VkDescriptorBufferInfo bufferInfo{e->uniformBuffer, 0, sizeof(UBO)};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = e->meshDescriptorSet;
+    write.dstBinding = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.descriptorCount = 1;
+    write.pBufferInfo = &bufferInfo;
+    vkUpdateDescriptorSets(e->device, 1, &write, 0, nullptr);
+
+    // Create pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &e->meshDescriptorSetLayout;
+
+    if (vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &e->meshPipelineLayout) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(e->device, e->meshDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(e->device, e->meshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(e->device, vertModule, nullptr);
+        vkDestroyShaderModule(e->device, fragModule, nullptr);
+        return false;
+    }
+
+    // Create graphics pipeline
+    VkPipelineShaderStageCreateInfo shaderStages[2] = {};
+    shaderStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    shaderStages[0].module = vertModule;
+    shaderStages[0].pName = "main";
+    shaderStages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    shaderStages[1].module = fragModule;
+    shaderStages[1].pName = "main";
+
+    // Vertex input: position (vec3) + normal (vec3)
+    VkVertexInputBindingDescription bindingDesc{0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attrDescs[2] = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)},
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal)}
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
+    vertexInputInfo.vertexAttributeDescriptionCount = 2;
+    vertexInputInfo.pVertexAttributeDescriptions = attrDescs;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkViewport viewport = {0, 0, (float)g_framebufferWidth, (float)g_framebufferHeight, 0, 1};
+    VkRect2D scissor = {{0, 0}, {g_framebufferWidth, g_framebufferHeight}};
+    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterizer.polygonMode = VK_POLYGON_MODE_LINE;  // Wireframe mode!
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // Enable alpha blending for overlay effect
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_TRUE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = e->meshPipelineLayout;
+    pipelineInfo.renderPass = e->renderPass;
+
+    if (vkCreateGraphicsPipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &e->meshPipeline) != VK_SUCCESS) {
+        vkDestroyPipelineLayout(e->device, e->meshPipelineLayout, nullptr);
+        vkDestroyDescriptorPool(e->device, e->meshDescriptorPool, nullptr);
+        vkDestroyDescriptorSetLayout(e->device, e->meshDescriptorSetLayout, nullptr);
+        vkDestroyShaderModule(e->device, vertModule, nullptr);
+        vkDestroyShaderModule(e->device, fragModule, nullptr);
+        std::cerr << "Failed to create mesh pipeline" << std::endl;
+        return false;
+    }
+
+    vkDestroyShaderModule(e->device, vertModule, nullptr);
+    vkDestroyShaderModule(e->device, fragModule, nullptr);
+
+    e->meshPipelineInitialized = true;
+    std::cout << "Mesh preview pipeline initialized" << std::endl;
+    return true;
+}
+
+// Upload mesh data to GPU buffers
+inline bool upload_mesh_preview(const mc::Mesh& mesh) {
+    auto* e = get_engine();
+    if (!e || !e->initialized) return false;
+
+    if (mesh.vertices.empty() || mesh.indices.empty()) {
+        std::cerr << "Empty mesh data" << std::endl;
+        return false;
+    }
+
+    // Destroy old buffers
+    if (e->meshVertexBuffer) {
+        vkDeviceWaitIdle(e->device);
+        vkDestroyBuffer(e->device, e->meshVertexBuffer, nullptr);
+        vkFreeMemory(e->device, e->meshVertexMemory, nullptr);
+        e->meshVertexBuffer = VK_NULL_HANDLE;
+        e->meshVertexMemory = VK_NULL_HANDLE;
+    }
+    if (e->meshIndexBuffer) {
+        vkDestroyBuffer(e->device, e->meshIndexBuffer, nullptr);
+        vkFreeMemory(e->device, e->meshIndexMemory, nullptr);
+        e->meshIndexBuffer = VK_NULL_HANDLE;
+        e->meshIndexMemory = VK_NULL_HANDLE;
+    }
+
+    // Compute normals for each vertex (average of face normals)
+    std::vector<mc::Vec3> normals(mesh.vertices.size(), {0, 0, 0});
+    for (size_t i = 0; i < mesh.indices.size(); i += 3) {
+        uint32_t i0 = mesh.indices[i];
+        uint32_t i1 = mesh.indices[i + 1];
+        uint32_t i2 = mesh.indices[i + 2];
+
+        mc::Vec3 v0 = mesh.vertices[i0];
+        mc::Vec3 v1 = mesh.vertices[i1];
+        mc::Vec3 v2 = mesh.vertices[i2];
+
+        // Edge vectors
+        mc::Vec3 e1 = {v1.x - v0.x, v1.y - v0.y, v1.z - v0.z};
+        mc::Vec3 e2 = {v2.x - v0.x, v2.y - v0.y, v2.z - v0.z};
+
+        // Cross product for face normal
+        mc::Vec3 n = {
+            e1.y * e2.z - e1.z * e2.y,
+            e1.z * e2.x - e1.x * e2.z,
+            e1.x * e2.y - e1.y * e2.x
+        };
+
+        normals[i0].x += n.x; normals[i0].y += n.y; normals[i0].z += n.z;
+        normals[i1].x += n.x; normals[i1].y += n.y; normals[i1].z += n.z;
+        normals[i2].x += n.x; normals[i2].y += n.y; normals[i2].z += n.z;
+    }
+
+    // Normalize
+    for (auto& n : normals) {
+        float len = sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        if (len > 0.0001f) {
+            n.x /= len; n.y /= len; n.z /= len;
+        }
+    }
+
+    // Create interleaved vertex data
+    std::vector<MeshVertex> vertices(mesh.vertices.size());
+    for (size_t i = 0; i < mesh.vertices.size(); i++) {
+        vertices[i].pos[0] = mesh.vertices[i].x;
+        vertices[i].pos[1] = mesh.vertices[i].y;
+        vertices[i].pos[2] = mesh.vertices[i].z;
+        vertices[i].normal[0] = normals[i].x;
+        vertices[i].normal[1] = normals[i].y;
+        vertices[i].normal[2] = normals[i].z;
+    }
+
+    VkDeviceSize vertexBufferSize = sizeof(MeshVertex) * vertices.size();
+    VkDeviceSize indexBufferSize = sizeof(uint32_t) * mesh.indices.size();
+
+    // Create vertex buffer
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = vertexBufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &e->meshVertexBuffer) != VK_SUCCESS) {
+        std::cerr << "Failed to create vertex buffer" << std::endl;
+        return false;
+    }
+
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(e->device, e->meshVertexBuffer, &memReq);
+
+    VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &e->meshVertexMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(e->device, e->meshVertexBuffer, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(e->device, e->meshVertexBuffer, e->meshVertexMemory, 0);
+
+    // Upload vertex data
+    void* data;
+    vkMapMemory(e->device, e->meshVertexMemory, 0, vertexBufferSize, 0, &data);
+    memcpy(data, vertices.data(), vertexBufferSize);
+    vkUnmapMemory(e->device, e->meshVertexMemory);
+
+    // Create index buffer
+    bufferInfo.size = indexBufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+
+    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &e->meshIndexBuffer) != VK_SUCCESS) {
+        vkDestroyBuffer(e->device, e->meshVertexBuffer, nullptr);
+        vkFreeMemory(e->device, e->meshVertexMemory, nullptr);
+        return false;
+    }
+
+    vkGetBufferMemoryRequirements(e->device, e->meshIndexBuffer, &memReq);
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &e->meshIndexMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(e->device, e->meshVertexBuffer, nullptr);
+        vkFreeMemory(e->device, e->meshVertexMemory, nullptr);
+        vkDestroyBuffer(e->device, e->meshIndexBuffer, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(e->device, e->meshIndexBuffer, e->meshIndexMemory, 0);
+
+    // Upload index data
+    vkMapMemory(e->device, e->meshIndexMemory, 0, indexBufferSize, 0, &data);
+    memcpy(data, mesh.indices.data(), indexBufferSize);
+    vkUnmapMemory(e->device, e->meshIndexMemory);
+
+    e->meshVertexCount = static_cast<uint32_t>(vertices.size());
+    e->meshIndexCount = static_cast<uint32_t>(mesh.indices.size());
+
+    std::cout << "Mesh preview uploaded: " << e->meshVertexCount << " vertices, "
+              << (e->meshIndexCount / 3) << " triangles" << std::endl;
+    return true;
+}
+
+// Generate mesh from current scene and upload to GPU
+inline bool generate_mesh_preview(int resolution = -1) {
+    auto* e = get_engine();
+    if (!e || !e->initialized) return false;
+
+    if (resolution <= 0) {
+        resolution = e->meshPreviewResolution;
+    }
+
+    std::cout << "Generating mesh preview at resolution " << resolution << "..." << std::endl;
+
+    // Sample SDF on GPU
+    auto distances = sample_sdf_grid(-2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, resolution);
+    if (distances.empty()) {
+        std::cerr << "Failed to sample SDF" << std::endl;
+        return false;
+    }
+
+    // Generate mesh using CPU marching cubes
+    mc::Vec3 bounds_min{-2.0f, -2.0f, -2.0f};
+    mc::Vec3 bounds_max{2.0f, 2.0f, 2.0f};
+    e->currentMesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
+    e->currentMeshResolution = resolution;
+
+    if (e->currentMesh.vertices.empty()) {
+        std::cerr << "No surface found" << std::endl;
+        return false;
+    }
+
+    // Initialize pipeline if needed
+    if (!e->meshPipelineInitialized) {
+        if (!init_mesh_pipeline()) {
+            return false;
+        }
+    }
+
+    // Upload to GPU
+    return upload_mesh_preview(e->currentMesh);
+}
+
+// Render mesh preview (called from draw_frame)
+inline void render_mesh_preview(VkCommandBuffer cmd) {
+    auto* e = get_engine();
+    if (!e || !e->meshPreviewVisible || !e->meshPipelineInitialized ||
+        e->meshIndexCount == 0 || !e->meshVertexBuffer || !e->meshIndexBuffer) {
+        return;
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e->meshPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e->meshPipelineLayout,
+                           0, 1, &e->meshDescriptorSet, 0, nullptr);
+
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(cmd, 0, 1, &e->meshVertexBuffer, offsets);
+    vkCmdBindIndexBuffer(cmd, e->meshIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, e->meshIndexCount, 1, 0, 0, 0);
+}
+
+// API functions for jank
+inline bool get_mesh_preview_visible() {
+    auto* e = get_engine();
+    return e ? e->meshPreviewVisible : false;
+}
+
+inline void set_mesh_preview_visible(bool visible) {
+    auto* e = get_engine();
+    if (!e) return;
+    e->meshPreviewVisible = visible;
+    e->dirty = true;
+}
+
+inline int get_mesh_preview_resolution() {
+    auto* e = get_engine();
+    return e ? e->meshPreviewResolution : 64;
+}
+
+inline void set_mesh_preview_resolution(int res) {
+    auto* e = get_engine();
+    if (!e) return;
+    e->meshPreviewResolution = std::max(8, res);  // No upper limit!
+    e->meshNeedsRegenerate = true;
+}
+
+inline uint32_t get_mesh_preview_vertex_count() {
+    auto* e = get_engine();
+    return e ? e->meshVertexCount : 0;
+}
+
+inline uint32_t get_mesh_preview_triangle_count() {
+    auto* e = get_engine();
+    return e ? (e->meshIndexCount / 3) : 0;
+}
+
+inline bool mesh_preview_needs_regenerate() {
+    auto* e = get_engine();
+    return e ? e->meshNeedsRegenerate : false;
+}
+
+inline void clear_mesh_regenerate_flag() {
+    auto* e = get_engine();
+    if (e) e->meshNeedsRegenerate = false;
+}
+
+// Toggle mesh preview with auto-generation
+inline void toggle_mesh_preview() {
+    auto* e = get_engine();
+    if (!e) return;
+
+    e->meshPreviewVisible = !e->meshPreviewVisible;
+
+    if (e->meshPreviewVisible && e->meshIndexCount == 0) {
+        // Generate mesh if none exists
+        generate_mesh_preview();
+    }
+
+    e->dirty = true;
 }
 
 } // namespace sdfx

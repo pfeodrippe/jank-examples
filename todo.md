@@ -8,7 +8,9 @@
       - unable to fix it, see ai/20251214-jank-gc-large-loops.md
   - [x] macro to set multiple fields using map
 - [ ] sdf
-  - [ ] sdf to obj in runtime
+  - [x] sdf to obj in runtime
+  - [ ] with texture?
+  - [ ] generate it faster
 - [ ] linux
   - [ ] tests
   - [ ] standalone
