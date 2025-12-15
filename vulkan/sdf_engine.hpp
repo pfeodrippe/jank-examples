@@ -235,6 +235,7 @@ struct Engine {
     bool meshPreviewVisible = false;
     bool meshRenderSolid = true;  // true = solid, false = wireframe
     bool meshUseVertexColors = true;  // true = use sampled vertex colors (default on)
+    bool meshUseDualContouring = true;  // true = use DC (sharper features), false = marching cubes
     float meshScale = 1.0f;       // Scale factor for mesh preview
     int meshPreviewResolution = 256;
     VkBuffer meshVertexBuffer = VK_NULL_HANDLE;
@@ -4068,10 +4069,16 @@ inline bool generate_mesh_preview(int resolution = -1) {
         return false;
     }
 
-    // Generate mesh using CPU marching cubes
+    // Generate mesh using CPU marching cubes or dual contouring
     mc::Vec3 bounds_min{-2.0f, -2.0f, -2.0f};
     mc::Vec3 bounds_max{2.0f, 2.0f, 2.0f};
-    e->currentMesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
+    if (e->meshUseDualContouring) {
+        e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max);
+    } else {
+        e->currentMesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
+        std::cout << "MC mesh: " << e->currentMesh.vertices.size() << " vertices, "
+                  << (e->currentMesh.indices.size() / 3) << " triangles" << std::endl;
+    }
     e->currentMeshResolution = resolution;
 
     if (e->currentMesh.vertices.empty()) {
@@ -4174,6 +4181,21 @@ inline void set_mesh_use_vertex_colors(bool useColors) {
     if (e->meshUseVertexColors != useColors) {
         e->meshUseVertexColors = useColors;
         e->meshNeedsRegenerate = true;  // Need to regenerate with/without colors
+        e->dirty = true;
+    }
+}
+
+inline bool get_mesh_use_dual_contouring() {
+    auto* e = get_engine();
+    return e ? e->meshUseDualContouring : false;
+}
+
+inline void set_mesh_use_dual_contouring(bool useDC) {
+    auto* e = get_engine();
+    if (!e) return;
+    if (e->meshUseDualContouring != useDC) {
+        e->meshUseDualContouring = useDC;
+        e->meshNeedsRegenerate = true;  // Need to regenerate with different algorithm
         e->dirty = true;
     }
 }

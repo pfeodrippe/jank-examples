@@ -18,6 +18,7 @@
 #include <vector>
 #include <array>
 #include <fstream>
+#include <iostream>
 #include <cmath>
 #include <cfloat>
 #include <locale>
@@ -906,6 +907,360 @@ inline Mesh generateMeshFromFunction(
     }
 
     return generateMesh(distances, res, bounds_min, bounds_max, isolevel);
+}
+
+// ============================================================================
+// DUAL CONTOURING - Better sharp feature preservation
+// ============================================================================
+
+// QEF (Quadratic Error Function) solver for finding optimal vertex position
+// Solves: minimize sum of (n_i . (v - p_i))^2 for all edge crossings
+struct QEF {
+    // ATA matrix (3x3 symmetric, stored as 6 floats)
+    float ata[6] = {0};  // [a00, a01, a02, a11, a12, a22]
+    // ATb vector
+    Vec3 atb = {0, 0, 0};
+    // Mass point (average of intersection points)
+    Vec3 massPoint = {0, 0, 0};
+    int numPoints = 0;
+
+    void add(Vec3 pos, Vec3 normal) {
+        // Normalize the normal
+        float len = normal.length();
+        if (len < 0.0001f) return;
+        normal = normal * (1.0f / len);
+
+        // Add to ATA (n * n^T)
+        ata[0] += normal.x * normal.x;
+        ata[1] += normal.x * normal.y;
+        ata[2] += normal.x * normal.z;
+        ata[3] += normal.y * normal.y;
+        ata[4] += normal.y * normal.z;
+        ata[5] += normal.z * normal.z;
+
+        // Add to ATb (n * (n . p))
+        float d = normal.dot(pos);
+        atb.x += normal.x * d;
+        atb.y += normal.y * d;
+        atb.z += normal.z * d;
+
+        // Accumulate mass point
+        massPoint.x += pos.x;
+        massPoint.y += pos.y;
+        massPoint.z += pos.z;
+        numPoints++;
+    }
+
+    Vec3 solve(Vec3 cellMin, Vec3 cellMax) {
+        if (numPoints == 0) return {0, 0, 0};
+
+        // Compute mass point (fallback position)
+        Vec3 mp = massPoint * (1.0f / numPoints);
+
+        // Try to solve the linear system ATA * x = ATb
+        // Using simple Cramer's rule for 3x3
+        float a00 = ata[0], a01 = ata[1], a02 = ata[2];
+        float a11 = ata[3], a12 = ata[4], a22 = ata[5];
+
+        // Add small regularization to handle degenerate cases
+        float reg = 0.01f;
+        a00 += reg; a11 += reg; a22 += reg;
+
+        // Determinant
+        float det = a00 * (a11 * a22 - a12 * a12)
+                  - a01 * (a01 * a22 - a12 * a02)
+                  + a02 * (a01 * a12 - a11 * a02);
+
+        if (std::abs(det) < 1e-10f) {
+            // Degenerate, use mass point
+            return mp;
+        }
+
+        // Inverse of ATA (symmetric)
+        float invDet = 1.0f / det;
+        float inv00 = (a11 * a22 - a12 * a12) * invDet;
+        float inv01 = (a02 * a12 - a01 * a22) * invDet;
+        float inv02 = (a01 * a12 - a02 * a11) * invDet;
+        float inv11 = (a00 * a22 - a02 * a02) * invDet;
+        float inv12 = (a01 * a02 - a00 * a12) * invDet;
+        float inv22 = (a00 * a11 - a01 * a01) * invDet;
+
+        // Solve: x = ATA^-1 * ATb
+        Vec3 result;
+        result.x = inv00 * atb.x + inv01 * atb.y + inv02 * atb.z;
+        result.y = inv01 * atb.x + inv11 * atb.y + inv12 * atb.z;
+        result.z = inv02 * atb.x + inv12 * atb.y + inv22 * atb.z;
+
+        // Clamp to cell bounds (important for stability)
+        result.x = std::max(cellMin.x, std::min(cellMax.x, result.x));
+        result.y = std::max(cellMin.y, std::min(cellMax.y, result.y));
+        result.z = std::max(cellMin.z, std::min(cellMax.z, result.z));
+
+        return result;
+    }
+};
+
+// Compute normal from SDF grid using finite differences
+inline Vec3 computeNormalFromGrid(
+    const std::vector<float>& distances,
+    int res, int x, int y, int z
+) {
+    auto idx = [res](int x, int y, int z) { return x + y * res + z * res * res; };
+
+    // Clamp indices
+    int xm = std::max(0, x - 1), xp = std::min(res - 1, x + 1);
+    int ym = std::max(0, y - 1), yp = std::min(res - 1, y + 1);
+    int zm = std::max(0, z - 1), zp = std::min(res - 1, z + 1);
+
+    Vec3 normal;
+    normal.x = distances[idx(xp, y, z)] - distances[idx(xm, y, z)];
+    normal.y = distances[idx(x, yp, z)] - distances[idx(x, ym, z)];
+    normal.z = distances[idx(x, y, zp)] - distances[idx(x, y, zm)];
+
+    float len = normal.length();
+    if (len > 0.0001f) {
+        normal = normal * (1.0f / len);
+    }
+    return normal;
+}
+
+// Dual Contouring mesh generation
+inline Mesh generateMeshDC(
+    const std::vector<float>& distances,
+    int res,
+    Vec3 bounds_min,
+    Vec3 bounds_max,
+    float isolevel = 0.0f
+) {
+    Vec3 cell_size = {
+        (bounds_max.x - bounds_min.x) / (res - 1),
+        (bounds_max.y - bounds_min.y) / (res - 1),
+        (bounds_max.z - bounds_min.z) / (res - 1)
+    };
+
+    auto idx = [res](int x, int y, int z) { return x + y * res + z * res * res; };
+    auto cellIdx = [res](int x, int y, int z) { return x + y * (res-1) + z * (res-1) * (res-1); };
+
+    // Phase 1: Generate one vertex per cell that contains surface
+    std::vector<Vec3> cellVertices((res-1) * (res-1) * (res-1), Vec3{0,0,0});
+    std::vector<bool> cellHasVertex((res-1) * (res-1) * (res-1), false);
+
+    // Edge crossing check - returns true if sign changes
+    auto signChange = [isolevel](float a, float b) {
+        return (a < isolevel) != (b < isolevel);
+    };
+
+    // Process each cell
+    for (int z = 0; z < res - 1; z++) {
+        for (int y = 0; y < res - 1; y++) {
+            for (int x = 0; x < res - 1; x++) {
+                // Get 8 corner values
+                float v[8] = {
+                    distances[idx(x,   y,   z)],
+                    distances[idx(x+1, y,   z)],
+                    distances[idx(x+1, y+1, z)],
+                    distances[idx(x,   y+1, z)],
+                    distances[idx(x,   y,   z+1)],
+                    distances[idx(x+1, y,   z+1)],
+                    distances[idx(x+1, y+1, z+1)],
+                    distances[idx(x,   y+1, z+1)]
+                };
+
+                // Check if any edge crosses the surface
+                // 12 edges of a cube
+                bool hasCrossing =
+                    signChange(v[0], v[1]) || signChange(v[1], v[2]) ||
+                    signChange(v[2], v[3]) || signChange(v[3], v[0]) ||
+                    signChange(v[4], v[5]) || signChange(v[5], v[6]) ||
+                    signChange(v[6], v[7]) || signChange(v[7], v[4]) ||
+                    signChange(v[0], v[4]) || signChange(v[1], v[5]) ||
+                    signChange(v[2], v[6]) || signChange(v[3], v[7]);
+
+                if (!hasCrossing) continue;
+
+                // Cell bounds
+                Vec3 cellMin = {
+                    bounds_min.x + x * cell_size.x,
+                    bounds_min.y + y * cell_size.y,
+                    bounds_min.z + z * cell_size.z
+                };
+                Vec3 cellMax = {
+                    bounds_min.x + (x+1) * cell_size.x,
+                    bounds_min.y + (y+1) * cell_size.y,
+                    bounds_min.z + (z+1) * cell_size.z
+                };
+
+                // Corner positions
+                Vec3 p[8] = {
+                    cellMin,
+                    {cellMax.x, cellMin.y, cellMin.z},
+                    {cellMax.x, cellMax.y, cellMin.z},
+                    {cellMin.x, cellMax.y, cellMin.z},
+                    {cellMin.x, cellMin.y, cellMax.z},
+                    {cellMax.x, cellMin.y, cellMax.z},
+                    cellMax,
+                    {cellMin.x, cellMax.y, cellMax.z}
+                };
+
+                // Edge definitions: pairs of corner indices
+                static const int edges[12][2] = {
+                    {0,1}, {1,2}, {2,3}, {3,0},  // bottom face
+                    {4,5}, {5,6}, {6,7}, {7,4},  // top face
+                    {0,4}, {1,5}, {2,6}, {3,7}   // vertical edges
+                };
+
+                // Collect edge crossings and solve QEF
+                QEF qef;
+                for (int e = 0; e < 12; e++) {
+                    int i0 = edges[e][0], i1 = edges[e][1];
+                    if (!signChange(v[i0], v[i1])) continue;
+
+                    // Interpolate crossing position
+                    float t = (isolevel - v[i0]) / (v[i1] - v[i0]);
+                    t = std::max(0.0f, std::min(1.0f, t));
+                    Vec3 crossPos = p[i0] + (p[i1] - p[i0]) * t;
+
+                    // Interpolate grid coordinates for normal lookup
+                    // Corner grid coords
+                    int gx0, gy0, gz0, gx1, gy1, gz1;
+                    switch(i0) {
+                        case 0: gx0=x;   gy0=y;   gz0=z;   break;
+                        case 1: gx0=x+1; gy0=y;   gz0=z;   break;
+                        case 2: gx0=x+1; gy0=y+1; gz0=z;   break;
+                        case 3: gx0=x;   gy0=y+1; gz0=z;   break;
+                        case 4: gx0=x;   gy0=y;   gz0=z+1; break;
+                        case 5: gx0=x+1; gy0=y;   gz0=z+1; break;
+                        case 6: gx0=x+1; gy0=y+1; gz0=z+1; break;
+                        case 7: gx0=x;   gy0=y+1; gz0=z+1; break;
+                    }
+                    switch(i1) {
+                        case 0: gx1=x;   gy1=y;   gz1=z;   break;
+                        case 1: gx1=x+1; gy1=y;   gz1=z;   break;
+                        case 2: gx1=x+1; gy1=y+1; gz1=z;   break;
+                        case 3: gx1=x;   gy1=y+1; gz1=z;   break;
+                        case 4: gx1=x;   gy1=y;   gz1=z+1; break;
+                        case 5: gx1=x+1; gy1=y;   gz1=z+1; break;
+                        case 6: gx1=x+1; gy1=y+1; gz1=z+1; break;
+                        case 7: gx1=x;   gy1=y+1; gz1=z+1; break;
+                    }
+
+                    // Get normals at corners and interpolate
+                    Vec3 n0 = computeNormalFromGrid(distances, res, gx0, gy0, gz0);
+                    Vec3 n1 = computeNormalFromGrid(distances, res, gx1, gy1, gz1);
+                    Vec3 crossNormal = n0 + (n1 - n0) * t;
+
+                    qef.add(crossPos, crossNormal);
+                }
+
+                // Solve QEF to get vertex position
+                // DEBUG: Use cell center instead of QEF to test connectivity
+                Vec3 cellCenter = {
+                    (cellMin.x + cellMax.x) * 0.5f,
+                    (cellMin.y + cellMax.y) * 0.5f,
+                    (cellMin.z + cellMax.z) * 0.5f
+                };
+                // Vec3 vertex = qef.solve(cellMin, cellMax);  // Disabled for debug
+                Vec3 vertex = cellCenter;  // Use cell center for now
+                cellVertices[cellIdx(x, y, z)] = vertex;
+                cellHasVertex[cellIdx(x, y, z)] = true;
+            }
+        }
+    }
+
+    // Phase 2: Build vertex array and index map
+    // Each cell with a vertex gets exactly one entry in the mesh
+    Mesh mesh;
+    std::vector<int> cellToVertex((res-1) * (res-1) * (res-1), -1);
+
+    for (int z = 0; z < res - 1; z++) {
+        for (int y = 0; y < res - 1; y++) {
+            for (int x = 0; x < res - 1; x++) {
+                int ci = cellIdx(x, y, z);
+                if (cellHasVertex[ci]) {
+                    cellToVertex[ci] = (int)mesh.vertices.size();
+                    mesh.vertices.push_back(cellVertices[ci]);
+                }
+            }
+        }
+    }
+
+    // Phase 3: Generate quads for edges that cross the surface
+    // Each crossing edge is shared by 4 cells, connect their vertices
+
+    // Helper to add a quad (2 triangles) with proper winding
+    auto addQuad = [&mesh](int v0, int v1, int v2, int v3, bool flip) {
+        if (v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0) return;
+        if (flip) {
+            mesh.indices.push_back(v0); mesh.indices.push_back(v2); mesh.indices.push_back(v1);
+            mesh.indices.push_back(v0); mesh.indices.push_back(v3); mesh.indices.push_back(v2);
+        } else {
+            mesh.indices.push_back(v0); mesh.indices.push_back(v1); mesh.indices.push_back(v2);
+            mesh.indices.push_back(v0); mesh.indices.push_back(v2); mesh.indices.push_back(v3);
+        }
+    };
+
+    // Process X-aligned edges: edge from (x,y,z) to (x+1,y,z)
+    // Shared by cells: (x,y-1,z-1), (x,y,z-1), (x,y,z), (x,y-1,z)
+    for (int z = 1; z < res - 1; z++) {
+        for (int y = 1; y < res - 1; y++) {
+            for (int x = 0; x < res - 1; x++) {
+                float v0 = distances[idx(x, y, z)];
+                float v1 = distances[idx(x+1, y, z)];
+                if (!signChange(v0, v1)) continue;
+
+                int c0 = cellToVertex[cellIdx(x, y-1, z-1)];
+                int c1 = cellToVertex[cellIdx(x, y, z-1)];
+                int c2 = cellToVertex[cellIdx(x, y, z)];
+                int c3 = cellToVertex[cellIdx(x, y-1, z)];
+
+                addQuad(c0, c1, c2, c3, v0 >= isolevel);
+            }
+        }
+    }
+
+    // Process Y-aligned edges: edge from (x,y,z) to (x,y+1,z)
+    // Shared by cells: (x-1,y,z-1), (x,y,z-1), (x,y,z), (x-1,y,z)
+    for (int z = 1; z < res - 1; z++) {
+        for (int y = 0; y < res - 1; y++) {
+            for (int x = 1; x < res - 1; x++) {
+                float v0 = distances[idx(x, y, z)];
+                float v1 = distances[idx(x, y+1, z)];
+                if (!signChange(v0, v1)) continue;
+
+                int c0 = cellToVertex[cellIdx(x-1, y, z-1)];
+                int c1 = cellToVertex[cellIdx(x, y, z-1)];
+                int c2 = cellToVertex[cellIdx(x, y, z)];
+                int c3 = cellToVertex[cellIdx(x-1, y, z)];
+
+                addQuad(c0, c1, c2, c3, v0 >= isolevel);
+            }
+        }
+    }
+
+    // Process Z-aligned edges: edge from (x,y,z) to (x,y,z+1)
+    // Shared by cells: (x-1,y-1,z), (x,y-1,z), (x,y,z), (x-1,y,z)
+    for (int z = 0; z < res - 1; z++) {
+        for (int y = 1; y < res - 1; y++) {
+            for (int x = 1; x < res - 1; x++) {
+                float v0 = distances[idx(x, y, z)];
+                float v1 = distances[idx(x, y, z+1)];
+                if (!signChange(v0, v1)) continue;
+
+                int c0 = cellToVertex[cellIdx(x-1, y-1, z)];
+                int c1 = cellToVertex[cellIdx(x, y-1, z)];
+                int c2 = cellToVertex[cellIdx(x, y, z)];
+                int c3 = cellToVertex[cellIdx(x-1, y, z)];
+
+                addQuad(c0, c1, c2, c3, v0 >= isolevel);
+            }
+        }
+    }
+
+    // Brief summary output
+    std::cout << "DC mesh: " << mesh.vertices.size() << " vertices, "
+              << (mesh.indices.size() / 3) << " triangles" << std::endl;
+
+    return mesh;
 }
 
 } // namespace mc

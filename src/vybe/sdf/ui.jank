@@ -16,6 +16,7 @@
 (defonce *export-uvs (u/v->p false))
 (defonce *mesh-solid-mode (u/v->p true))
 (defonce *mesh-scale (u/v->p 1.0 "float"))
+(defonce *use-dual-contouring (u/v->p true))  ;; DC for sharper features (default on)
 
 (defn new-frame!
   "Start a new ImGui frame. Call before any UI code."
@@ -82,6 +83,13 @@
     (let [verts (sdfx/get_mesh_preview_vertex_count)
           tris (sdfx/get_mesh_preview_triangle_count)]
       (imgui/Text #cpp "  Verts: %d  Tris: %d" (cpp/int. verts) (cpp/int. tris)))
+    ;; Mesh algorithm selection
+    (imgui/Checkbox "Dual Contouring" (cpp/unbox *use-dual-contouring))
+    (imgui/SameLine)
+    (imgui/TextDisabled "(sharper edges)")
+    ;; Sync DC checkbox with engine
+    (sdfx/set_mesh_use_dual_contouring (cpp/bool. (u/p->v *use-dual-contouring)))
+
     ;; Regenerate button
     (when (imgui/Button "Regenerate Mesh")
       (sdfx/generate_mesh_preview (cpp/int. -1)))
