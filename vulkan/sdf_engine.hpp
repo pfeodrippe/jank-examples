@@ -236,6 +236,8 @@ struct Engine {
     bool meshRenderSolid = true;  // true = solid, false = wireframe
     bool meshUseVertexColors = true;  // true = use sampled vertex colors (default on)
     bool meshUseDualContouring = true;  // true = use DC (sharper features), false = marching cubes
+    bool meshFillWithCubes = false;     // true = voxel cubes for each active cell (no slicing)
+    float meshVoxelSize = 1.0f;         // Voxel size multiplier for fill-with-cubes mode (1.0 = cell size)
     float meshScale = 1.0f;       // Scale factor for mesh preview
     int meshPreviewResolution = 256;
     VkBuffer meshVertexBuffer = VK_NULL_HANDLE;
@@ -4073,7 +4075,7 @@ inline bool generate_mesh_preview(int resolution = -1) {
     mc::Vec3 bounds_min{-2.0f, -2.0f, -2.0f};
     mc::Vec3 bounds_max{2.0f, 2.0f, 2.0f};
     if (e->meshUseDualContouring) {
-        e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max);
+        e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, e->meshFillWithCubes, e->meshVoxelSize);
     } else {
         e->currentMesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
         std::cout << "MC mesh: " << e->currentMesh.vertices.size() << " vertices, "
@@ -4197,6 +4199,39 @@ inline void set_mesh_use_dual_contouring(bool useDC) {
         e->meshUseDualContouring = useDC;
         e->meshNeedsRegenerate = true;  // Need to regenerate with different algorithm
         e->dirty = true;
+    }
+}
+
+inline bool get_mesh_fill_with_cubes() {
+    auto* e = get_engine();
+    return e ? e->meshFillWithCubes : false;
+}
+
+inline void set_mesh_fill_with_cubes(bool fillCubes) {
+    auto* e = get_engine();
+    if (!e) return;
+    if (e->meshFillWithCubes != fillCubes) {
+        e->meshFillWithCubes = fillCubes;
+        e->meshNeedsRegenerate = true;  // Need to regenerate with different mode
+        e->dirty = true;
+    }
+}
+
+inline float get_mesh_voxel_size() {
+    auto* e = get_engine();
+    return e ? e->meshVoxelSize : 1.0f;
+}
+
+inline void set_mesh_voxel_size(float size) {
+    auto* e = get_engine();
+    if (!e) return;
+    size = std::max(0.1f, std::min(2.0f, size));  // Clamp to [0.1, 2.0]
+    if (e->meshVoxelSize != size) {
+        e->meshVoxelSize = size;
+        if (e->meshFillWithCubes) {  // Only regenerate if cubes mode is active
+            e->meshNeedsRegenerate = true;
+            e->dirty = true;
+        }
     }
 }
 
