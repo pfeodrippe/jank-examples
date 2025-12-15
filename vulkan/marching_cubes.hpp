@@ -875,6 +875,143 @@ inline bool exportGLB(const std::string& filename, const Mesh& mesh,
     return gltf.WriteGltfSceneToFile(&model, filename, true, true, true, true);
 }
 
+// Load mesh from GLB file
+inline bool loadGLB(const std::string& filename, Mesh& outMesh) {
+    tinygltf::Model model;
+    tinygltf::TinyGLTF loader;
+    std::string err, warn;
+
+    bool success = loader.LoadBinaryFromFile(&model, &err, &warn, filename);
+    if (!warn.empty()) {
+        std::cerr << "GLB warning: " << warn << std::endl;
+    }
+    if (!err.empty()) {
+        std::cerr << "GLB error: " << err << std::endl;
+        return false;
+    }
+    if (!success) {
+        std::cerr << "Failed to load GLB: " << filename << std::endl;
+        return false;
+    }
+
+    // Clear output mesh
+    outMesh.vertices.clear();
+    outMesh.normals.clear();
+    outMesh.colors.clear();
+    outMesh.uvs.clear();
+    outMesh.indices.clear();
+
+    // Process all meshes in the model
+    for (const auto& mesh : model.meshes) {
+        for (const auto& primitive : mesh.primitives) {
+            if (primitive.mode != TINYGLTF_MODE_TRIANGLES) continue;
+
+            size_t baseVertex = outMesh.vertices.size();
+
+            // Get position accessor
+            auto posIt = primitive.attributes.find("POSITION");
+            if (posIt == primitive.attributes.end()) continue;
+
+            const tinygltf::Accessor& posAccessor = model.accessors[posIt->second];
+            const tinygltf::BufferView& posView = model.bufferViews[posAccessor.bufferView];
+            const tinygltf::Buffer& posBuffer = model.buffers[posView.buffer];
+
+            const float* positions = reinterpret_cast<const float*>(
+                posBuffer.data.data() + posView.byteOffset + posAccessor.byteOffset);
+
+            size_t vertexCount = posAccessor.count;
+            size_t posStride = posView.byteStride ? posView.byteStride / sizeof(float) : 3;
+
+            // Load positions
+            for (size_t i = 0; i < vertexCount; i++) {
+                outMesh.vertices.push_back(Vec3(
+                    positions[i * posStride + 0],
+                    positions[i * posStride + 1],
+                    positions[i * posStride + 2]
+                ));
+            }
+
+            // Get normals if present
+            auto normIt = primitive.attributes.find("NORMAL");
+            if (normIt != primitive.attributes.end()) {
+                const tinygltf::Accessor& normAccessor = model.accessors[normIt->second];
+                const tinygltf::BufferView& normView = model.bufferViews[normAccessor.bufferView];
+                const tinygltf::Buffer& normBuffer = model.buffers[normView.buffer];
+
+                const float* normals = reinterpret_cast<const float*>(
+                    normBuffer.data.data() + normView.byteOffset + normAccessor.byteOffset);
+
+                size_t normStride = normView.byteStride ? normView.byteStride / sizeof(float) : 3;
+
+                for (size_t i = 0; i < vertexCount; i++) {
+                    outMesh.normals.push_back(Vec3(
+                        normals[i * normStride + 0],
+                        normals[i * normStride + 1],
+                        normals[i * normStride + 2]
+                    ));
+                }
+            }
+
+            // Get colors if present (COLOR_0)
+            auto colorIt = primitive.attributes.find("COLOR_0");
+            if (colorIt != primitive.attributes.end()) {
+                const tinygltf::Accessor& colorAccessor = model.accessors[colorIt->second];
+                const tinygltf::BufferView& colorView = model.bufferViews[colorAccessor.bufferView];
+                const tinygltf::Buffer& colorBuffer = model.buffers[colorView.buffer];
+
+                if (colorAccessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                    const float* colors = reinterpret_cast<const float*>(
+                        colorBuffer.data.data() + colorView.byteOffset + colorAccessor.byteOffset);
+
+                    int components = (colorAccessor.type == TINYGLTF_TYPE_VEC4) ? 4 : 3;
+                    size_t colorStride = colorView.byteStride ? colorView.byteStride / sizeof(float) : components;
+
+                    for (size_t i = 0; i < vertexCount; i++) {
+                        outMesh.colors.push_back(Color3(
+                            colors[i * colorStride + 0],
+                            colors[i * colorStride + 1],
+                            colors[i * colorStride + 2]
+                        ));
+                    }
+                }
+            }
+
+            // Get indices
+            if (primitive.indices >= 0) {
+                const tinygltf::Accessor& indexAccessor = model.accessors[primitive.indices];
+                const tinygltf::BufferView& indexView = model.bufferViews[indexAccessor.bufferView];
+                const tinygltf::Buffer& indexBuffer = model.buffers[indexView.buffer];
+
+                const uint8_t* indexData = indexBuffer.data.data() + indexView.byteOffset + indexAccessor.byteOffset;
+
+                for (size_t i = 0; i < indexAccessor.count; i++) {
+                    uint32_t index = 0;
+                    switch (indexAccessor.componentType) {
+                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+                            index = reinterpret_cast<const uint32_t*>(indexData)[i];
+                            break;
+                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+                            index = reinterpret_cast<const uint16_t*>(indexData)[i];
+                            break;
+                        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+                            index = indexData[i];
+                            break;
+                    }
+                    outMesh.indices.push_back(static_cast<uint32_t>(baseVertex + index));
+                }
+            }
+        }
+    }
+
+    std::cout << "Loaded GLB: " << filename << " - "
+              << outMesh.vertices.size() << " vertices, "
+              << outMesh.indices.size() / 3 << " triangles"
+              << (outMesh.hasColors() ? ", with colors" : "")
+              << (outMesh.hasNormals() ? ", with normals" : "") << std::endl;
+
+    return !outMesh.vertices.empty();
+}
+
 // Generate mesh from an SDF function (CPU evaluation)
 // Useful for testing without GPU
 template<typename SDFFunc>

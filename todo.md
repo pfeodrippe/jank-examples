@@ -7,11 +7,12 @@
     - [-] gc-issue
       - unable to fix it, see ai/20251214-jank-gc-large-loops.md
   - [x] macro to set multiple fields using map
-- [ ] sdf
+- [x] sdf
   - [x] sdf to obj in runtime
-  - [ ] with texture?
-  - [ ] generate it faster
-  - [ ] make hand-exploding animation
+  - [x] with color
+  - [x] generate it faster
+  - [x] make hand-exploding animation
+- [ ] `make sdf` initialization really slow!
 - [ ] linux
   - [ ] tests
   - [ ] standalone

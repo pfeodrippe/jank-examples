@@ -4183,9 +4183,22 @@ inline mc::Mesh generate_mesh_sparse_streaming(
         mc::Mesh localMesh;
         try {
             if (fillWithCubes) {
+                // Adjust voxel size to maintain consistent cube size across global resolution
+                // Local cell size is larger than global, so scale voxelSize down
+                float globalCellSize = (maxX - minX) / float(resolution - 1);
+                float localCellSize = (localMaxX - localMinX) / float(localRes - 1);
+                float adjustedVoxelSize = voxelSize * (globalCellSize / localCellSize);
+
+                if (processedRegions == 0) {
+                    std::cout << "  Voxel size adjustment: global=" << globalCellSize
+                              << " local=" << localCellSize
+                              << " ratio=" << (globalCellSize/localCellSize)
+                              << " adjusted=" << adjustedVoxelSize << std::endl;
+                }
+
                 localMesh = generate_mesh_cubes_gpu(localDistances, localRes,
                     localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ,
-                    voxelSize, isolevel);
+                    adjustedVoxelSize, isolevel);
             } else {
                 localMesh = generate_mesh_dc_gpu(localDistances, localRes,
                     localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ,
@@ -5145,24 +5158,40 @@ inline MeshExportResult export_scene_mesh_gpu(
     if (includeColors) std::cout << "  Including vertex colors" << std::endl;
     if (includeUVs) std::cout << "  Including UV coordinates" << std::endl;
 
-    // Sample SDF on GPU
-    auto distances = sample_sdf_grid(minX, minY, minZ, maxX, maxY, maxZ, resolution);
-    if (distances.empty()) {
-        result.message = "Failed to sample SDF on GPU";
-        return result;
-    }
-
-    // Generate mesh using CPU marching cubes
-    std::cout << "Running Marching Cubes..." << std::endl;
-    auto start = std::chrono::high_resolution_clock::now();
-
+    // Generate mesh - use sparse streaming for high resolutions with DC
+    mc::Mesh mesh;
     mc::Vec3 bounds_min{minX, minY, minZ};
     mc::Vec3 bounds_max{maxX, maxY, maxZ};
-    auto mesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
 
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::cout << "Marching Cubes completed in " << duration.count() << " ms" << std::endl;
+    if (e->meshUseDualContouring && e->meshUseGpuDC && resolution > 256) {
+        // Use sparse streaming for efficient high-res export
+        mesh = generate_mesh_sparse_streaming(resolution,
+            minX, minY, minZ, maxX, maxY, maxZ,
+            e->meshFillWithCubes, e->meshVoxelSize, 0.0f);
+    }
+
+    // Fallback to standard approach if sparse streaming didn't produce results
+    if (mesh.vertices.empty()) {
+        auto distances = sample_sdf_grid(minX, minY, minZ, maxX, maxY, maxZ, resolution);
+        if (distances.empty()) {
+            result.message = "Failed to sample SDF on GPU";
+            return result;
+        }
+
+        std::cout << "Running Marching Cubes..." << std::endl;
+        auto start = std::chrono::high_resolution_clock::now();
+
+        if (e->meshUseDualContouring) {
+            mesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f,
+                                      e->meshFillWithCubes, e->meshVoxelSize);
+        } else {
+            mesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
+        }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "Mesh generation completed in " << duration.count() << " ms" << std::endl;
+    }
 
     if (mesh.vertices.empty()) {
         result.message = "No surface found in bounds";
@@ -5679,6 +5708,39 @@ inline bool upload_mesh_preview(const mc::Mesh& mesh, const std::vector<mc::Colo
               << (e->meshIndexCount / 3) << " triangles" << std::endl;
     return true;
 }
+
+// Load GLB file and display in viewer
+inline bool load_glb_and_display(const char* filepath) {
+    auto* e = get_engine();
+    if (!e || !e->initialized) {
+        std::cerr << "Engine not initialized" << std::endl;
+        return false;
+    }
+
+    mc::Mesh loadedMesh;
+    if (!mc::loadGLB(filepath, loadedMesh)) {
+        std::cerr << "Failed to load GLB: " << filepath << std::endl;
+        return false;
+    }
+
+    // Store the loaded mesh as current mesh
+    e->currentMesh = loadedMesh;
+    e->currentMeshResolution = 0;  // Unknown resolution for loaded mesh
+
+    // Upload to GPU for display
+    bool success = upload_mesh_preview(loadedMesh, loadedMesh.colors);
+
+    if (success) {
+        e->meshPreviewVisible = true;
+        e->dirty = true;
+        std::cout << "GLB loaded and displayed: " << filepath << std::endl;
+    }
+
+    return success;
+}
+
+// Get path of last exported GLB (for reload button)
+inline std::string g_lastExportedGlbPath;
 
 // Generate mesh from current scene and upload to GPU
 inline bool generate_mesh_preview(int resolution = -1) {

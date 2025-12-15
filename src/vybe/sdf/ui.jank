@@ -138,6 +138,11 @@
               (println "Exported OBJ at" res "res:" (cpp/.-vertices result) "verts,"
                        (cpp/.-triangles result) "tris"))
             (println "OBJ export failed:" (cpp/.-message result))))))
+    ;; View exported GLB in viewer
+    (when (imgui/Button "View exported_scene.glb")
+      (if (sdfx/load_glb_and_display "exported_scene.glb")
+        (println "Loaded exported_scene.glb into viewer")
+        (println "Failed to load exported_scene.glb")))
     ;; Auto-regenerate mesh if needed (e.g., colors toggled)
     (when (and (sdfx/get_mesh_preview_visible)
                (sdfx/mesh_preview_needs_regenerate))

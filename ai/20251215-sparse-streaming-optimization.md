@@ -88,7 +88,7 @@ if (minVal <= 0 && maxVal >= 0) hasSurface = true;
 
 | File | Changes |
 |------|---------|
-| `vulkan/sdf_engine.hpp` | Added `generate_mesh_sparse_streaming()`, modified `generate_mesh_preview()` to use it for GPU DC at res > 256 |
+| `vulkan/sdf_engine.hpp` | Added `generate_mesh_sparse_streaming()`, modified `generate_mesh_preview()` and `export_scene_mesh_gpu()` to use it for GPU DC at res > 256 |
 | `vulkan_kim/sdf_sampler_sparse.comp` | New shader (not used yet - for future indirect dispatch) |
 | `vulkan_kim/sdf_find_active.comp` | New shader (not used yet - for future GPU-based region detection) |
 | `vulkan_kim/dc_cubes_fused.comp` | New shader (not used yet - for fused SDF+DC) |
