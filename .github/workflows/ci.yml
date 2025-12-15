@@ -254,6 +254,14 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Create swap space
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: Clone jank (for source files)
         run: |
           git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
@@ -275,6 +283,7 @@ jobs:
         with:
           path: ~/SDL3-install
           key: sdl3-linux-x64-3.2.x-v2
+          save-always: true
 
       - name: Build SDL3 from source
         if: steps.cache-sdl3.outputs.cache-hit != 'true'
@@ -289,6 +298,7 @@ jobs:
       - name: Install SDL3
         run: |
           sudo cp -r ~/SDL3-install/* /usr/local/
+          sudo ldconfig
 
       - name: Restore Clang/LLVM cache
         uses: actions/cache/restore@v4
