@@ -17,9 +17,9 @@
 (defonce *mesh-solid-mode (u/v->p true))
 (defonce *mesh-scale (u/v->p 1.0 "float"))
 (defonce *use-dual-contouring (u/v->p true))  ;; DC for sharper features (default on)
-(defonce *fill-with-cubes (u/v->p false))     ;; Fill with cubes instead of DC quads
+(defonce *fill-with-cubes (u/v->p true))      ;; Fill with cubes instead of DC quads (default on)
 (defonce *voxel-size (u/v->p 1.0 "float"))    ;; Voxel size multiplier (1.0 = cell size)
-(defonce *use-gpu-dc (u/v->p false))          ;; Use GPU compute for DC (experimental)
+(defonce *use-gpu-dc (u/v->p true))           ;; Use GPU compute for DC (default on)
 
 (defn new-frame!
   "Start a new ImGui frame. Call before any UI code."
@@ -102,10 +102,9 @@
       (when (u/p->v *fill-with-cubes)
         (imgui/SliderFloat "Voxel Size" (cpp/unbox *voxel-size) (cpp/float. 0.1) (cpp/float. 2.0))
         (sdfx/set_mesh_voxel_size (u/p->v *voxel-size)))
-      ;; GPU DC toggle (only when not using fill-with-cubes)
-      (when-not (u/p->v *fill-with-cubes)
-        (imgui/Checkbox "GPU DC (experimental)" (cpp/unbox *use-gpu-dc))
-        (sdfx/set_mesh_use_gpu_dc (cpp/bool. (u/p->v *use-gpu-dc)))))
+      ;; GPU DC toggle (works for both DC and cubes mode now)
+      (imgui/Checkbox "GPU DC (experimental)" (cpp/unbox *use-gpu-dc))
+      (sdfx/set_mesh_use_gpu_dc (cpp/bool. (u/p->v *use-gpu-dc))))
 
     ;; Regenerate button
     (when (imgui/Button "Regenerate Mesh")

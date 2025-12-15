@@ -1,0 +1,119 @@
+#version 450
+//
+// DC CUBES - Generate cube geometry for each active cell
+// Simpler than full DC - just generates a voxel cube per surface cell
+//
+// Input: SDF distances, active mask
+// Output: Vertex buffer (8 per cube), index buffer (36 per cube)
+//
+
+layout(local_size_x = 64) in;
+
+// Input: SDF distances
+layout(std430, binding = 0) readonly buffer InputDistances {
+    float distances[];
+};
+
+// Input: Active cell mask from dc_mark_active
+layout(std430, binding = 1) readonly buffer ActiveMask {
+    uint activeMask[];
+};
+
+// Output: Vertex positions (vec4 for alignment, w unused)
+layout(std430, binding = 2) writeonly buffer Vertices {
+    vec4 vertices[];
+};
+
+// Output: Index buffer
+layout(std430, binding = 3) writeonly buffer Indices {
+    uint indices[];
+};
+
+// Atomic counters
+layout(std430, binding = 4) buffer VertexCount {
+    uint vertexCount;
+};
+
+layout(std430, binding = 5) buffer IndexCount {
+    uint indexCount;
+};
+
+// Parameters
+layout(std140, binding = 6) uniform DCParams {
+    uint resolution;
+    float isolevel;
+    float minX, minY, minZ;
+    float maxX, maxY, maxZ;
+    float voxelSize;  // Voxel size multiplier (1.0 = cell size)
+};
+
+void main() {
+    uint cellIdx = gl_GlobalInvocationID.x;
+    uint res = resolution;
+    uint cellRes = res - 1u;
+    uint totalCells = cellRes * cellRes * cellRes;
+
+    if (cellIdx >= totalCells) return;
+
+    // Skip inactive cells
+    if (activeMask[cellIdx] == 0u) return;
+
+    // Convert linear cell index to 3D coordinates
+    uint cx = cellIdx % cellRes;
+    uint cy = (cellIdx / cellRes) % cellRes;
+    uint cz = cellIdx / (cellRes * cellRes);
+
+    // Compute cell size in world space
+    float stepX = (maxX - minX) / float(res - 1u);
+    float stepY = (maxY - minY) / float(res - 1u);
+    float stepZ = (maxZ - minZ) / float(res - 1u);
+
+    // Cell center
+    vec3 center = vec3(
+        minX + (float(cx) + 0.5) * stepX,
+        minY + (float(cy) + 0.5) * stepY,
+        minZ + (float(cz) + 0.5) * stepZ
+    );
+
+    // Scaled half-sizes
+    float hx = stepX * 0.5 * voxelSize;
+    float hy = stepY * 0.5 * voxelSize;
+    float hz = stepZ * 0.5 * voxelSize;
+
+    vec3 cmin = center - vec3(hx, hy, hz);
+    vec3 cmax = center + vec3(hx, hy, hz);
+
+    // Allocate 8 vertices and 36 indices atomically
+    uint baseVert = atomicAdd(vertexCount, 8u);
+    uint baseIdx = atomicAdd(indexCount, 36u);
+
+    // 8 vertices of cube
+    vertices[baseVert + 0] = vec4(cmin.x, cmin.y, cmin.z, 1.0); // 0: ---
+    vertices[baseVert + 1] = vec4(cmax.x, cmin.y, cmin.z, 1.0); // 1: +--
+    vertices[baseVert + 2] = vec4(cmax.x, cmax.y, cmin.z, 1.0); // 2: ++-
+    vertices[baseVert + 3] = vec4(cmin.x, cmax.y, cmin.z, 1.0); // 3: -+-
+    vertices[baseVert + 4] = vec4(cmin.x, cmin.y, cmax.z, 1.0); // 4: --+
+    vertices[baseVert + 5] = vec4(cmax.x, cmin.y, cmax.z, 1.0); // 5: +-+
+    vertices[baseVert + 6] = vec4(cmax.x, cmax.y, cmax.z, 1.0); // 6: +++
+    vertices[baseVert + 7] = vec4(cmin.x, cmax.y, cmax.z, 1.0); // 7: -++
+
+    // 12 triangles (6 faces, 2 tris each) - CCW winding for outward normals
+    // Front face (z-)
+    indices[baseIdx + 0] = baseVert + 0; indices[baseIdx + 1] = baseVert + 2; indices[baseIdx + 2] = baseVert + 1;
+    indices[baseIdx + 3] = baseVert + 0; indices[baseIdx + 4] = baseVert + 3; indices[baseIdx + 5] = baseVert + 2;
+    // Back face (z+)
+    indices[baseIdx + 6] = baseVert + 4; indices[baseIdx + 7] = baseVert + 5; indices[baseIdx + 8] = baseVert + 6;
+    indices[baseIdx + 9] = baseVert + 4; indices[baseIdx + 10] = baseVert + 6; indices[baseIdx + 11] = baseVert + 7;
+    // Left face (x-)
+    indices[baseIdx + 12] = baseVert + 0; indices[baseIdx + 13] = baseVert + 4; indices[baseIdx + 14] = baseVert + 7;
+    indices[baseIdx + 15] = baseVert + 0; indices[baseIdx + 16] = baseVert + 7; indices[baseIdx + 17] = baseVert + 3;
+    // Right face (x+)
+    indices[baseIdx + 18] = baseVert + 1; indices[baseIdx + 19] = baseVert + 2; indices[baseIdx + 20] = baseVert + 6;
+    indices[baseIdx + 21] = baseVert + 1; indices[baseIdx + 22] = baseVert + 6; indices[baseIdx + 23] = baseVert + 5;
+    // Bottom face (y-)
+    indices[baseIdx + 24] = baseVert + 0; indices[baseIdx + 25] = baseVert + 1; indices[baseIdx + 26] = baseVert + 5;
+    indices[baseIdx + 27] = baseVert + 0; indices[baseIdx + 28] = baseVert + 5; indices[baseIdx + 29] = baseVert + 4;
+    // Top face (y+)
+    indices[baseIdx + 30] = baseVert + 3; indices[baseIdx + 31] = baseVert + 7; indices[baseIdx + 32] = baseVert + 6;
+    indices[baseIdx + 33] = baseVert + 3; indices[baseIdx + 34] = baseVert + 6; indices[baseIdx + 35] = baseVert + 2;
+}

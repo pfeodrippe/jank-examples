@@ -236,11 +236,11 @@ struct Engine {
     bool meshRenderSolid = true;  // true = solid, false = wireframe
     bool meshUseVertexColors = true;  // true = use sampled vertex colors (default on)
     bool meshUseDualContouring = true;  // true = use DC (sharper features), false = marching cubes
-    bool meshFillWithCubes = false;     // true = voxel cubes for each active cell (no slicing)
-    bool meshUseGpuDC = false;          // true = use GPU compute for DC (experimental)
+    bool meshFillWithCubes = true;      // true = voxel cubes for each active cell (default on)
+    bool meshUseGpuDC = true;           // true = use GPU compute for DC (default on)
     float meshVoxelSize = 1.0f;         // Voxel size multiplier for fill-with-cubes mode (1.0 = cell size)
     float meshScale = 1.0f;       // Scale factor for mesh preview
-    int meshPreviewResolution = 256;
+    int meshPreviewResolution = 1024;   // Default to 1024 for GPU cubes mode
     VkBuffer meshVertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory meshVertexMemory = VK_NULL_HANDLE;
     VkBuffer meshIndexBuffer = VK_NULL_HANDLE;
@@ -2974,6 +2974,16 @@ struct DCComputePipeline {
     VkPipeline quadPipeline = VK_NULL_HANDLE;
     VkShaderModule quadShader = VK_NULL_HANDLE;
 
+    // Alternative: Generate Cubes (for fill-with-cubes mode)
+    VkDescriptorSetLayout cubesLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cubesPool = VK_NULL_HANDLE;
+    VkDescriptorSet cubesDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout cubesPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline cubesPipeline = VK_NULL_HANDLE;
+    VkShaderModule cubesShader = VK_NULL_HANDLE;
+    VkBuffer cubesParamsBuffer = VK_NULL_HANDLE;  // Extended params with voxelSize
+    VkDeviceMemory cubesParamsMemory = VK_NULL_HANDLE;
+
     size_t maxCells = 0;
     size_t maxVertices = 0;
     size_t maxIndices = 0;
@@ -2982,6 +2992,10 @@ struct DCComputePipeline {
     time_t markShaderModTime = 0;
     time_t vertexShaderModTime = 0;
     time_t quadShaderModTime = 0;
+    time_t cubesShaderModTime = 0;
+
+    // Track if initialized for cubes-only mode (smaller cellToVertex buffer)
+    bool cubesOnlyMode = false;
 };
 
 inline DCComputePipeline* g_dcPipeline = nullptr;
@@ -2994,26 +3008,39 @@ inline DCComputePipeline* get_dc_pipeline() {
 }
 
 // Initialize DC compute pipeline for given resolution
-inline bool init_dc_pipeline(int resolution) {
+// cubesOnly=true skips cellToVertex buffer allocation (saves ~4GB for 1024 res)
+inline bool init_dc_pipeline(int resolution, bool cubesOnly = false) {
     auto* e = get_engine();
     auto* dc = get_dc_pipeline();
     if (!e || !e->initialized) return false;
 
-    // GPU DC memory limit: ~512^3 cells is ~2GB VRAM, 640^3 is ~4GB
-    // Limit to resolution 512 (511^3 = 133M cells) to avoid OOM
-    const int maxGpuResolution = 512;
-    if (resolution > maxGpuResolution) {
-        std::cerr << "GPU DC: resolution " << resolution << " exceeds limit "
-                  << maxGpuResolution << " (would require too much VRAM)" << std::endl;
-        return false;
-    }
-
     size_t numVertices = (size_t)resolution * resolution * resolution;
     size_t numCells = (size_t)(resolution - 1) * (resolution - 1) * (resolution - 1);
 
-    // Estimate max vertices and indices
-    size_t maxVerts = numCells;  // At most one vertex per cell
-    size_t maxInds = numCells * 12;  // At most 4 quads * 6 indices per cell
+    // Cap output buffers - surface is sparse, typically <1% of cells are active
+    // For resolution 1024, we get ~50-100k vertices, not 1 billion
+    const size_t MAX_OUTPUT_VERTICES = 2000000;  // 2M vertices max (~32MB)
+    const size_t MAX_OUTPUT_INDICES = 12000000;  // 12M indices max (~48MB)
+
+    // Memory estimation for input buffers
+    // Distance buffer: 4 bytes per vertex
+    // ActiveMask: 4 bytes per cell
+    // CellToVertex: 4 bytes per cell (only needed for DC, not cubes)
+    const size_t MAX_INPUT_MEMORY = (size_t)8 * 1024 * 1024 * 1024;  // 8GB for input buffers
+    // Cubes mode doesn't need cellToVertex, so it uses ~4GB less memory
+    size_t inputMemory = numVertices * 4 + numCells * 4;  // distances + mask
+    if (!cubesOnly) {
+        inputMemory += numCells * 4;  // + cellToVertex for DC mode
+    }
+
+    if (inputMemory > MAX_INPUT_MEMORY) {
+        std::cerr << "GPU DC: resolution " << resolution << " requires "
+                  << (inputMemory / (1024*1024)) << " MB, exceeds 8GB limit" << std::endl;
+        return false;
+    }
+
+    size_t maxVerts = std::min(numCells, MAX_OUTPUT_VERTICES);
+    size_t maxInds = std::min(numCells * 12, MAX_OUTPUT_INDICES);
 
     // Check shader modification times for hot reload
     auto getShaderModTime = [&](const char* name) -> time_t {
@@ -3028,17 +3055,24 @@ inline bool init_dc_pipeline(int resolution) {
     time_t markModTime = getShaderModTime("dc_mark_active");
     time_t vertexModTime = getShaderModTime("dc_vertices");
     time_t quadModTime = getShaderModTime("dc_quads");
+    time_t cubesModTime = getShaderModTime("dc_cubes");
 
     bool shadersChanged = (markModTime != dc->markShaderModTime ||
                           vertexModTime != dc->vertexShaderModTime ||
-                          quadModTime != dc->quadShaderModTime);
+                          quadModTime != dc->quadShaderModTime ||
+                          cubesModTime != dc->cubesShaderModTime);
 
-    if (dc->initialized && dc->maxCells >= numCells && !shadersChanged) {
-        return true;  // Already initialized with sufficient size and no shader changes
+    bool modeChanged = (dc->cubesOnlyMode != cubesOnly);
+
+    if (dc->initialized && dc->maxCells >= numCells && !shadersChanged && !modeChanged) {
+        return true;  // Already initialized with sufficient size and no shader/mode changes
     }
 
     if (shadersChanged && dc->initialized) {
         std::cout << "DC shaders changed, reloading..." << std::endl;
+    }
+    if (modeChanged && dc->initialized) {
+        std::cout << "DC mode changed (cubesOnly=" << cubesOnly << "), reinitializing..." << std::endl;
     }
 
     // Clean up old resources if resizing
@@ -3077,8 +3111,9 @@ inline bool init_dc_pipeline(int resolution) {
     dc->markShader = loadShader("dc_mark_active");
     dc->vertexShader = loadShader("dc_vertices");
     dc->quadShader = loadShader("dc_quads");
+    dc->cubesShader = loadShader("dc_cubes");
 
-    if (!dc->markShader || !dc->vertexShader || !dc->quadShader) {
+    if (!dc->markShader || !dc->vertexShader || !dc->quadShader || !dc->cubesShader) {
         std::cerr << "Failed to load DC compute shaders" << std::endl;
         return false;
     }
@@ -3129,7 +3164,9 @@ inline bool init_dc_pipeline(int resolution) {
                       dc->vertexBuffer, dc->vertexMemory)) return false;
 
     // Cell to vertex mapping
-    if (!createBuffer(numCells * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+    // For cubes mode, we only need a placeholder since the buffer isn't used
+    size_t cellToVertexSize = cubesOnly ? sizeof(int32_t) : (numCells * sizeof(int32_t));
+    if (!createBuffer(cellToVertexSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       dc->cellToVertexBuffer, dc->cellToVertexMemory)) return false;
 
     // Vertex count buffer (atomic)
@@ -3339,6 +3376,83 @@ inline bool init_dc_pipeline(int resolution) {
         vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &dc->quadPipeline);
     }
 
+    // Cubes pipeline (for fill-with-cubes mode)
+    // Bindings: 0=distances, 1=activeMask, 2=vertices, 3=indices, 4=vertexCount, 5=indexCount, 6=params
+    {
+        // Create cubes params buffer (extended with voxelSize)
+        if (!createBuffer(64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          dc->cubesParamsBuffer, dc->cubesParamsMemory)) return false;
+
+        VkDescriptorSetLayoutBinding bindings[7] = {};
+        bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[6] = {6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 7;
+        layoutInfo.pBindings = bindings;
+        vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &dc->cubesLayout);
+
+        VkDescriptorPoolSize poolSizes[2] = {
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}
+        };
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = 1;
+        vkCreateDescriptorPool(e->device, &poolInfo, nullptr, &dc->cubesPool);
+
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = dc->cubesPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &dc->cubesLayout;
+        vkAllocateDescriptorSets(e->device, &allocInfo, &dc->cubesDescSet);
+
+        VkDescriptorBufferInfo distInfo{dc->distanceBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo maskInfo{dc->activeMaskBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo vertInfo{dc->vertexBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo idxInfo{dc->indexBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo vcntInfo{dc->vertexCountBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo icntInfo{dc->indexCountBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo paramsInfo{dc->cubesParamsBuffer, 0, VK_WHOLE_SIZE};
+
+        VkWriteDescriptorSet writes[7] = {};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->cubesDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &distInfo, nullptr};
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->cubesDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &maskInfo, nullptr};
+        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->cubesDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &vertInfo, nullptr};
+        writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->cubesDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &idxInfo, nullptr};
+        writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->cubesDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &vcntInfo, nullptr};
+        writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->cubesDescSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &icntInfo, nullptr};
+        writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->cubesDescSet, 6, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsInfo, nullptr};
+        vkUpdateDescriptorSets(e->device, 7, writes, 0, nullptr);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &dc->cubesLayout;
+        vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &dc->cubesPipelineLayout);
+
+        VkPipelineShaderStageCreateInfo stageInfo{};
+        stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stageInfo.module = dc->cubesShader;
+        stageInfo.pName = "main";
+
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.stage = stageInfo;
+        pipelineInfo.layout = dc->cubesPipelineLayout;
+        vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &dc->cubesPipeline);
+    }
+
     dc->maxCells = numCells;
     dc->maxVertices = maxVerts;
     dc->maxIndices = maxInds;
@@ -3347,11 +3461,324 @@ inline bool init_dc_pipeline(int resolution) {
     dc->markShaderModTime = markModTime;
     dc->vertexShaderModTime = vertexModTime;
     dc->quadShaderModTime = quadModTime;
+    dc->cubesShaderModTime = cubesModTime;
+
+    // Save mode for detecting changes
+    dc->cubesOnlyMode = cubesOnly;
 
     dc->initialized = true;
 
-    std::cout << "DC compute pipeline initialized!" << std::endl;
+    std::cout << "DC compute pipeline initialized (cubesOnly=" << cubesOnly << ")!" << std::endl;
     return true;
+}
+
+// Constants for chunked processing
+constexpr int GPU_DC_CHUNK_SIZE = 512;  // Process in 512³ chunks (larger = fewer chunks, less overhead)
+
+// Process a single chunk of the SDF grid
+// chunkX/Y/Z are in chunk coordinates (0, 1, 2, ...)
+// Returns partial mesh for this chunk
+inline mc::Mesh process_dc_chunk(
+    const std::vector<float>& fullDistances,
+    int fullResolution,
+    int chunkX, int chunkY, int chunkZ,
+    int chunkSize,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    bool fillWithCubes,
+    float voxelSize,
+    float isolevel
+) {
+    mc::Mesh mesh;
+    auto* e = get_engine();
+    auto* dc = get_dc_pipeline();
+
+    // Calculate chunk bounds in grid coordinates
+    int startX = chunkX * (chunkSize - 1);  // -1 for overlap at boundaries
+    int startY = chunkY * (chunkSize - 1);
+    int startZ = chunkZ * (chunkSize - 1);
+    int endX = std::min(startX + chunkSize, fullResolution);
+    int endY = std::min(startY + chunkSize, fullResolution);
+    int endZ = std::min(startZ + chunkSize, fullResolution);
+
+    int chunkResX = endX - startX;
+    int chunkResY = endY - startY;
+    int chunkResZ = endZ - startZ;
+
+    if (chunkResX < 2 || chunkResY < 2 || chunkResZ < 2) return mesh;
+
+    // Use the smaller of chunk dimensions as effective resolution
+    int chunkRes = std::min({chunkResX, chunkResY, chunkResZ});
+
+    // Extract chunk distances
+    std::vector<float> chunkDistances(chunkResX * chunkResY * chunkResZ);
+    for (int z = 0; z < chunkResZ; z++) {
+        for (int y = 0; y < chunkResY; y++) {
+            for (int x = 0; x < chunkResX; x++) {
+                int srcIdx = (startX + x) + (startY + y) * fullResolution +
+                            (startZ + z) * fullResolution * fullResolution;
+                int dstIdx = x + y * chunkResX + z * chunkResX * chunkResY;
+                chunkDistances[dstIdx] = fullDistances[srcIdx];
+            }
+        }
+    }
+
+    // Calculate world bounds for this chunk
+    float stepX = (maxX - minX) / float(fullResolution - 1);
+    float stepY = (maxY - minY) / float(fullResolution - 1);
+    float stepZ = (maxZ - minZ) / float(fullResolution - 1);
+
+    float chunkMinX = minX + startX * stepX;
+    float chunkMinY = minY + startY * stepY;
+    float chunkMinZ = minZ + startZ * stepZ;
+    float chunkMaxX = minX + (endX - 1) * stepX;
+    float chunkMaxY = minY + (endY - 1) * stepY;
+    float chunkMaxZ = minZ + (endZ - 1) * stepZ;
+
+    // Initialize pipeline for chunk size
+    if (!init_dc_pipeline(chunkRes)) {
+        return mesh;
+    }
+
+    size_t numCells = (size_t)(chunkResX - 1) * (chunkResY - 1) * (chunkResZ - 1);
+
+    // Upload chunk distances to GPU
+    void* data;
+    vkMapMemory(e->device, dc->distanceMemory, 0, chunkDistances.size() * sizeof(float), 0, &data);
+    memcpy(data, chunkDistances.data(), chunkDistances.size() * sizeof(float));
+    vkUnmapMemory(e->device, dc->distanceMemory);
+
+    // Reset atomic counters
+    uint32_t zero = 0;
+    vkMapMemory(e->device, dc->activeCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->activeCountMemory);
+
+    vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->vertexCountMemory);
+
+    vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexCountMemory);
+
+    // Upload params (use chunkRes for resolution)
+    if (fillWithCubes) {
+        struct CubesParams {
+            uint32_t resolution;
+            float isolevel;
+            float minX, minY, minZ;
+            float maxX, maxY, maxZ;
+            float voxelSize;
+        } cubesParams = {(uint32_t)chunkRes, isolevel, chunkMinX, chunkMinY, chunkMinZ,
+                         chunkMaxX, chunkMaxY, chunkMaxZ, voxelSize};
+        vkMapMemory(e->device, dc->cubesParamsMemory, 0, sizeof(cubesParams), 0, &data);
+        memcpy(data, &cubesParams, sizeof(cubesParams));
+        vkUnmapMemory(e->device, dc->cubesParamsMemory);
+
+        // Also set mark params
+        struct DCParams { uint32_t resolution; float isolevel; } markParams = {(uint32_t)chunkRes, isolevel};
+        vkMapMemory(e->device, dc->paramsMemory, 0, sizeof(markParams), 0, &data);
+        memcpy(data, &markParams, sizeof(markParams));
+        vkUnmapMemory(e->device, dc->paramsMemory);
+    } else {
+        struct DCParams {
+            uint32_t resolution;
+            float isolevel;
+            float minX, minY, minZ;
+            float maxX, maxY, maxZ;
+        } params = {(uint32_t)chunkRes, isolevel, chunkMinX, chunkMinY, chunkMinZ,
+                    chunkMaxX, chunkMaxY, chunkMaxZ};
+        vkMapMemory(e->device, dc->paramsMemory, 0, sizeof(params), 0, &data);
+        memcpy(data, &params, sizeof(params));
+        vkUnmapMemory(e->device, dc->paramsMemory);
+    }
+
+    // Create command buffer
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = e->commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd;
+    vkAllocateCommandBuffers(e->device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    uint32_t cellGroups = ((uint32_t)numCells + 63) / 64;
+
+    // Pass 1: Mark active cells
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->markPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->markPipelineLayout, 0, 1, &dc->markDescSet, 0, nullptr);
+    vkCmdDispatch(cmd, cellGroups, 1, 1);
+
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    if (fillWithCubes) {
+        // Cubes mode: single pass after mark
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->cubesPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->cubesPipelineLayout, 0, 1, &dc->cubesDescSet, 0, nullptr);
+        vkCmdDispatch(cmd, cellGroups, 1, 1);
+    } else {
+        // DC mode: vertex pass + quad pass
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->vertexPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->vertexPipelineLayout, 0, 1, &dc->vertexDescSet, 0, nullptr);
+        vkCmdDispatch(cmd, cellGroups, 1, 1);
+
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+        uint32_t cellRes = chunkRes - 1;
+        uint32_t totalEdges = cellRes * (cellRes - 1) * (cellRes - 1) +
+                              (cellRes - 1) * cellRes * (cellRes - 1) +
+                              (cellRes - 1) * (cellRes - 1) * cellRes;
+        uint32_t edgeGroups = (totalEdges + 63) / 64;
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->quadPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->quadPipelineLayout, 0, 1, &dc->quadDescSet, 0, nullptr);
+        vkCmdDispatch(cmd, edgeGroups, 1, 1);
+    }
+
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmd);
+
+    // Read back results
+    uint32_t vertexCount, indexCount;
+    vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(&vertexCount, data, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->vertexCountMemory);
+
+    vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(&indexCount, data, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexCountMemory);
+
+    if (vertexCount == 0 || indexCount == 0) return mesh;
+
+    mesh.vertices.resize(vertexCount);
+    vkMapMemory(e->device, dc->vertexMemory, 0, vertexCount * sizeof(float) * 4, 0, &data);
+    float* verts = (float*)data;
+    for (uint32_t i = 0; i < vertexCount; i++) {
+        mesh.vertices[i] = {verts[i*4], verts[i*4+1], verts[i*4+2]};
+    }
+    vkUnmapMemory(e->device, dc->vertexMemory);
+
+    mesh.indices.resize(indexCount);
+    vkMapMemory(e->device, dc->indexMemory, 0, indexCount * sizeof(uint32_t), 0, &data);
+    memcpy(mesh.indices.data(), data, indexCount * sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexMemory);
+
+    return mesh;
+}
+
+// Forward declarations for GPU mesh generation functions
+inline mc::Mesh generate_mesh_dc_gpu(
+    const std::vector<float>& distances,
+    int resolution,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    float isolevel);
+
+inline mc::Mesh generate_mesh_cubes_gpu(
+    const std::vector<float>& distances,
+    int resolution,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    float voxelSize,
+    float isolevel);
+
+// Chunked GPU DC mesh generation - supports any resolution
+inline mc::Mesh generate_mesh_dc_gpu_chunked(
+    const std::vector<float>& distances,
+    int resolution,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    bool fillWithCubes = false,
+    float voxelSize = 1.0f,
+    float isolevel = 0.0f
+) {
+    auto dcStart = std::chrono::high_resolution_clock::now();
+    mc::Mesh finalMesh;
+
+    // Try single-pass first (much faster if memory allows)
+    // Cubes mode uses less memory (no cellToVertex buffer needed)
+    bool cubesOnly = fillWithCubes;
+    if (init_dc_pipeline(resolution, cubesOnly)) {
+        if (fillWithCubes) {
+            finalMesh = generate_mesh_cubes_gpu(distances, resolution,
+                minX, minY, minZ, maxX, maxY, maxZ, voxelSize, isolevel);
+        } else {
+            finalMesh = generate_mesh_dc_gpu(distances, resolution,
+                minX, minY, minZ, maxX, maxY, maxZ, isolevel);
+        }
+        if (!finalMesh.vertices.empty()) {
+            return finalMesh;  // Single-pass succeeded!
+        }
+    }
+
+    // Fall back to chunked processing for large grids
+    int chunkSize = GPU_DC_CHUNK_SIZE;
+    int cellRes = resolution - 1;
+    int numChunksX = (cellRes + chunkSize - 2) / (chunkSize - 1);
+    int numChunksY = (cellRes + chunkSize - 2) / (chunkSize - 1);
+    int numChunksZ = (cellRes + chunkSize - 2) / (chunkSize - 1);
+    int totalChunks = numChunksX * numChunksY * numChunksZ;
+
+    std::cout << "GPU DC chunked: processing " << totalChunks << " chunks ("
+              << numChunksX << "x" << numChunksY << "x" << numChunksZ << ")..." << std::endl;
+
+    for (int cz = 0; cz < numChunksZ; cz++) {
+        for (int cy = 0; cy < numChunksY; cy++) {
+            for (int cx = 0; cx < numChunksX; cx++) {
+                mc::Mesh chunkMesh = process_dc_chunk(
+                    distances, resolution,
+                    cx, cy, cz, chunkSize,
+                    minX, minY, minZ, maxX, maxY, maxZ,
+                    fillWithCubes, voxelSize, isolevel
+                );
+
+                if (chunkMesh.vertices.empty()) continue;
+
+                // Offset indices for merged mesh
+                uint32_t vertexOffset = (uint32_t)finalMesh.vertices.size();
+                for (auto& idx : chunkMesh.indices) {
+                    idx += vertexOffset;
+                }
+
+                // Append to final mesh
+                finalMesh.vertices.insert(finalMesh.vertices.end(),
+                    chunkMesh.vertices.begin(), chunkMesh.vertices.end());
+                finalMesh.indices.insert(finalMesh.indices.end(),
+                    chunkMesh.indices.begin(), chunkMesh.indices.end());
+            }
+        }
+    }
+
+    auto dcEnd = std::chrono::high_resolution_clock::now();
+    auto dcDuration = std::chrono::duration_cast<std::chrono::milliseconds>(dcEnd - dcStart);
+
+    std::cout << "DC mesh (GPU chunked): " << finalMesh.vertices.size() << " vertices, "
+              << (finalMesh.indices.size() / 3) << " triangles"
+              << " (" << dcDuration.count() << " ms)" << std::endl;
+
+    return finalMesh;
 }
 
 // Execute GPU DC mesh generation
@@ -3509,6 +3936,164 @@ inline mc::Mesh generate_mesh_dc_gpu(
     auto dcDuration = std::chrono::duration_cast<std::chrono::milliseconds>(dcEnd - dcStart);
 
     std::cout << "DC mesh (GPU): " << mesh.vertices.size() << " vertices, "
+              << (mesh.indices.size() / 3) << " triangles"
+              << " (" << dcDuration.count() << " ms)" << std::endl;
+
+    return mesh;
+}
+
+// Execute GPU cubes mesh generation (fill-with-cubes mode)
+// Returns mesh with cube vertices and indices
+inline mc::Mesh generate_mesh_cubes_gpu(
+    const std::vector<float>& distances,
+    int resolution,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    float voxelSize = 1.0f,
+    float isolevel = 0.0f
+) {
+    auto dcStart = std::chrono::high_resolution_clock::now();
+
+    auto* e = get_engine();
+    auto* dc = get_dc_pipeline();
+    mc::Mesh mesh;
+
+    if (!e || !e->initialized) {
+        std::cerr << "Engine not initialized" << std::endl;
+        return mesh;
+    }
+
+    size_t numCells = (size_t)(resolution - 1) * (resolution - 1) * (resolution - 1);
+
+    // Initialize pipeline if needed (cubesOnly=true to skip cellToVertex allocation)
+    if (!init_dc_pipeline(resolution, true)) {
+        std::cerr << "Failed to initialize DC pipeline for cubes" << std::endl;
+        return mesh;
+    }
+
+    // Upload distances to GPU
+    void* data;
+    vkMapMemory(e->device, dc->distanceMemory, 0, distances.size() * sizeof(float), 0, &data);
+    memcpy(data, distances.data(), distances.size() * sizeof(float));
+    vkUnmapMemory(e->device, dc->distanceMemory);
+
+    // Upload params for mark pass
+    struct DCParams {
+        uint32_t resolution;
+        float isolevel;
+    } markParams = {(uint32_t)resolution, isolevel};
+
+    vkMapMemory(e->device, dc->paramsMemory, 0, sizeof(markParams), 0, &data);
+    memcpy(data, &markParams, sizeof(markParams));
+    vkUnmapMemory(e->device, dc->paramsMemory);
+
+    // Upload extended params for cubes pass
+    struct CubesParams {
+        uint32_t resolution;
+        float isolevel;
+        float minX, minY, minZ;
+        float maxX, maxY, maxZ;
+        float voxelSize;
+    } cubesParams = {(uint32_t)resolution, isolevel, minX, minY, minZ, maxX, maxY, maxZ, voxelSize};
+
+    vkMapMemory(e->device, dc->cubesParamsMemory, 0, sizeof(cubesParams), 0, &data);
+    memcpy(data, &cubesParams, sizeof(cubesParams));
+    vkUnmapMemory(e->device, dc->cubesParamsMemory);
+
+    // Reset atomic counters
+    uint32_t zero = 0;
+    vkMapMemory(e->device, dc->activeCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->activeCountMemory);
+
+    vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->vertexCountMemory);
+
+    vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexCountMemory);
+
+    // Create command buffer
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = e->commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd;
+    vkAllocateCommandBuffers(e->device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    uint32_t cellGroups = ((uint32_t)numCells + 63) / 64;
+
+    // Pass 1: Mark active cells
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->markPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->markPipelineLayout, 0, 1, &dc->markDescSet, 0, nullptr);
+    vkCmdDispatch(cmd, cellGroups, 1, 1);
+
+    // Barrier between passes
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    // Pass 2: Generate cubes for active cells
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->cubesPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->cubesPipelineLayout, 0, 1, &dc->cubesDescSet, 0, nullptr);
+    vkCmdDispatch(cmd, cellGroups, 1, 1);
+
+    // Final barrier for host read
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(cmd);
+
+    // Submit and wait
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmd);
+
+    // Read back results
+    uint32_t vertexCount, indexCount;
+
+    vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(&vertexCount, data, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->vertexCountMemory);
+
+    vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(&indexCount, data, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexCountMemory);
+
+    // Read vertices
+    mesh.vertices.resize(vertexCount);
+    vkMapMemory(e->device, dc->vertexMemory, 0, vertexCount * sizeof(float) * 4, 0, &data);
+    float* verts = (float*)data;
+    for (uint32_t i = 0; i < vertexCount; i++) {
+        mesh.vertices[i] = {verts[i*4], verts[i*4+1], verts[i*4+2]};
+    }
+    vkUnmapMemory(e->device, dc->vertexMemory);
+
+    // Read indices
+    mesh.indices.resize(indexCount);
+    vkMapMemory(e->device, dc->indexMemory, 0, indexCount * sizeof(uint32_t), 0, &data);
+    memcpy(mesh.indices.data(), data, indexCount * sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexMemory);
+
+    auto dcEnd = std::chrono::high_resolution_clock::now();
+    auto dcDuration = std::chrono::duration_cast<std::chrono::milliseconds>(dcEnd - dcStart);
+
+    std::cout << "DC cubes (GPU): " << mesh.vertices.size() << " vertices, "
               << (mesh.indices.size() / 3) << " triangles"
               << " (" << dcDuration.count() << " ms)" << std::endl;
 
@@ -4672,14 +5257,15 @@ inline bool generate_mesh_preview(int resolution = -1) {
     mc::Vec3 bounds_min{-2.0f, -2.0f, -2.0f};
     mc::Vec3 bounds_max{2.0f, 2.0f, 2.0f};
     if (e->meshUseDualContouring) {
-        if (e->meshUseGpuDC && !e->meshFillWithCubes) {
-            // GPU DC (experimental) - doesn't support fill-with-cubes mode yet
-            e->currentMesh = generate_mesh_dc_gpu(distances, resolution,
-                -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, 0.0f);
-            // Fall back to CPU if GPU DC fails (resolution too high, etc.)
+        if (e->meshUseGpuDC) {
+            // Use chunked GPU processing - handles any resolution
+            e->currentMesh = generate_mesh_dc_gpu_chunked(distances, resolution,
+                -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f,
+                e->meshFillWithCubes, e->meshVoxelSize, 0.0f);
+            // Fall back to CPU if GPU fails
             if (e->currentMesh.vertices.empty()) {
-                std::cout << "GPU DC unavailable at this resolution, falling back to CPU DC..." << std::endl;
-                e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, false, 1.0f);
+                std::cout << "GPU DC failed, falling back to CPU..." << std::endl;
+                e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, e->meshFillWithCubes, e->meshVoxelSize);
             }
         } else {
             // CPU DC
