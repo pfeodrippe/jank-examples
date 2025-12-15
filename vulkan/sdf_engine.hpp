@@ -237,6 +237,7 @@ struct Engine {
     bool meshUseVertexColors = true;  // true = use sampled vertex colors (default on)
     bool meshUseDualContouring = true;  // true = use DC (sharper features), false = marching cubes
     bool meshFillWithCubes = false;     // true = voxel cubes for each active cell (no slicing)
+    bool meshUseGpuDC = false;          // true = use GPU compute for DC (experimental)
     float meshVoxelSize = 1.0f;         // Voxel size multiplier for fill-with-cubes mode (1.0 = cell size)
     float meshScale = 1.0f;       // Scale factor for mesh preview
     int meshPreviewResolution = 256;
@@ -2919,6 +2920,602 @@ inline std::vector<float> sample_sdf_grid(
 }
 
 // ============================================================================
+// GPU-Based Dual Contouring Pipeline
+// ============================================================================
+// Three-pass GPU compute pipeline for fast DC mesh generation:
+// 1. Mark active cells (cells with surface crossings)
+// 2. Generate vertices (compute vertex positions for active cells)
+// 3. Generate quads (create index buffer for triangles)
+
+struct DCComputePipeline {
+    bool initialized = false;
+
+    // Buffers
+    VkBuffer distanceBuffer = VK_NULL_HANDLE;       // Input: SDF distances
+    VkDeviceMemory distanceMemory = VK_NULL_HANDLE;
+    VkBuffer activeMaskBuffer = VK_NULL_HANDLE;     // Active cell mask
+    VkDeviceMemory activeMaskMemory = VK_NULL_HANDLE;
+    VkBuffer activeCountBuffer = VK_NULL_HANDLE;    // Atomic counter
+    VkDeviceMemory activeCountMemory = VK_NULL_HANDLE;
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;         // Output vertices
+    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+    VkBuffer cellToVertexBuffer = VK_NULL_HANDLE;   // Cell to vertex mapping
+    VkDeviceMemory cellToVertexMemory = VK_NULL_HANDLE;
+    VkBuffer vertexCountBuffer = VK_NULL_HANDLE;    // Vertex count atomic
+    VkDeviceMemory vertexCountMemory = VK_NULL_HANDLE;
+    VkBuffer indexBuffer = VK_NULL_HANDLE;          // Output indices
+    VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+    VkBuffer indexCountBuffer = VK_NULL_HANDLE;     // Index count atomic
+    VkDeviceMemory indexCountMemory = VK_NULL_HANDLE;
+    VkBuffer paramsBuffer = VK_NULL_HANDLE;         // Uniform params
+    VkDeviceMemory paramsMemory = VK_NULL_HANDLE;
+
+    // Pass 1: Mark Active
+    VkDescriptorSetLayout markLayout = VK_NULL_HANDLE;
+    VkDescriptorPool markPool = VK_NULL_HANDLE;
+    VkDescriptorSet markDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout markPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline markPipeline = VK_NULL_HANDLE;
+    VkShaderModule markShader = VK_NULL_HANDLE;
+
+    // Pass 2: Generate Vertices
+    VkDescriptorSetLayout vertexLayout = VK_NULL_HANDLE;
+    VkDescriptorPool vertexPool = VK_NULL_HANDLE;
+    VkDescriptorSet vertexDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout vertexPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline vertexPipeline = VK_NULL_HANDLE;
+    VkShaderModule vertexShader = VK_NULL_HANDLE;
+
+    // Pass 3: Generate Quads
+    VkDescriptorSetLayout quadLayout = VK_NULL_HANDLE;
+    VkDescriptorPool quadPool = VK_NULL_HANDLE;
+    VkDescriptorSet quadDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout quadPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline quadPipeline = VK_NULL_HANDLE;
+    VkShaderModule quadShader = VK_NULL_HANDLE;
+
+    size_t maxCells = 0;
+    size_t maxVertices = 0;
+    size_t maxIndices = 0;
+
+    // Hot reload: track shader modification times
+    time_t markShaderModTime = 0;
+    time_t vertexShaderModTime = 0;
+    time_t quadShaderModTime = 0;
+};
+
+inline DCComputePipeline* g_dcPipeline = nullptr;
+
+inline DCComputePipeline* get_dc_pipeline() {
+    if (!g_dcPipeline) {
+        g_dcPipeline = new DCComputePipeline();
+    }
+    return g_dcPipeline;
+}
+
+// Initialize DC compute pipeline for given resolution
+inline bool init_dc_pipeline(int resolution) {
+    auto* e = get_engine();
+    auto* dc = get_dc_pipeline();
+    if (!e || !e->initialized) return false;
+
+    // GPU DC memory limit: ~512^3 cells is ~2GB VRAM, 640^3 is ~4GB
+    // Limit to resolution 512 (511^3 = 133M cells) to avoid OOM
+    const int maxGpuResolution = 512;
+    if (resolution > maxGpuResolution) {
+        std::cerr << "GPU DC: resolution " << resolution << " exceeds limit "
+                  << maxGpuResolution << " (would require too much VRAM)" << std::endl;
+        return false;
+    }
+
+    size_t numVertices = (size_t)resolution * resolution * resolution;
+    size_t numCells = (size_t)(resolution - 1) * (resolution - 1) * (resolution - 1);
+
+    // Estimate max vertices and indices
+    size_t maxVerts = numCells;  // At most one vertex per cell
+    size_t maxInds = numCells * 12;  // At most 4 quads * 6 indices per cell
+
+    // Check shader modification times for hot reload
+    auto getShaderModTime = [&](const char* name) -> time_t {
+        std::string path = e->shaderDir + "/" + name + ".spv";
+        struct stat st;
+        if (stat(path.c_str(), &st) == 0) {
+            return st.st_mtime;
+        }
+        return 0;
+    };
+
+    time_t markModTime = getShaderModTime("dc_mark_active");
+    time_t vertexModTime = getShaderModTime("dc_vertices");
+    time_t quadModTime = getShaderModTime("dc_quads");
+
+    bool shadersChanged = (markModTime != dc->markShaderModTime ||
+                          vertexModTime != dc->vertexShaderModTime ||
+                          quadModTime != dc->quadShaderModTime);
+
+    if (dc->initialized && dc->maxCells >= numCells && !shadersChanged) {
+        return true;  // Already initialized with sufficient size and no shader changes
+    }
+
+    if (shadersChanged && dc->initialized) {
+        std::cout << "DC shaders changed, reloading..." << std::endl;
+    }
+
+    // Clean up old resources if resizing
+    if (dc->initialized) {
+        vkDeviceWaitIdle(e->device);
+        // TODO: cleanup old buffers
+    }
+
+    std::cout << "Initializing DC compute pipeline for " << numCells << " cells..." << std::endl;
+
+    // Load shaders
+    auto loadShader = [&](const char* name) -> VkShaderModule {
+        std::string path = e->shaderDir + "/" + name + ".spv";
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open shader: " << path << std::endl;
+            return VK_NULL_HANDLE;
+        }
+        size_t size = file.tellg();
+        std::vector<char> code(size);
+        file.seekg(0);
+        file.read(code.data(), size);
+
+        VkShaderModuleCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = size;
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+        VkShaderModule module;
+        if (vkCreateShaderModule(e->device, &createInfo, nullptr, &module) != VK_SUCCESS) {
+            return VK_NULL_HANDLE;
+        }
+        return module;
+    };
+
+    dc->markShader = loadShader("dc_mark_active");
+    dc->vertexShader = loadShader("dc_vertices");
+    dc->quadShader = loadShader("dc_quads");
+
+    if (!dc->markShader || !dc->vertexShader || !dc->quadShader) {
+        std::cerr << "Failed to load DC compute shaders" << std::endl;
+        return false;
+    }
+
+    // Create buffers
+    auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage,
+                           VkBuffer& buffer, VkDeviceMemory& memory) -> bool {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+            return false;
+        }
+
+        VkMemoryRequirements memReq;
+        vkGetBufferMemoryRequirements(e->device, buffer, &memReq);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        if (vkAllocateMemory(e->device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
+            return false;
+        }
+        vkBindBufferMemory(e->device, buffer, memory, 0);
+        return true;
+    };
+
+    // Distance buffer (input from SDF sampler)
+    if (!createBuffer(numVertices * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->distanceBuffer, dc->distanceMemory)) return false;
+
+    // Active mask buffer
+    if (!createBuffer(numCells * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->activeMaskBuffer, dc->activeMaskMemory)) return false;
+
+    // Active count buffer (atomic)
+    if (!createBuffer(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->activeCountBuffer, dc->activeCountMemory)) return false;
+
+    // Vertex buffer
+    if (!createBuffer(maxVerts * sizeof(float) * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->vertexBuffer, dc->vertexMemory)) return false;
+
+    // Cell to vertex mapping
+    if (!createBuffer(numCells * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->cellToVertexBuffer, dc->cellToVertexMemory)) return false;
+
+    // Vertex count buffer (atomic)
+    if (!createBuffer(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->vertexCountBuffer, dc->vertexCountMemory)) return false;
+
+    // Index buffer
+    if (!createBuffer(maxInds * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->indexBuffer, dc->indexMemory)) return false;
+
+    // Index count buffer (atomic)
+    if (!createBuffer(sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      dc->indexCountBuffer, dc->indexCountMemory)) return false;
+
+    // Params buffer (uniform) - resolution, isolevel, bounds
+    if (!createBuffer(64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                      dc->paramsBuffer, dc->paramsMemory)) return false;
+
+    // Create descriptor set layouts and pipelines for each pass
+    // Pass 1: Mark Active - bindings: distances(0), activeMask(1), activeCount(2), params(3)
+    {
+        VkDescriptorSetLayoutBinding bindings[4] = {};
+        bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[3] = {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 4;
+        layoutInfo.pBindings = bindings;
+        vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &dc->markLayout);
+
+        VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = 1;
+        vkCreateDescriptorPool(e->device, &poolInfo, nullptr, &dc->markPool);
+
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = dc->markPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &dc->markLayout;
+        vkAllocateDescriptorSets(e->device, &allocInfo, &dc->markDescSet);
+
+        // Update descriptor set
+        VkDescriptorBufferInfo distInfo{dc->distanceBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo maskInfo{dc->activeMaskBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo countInfo{dc->activeCountBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo paramsInfo{dc->paramsBuffer, 0, VK_WHOLE_SIZE};
+
+        VkWriteDescriptorSet writes[4] = {};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->markDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &distInfo, nullptr};
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->markDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &maskInfo, nullptr};
+        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->markDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &countInfo, nullptr};
+        writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->markDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsInfo, nullptr};
+        vkUpdateDescriptorSets(e->device, 4, writes, 0, nullptr);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &dc->markLayout;
+        vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &dc->markPipelineLayout);
+
+        VkPipelineShaderStageCreateInfo stageInfo{};
+        stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stageInfo.module = dc->markShader;
+        stageInfo.pName = "main";
+
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.stage = stageInfo;
+        pipelineInfo.layout = dc->markPipelineLayout;
+        vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &dc->markPipeline);
+    }
+
+    // Pass 2: Generate Vertices - bindings: distances(0), activeMask(1), vertices(2), cellToVertex(3), vertexCount(4), params(5)
+    {
+        VkDescriptorSetLayoutBinding bindings[6] = {};
+        bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[5] = {5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 6;
+        layoutInfo.pBindings = bindings;
+        vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &dc->vertexLayout);
+
+        VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = 1;
+        vkCreateDescriptorPool(e->device, &poolInfo, nullptr, &dc->vertexPool);
+
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = dc->vertexPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &dc->vertexLayout;
+        vkAllocateDescriptorSets(e->device, &allocInfo, &dc->vertexDescSet);
+
+        VkDescriptorBufferInfo distInfo{dc->distanceBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo maskInfo{dc->activeMaskBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo vertInfo{dc->vertexBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo c2vInfo{dc->cellToVertexBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo vcntInfo{dc->vertexCountBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo paramsInfo{dc->paramsBuffer, 0, VK_WHOLE_SIZE};
+
+        VkWriteDescriptorSet writes[6] = {};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->vertexDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &distInfo, nullptr};
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->vertexDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &maskInfo, nullptr};
+        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->vertexDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &vertInfo, nullptr};
+        writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->vertexDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &c2vInfo, nullptr};
+        writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->vertexDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &vcntInfo, nullptr};
+        writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->vertexDescSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsInfo, nullptr};
+        vkUpdateDescriptorSets(e->device, 6, writes, 0, nullptr);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &dc->vertexLayout;
+        vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &dc->vertexPipelineLayout);
+
+        VkPipelineShaderStageCreateInfo stageInfo{};
+        stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stageInfo.module = dc->vertexShader;
+        stageInfo.pName = "main";
+
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.stage = stageInfo;
+        pipelineInfo.layout = dc->vertexPipelineLayout;
+        vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &dc->vertexPipeline);
+    }
+
+    // Pass 3: Generate Quads - bindings: distances(0), cellToVertex(1), indices(2), indexCount(3), params(4)
+    {
+        VkDescriptorSetLayoutBinding bindings[5] = {};
+        bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        bindings[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 5;
+        layoutInfo.pBindings = bindings;
+        vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &dc->quadLayout);
+
+        VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = 1;
+        vkCreateDescriptorPool(e->device, &poolInfo, nullptr, &dc->quadPool);
+
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = dc->quadPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &dc->quadLayout;
+        vkAllocateDescriptorSets(e->device, &allocInfo, &dc->quadDescSet);
+
+        VkDescriptorBufferInfo distInfo{dc->distanceBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo c2vInfo{dc->cellToVertexBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo idxInfo{dc->indexBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo icntInfo{dc->indexCountBuffer, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo paramsInfo{dc->paramsBuffer, 0, VK_WHOLE_SIZE};
+
+        VkWriteDescriptorSet writes[5] = {};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->quadDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &distInfo, nullptr};
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->quadDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &c2vInfo, nullptr};
+        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->quadDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &idxInfo, nullptr};
+        writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->quadDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &icntInfo, nullptr};
+        writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dc->quadDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsInfo, nullptr};
+        vkUpdateDescriptorSets(e->device, 5, writes, 0, nullptr);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &dc->quadLayout;
+        vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &dc->quadPipelineLayout);
+
+        VkPipelineShaderStageCreateInfo stageInfo{};
+        stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stageInfo.module = dc->quadShader;
+        stageInfo.pName = "main";
+
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.stage = stageInfo;
+        pipelineInfo.layout = dc->quadPipelineLayout;
+        vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &dc->quadPipeline);
+    }
+
+    dc->maxCells = numCells;
+    dc->maxVertices = maxVerts;
+    dc->maxIndices = maxInds;
+
+    // Save shader modification times for hot reload
+    dc->markShaderModTime = markModTime;
+    dc->vertexShaderModTime = vertexModTime;
+    dc->quadShaderModTime = quadModTime;
+
+    dc->initialized = true;
+
+    std::cout << "DC compute pipeline initialized!" << std::endl;
+    return true;
+}
+
+// Execute GPU DC mesh generation
+// Returns mesh with vertices and indices
+inline mc::Mesh generate_mesh_dc_gpu(
+    const std::vector<float>& distances,
+    int resolution,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    float isolevel = 0.0f
+) {
+    auto dcStart = std::chrono::high_resolution_clock::now();
+
+    auto* e = get_engine();
+    auto* dc = get_dc_pipeline();
+    mc::Mesh mesh;
+
+    if (!e || !e->initialized) {
+        std::cerr << "Engine not initialized" << std::endl;
+        return mesh;
+    }
+
+    size_t numCells = (size_t)(resolution - 1) * (resolution - 1) * (resolution - 1);
+
+    // Initialize pipeline if needed
+    if (!init_dc_pipeline(resolution)) {
+        std::cerr << "Failed to initialize DC pipeline" << std::endl;
+        return mesh;
+    }
+
+    // Upload distances to GPU
+    void* data;
+    vkMapMemory(e->device, dc->distanceMemory, 0, distances.size() * sizeof(float), 0, &data);
+    memcpy(data, distances.data(), distances.size() * sizeof(float));
+    vkUnmapMemory(e->device, dc->distanceMemory);
+
+    // Upload params
+    struct DCParams {
+        uint32_t resolution;
+        float isolevel;
+        float minX, minY, minZ;
+        float maxX, maxY, maxZ;
+    } params = {(uint32_t)resolution, isolevel, minX, minY, minZ, maxX, maxY, maxZ};
+
+    vkMapMemory(e->device, dc->paramsMemory, 0, sizeof(params), 0, &data);
+    memcpy(data, &params, sizeof(params));
+    vkUnmapMemory(e->device, dc->paramsMemory);
+
+    // Reset atomic counters
+    uint32_t zero = 0;
+    vkMapMemory(e->device, dc->activeCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->activeCountMemory);
+
+    vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->vertexCountMemory);
+
+    vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(data, &zero, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexCountMemory);
+
+    // Create command buffer
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = e->commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmd;
+    vkAllocateCommandBuffers(e->device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    uint32_t cellGroups = ((uint32_t)numCells + 63) / 64;
+
+    // Pass 1: Mark active cells
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->markPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->markPipelineLayout, 0, 1, &dc->markDescSet, 0, nullptr);
+    vkCmdDispatch(cmd, cellGroups, 1, 1);
+
+    // Barrier between passes
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    // Pass 2: Generate vertices
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->vertexPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->vertexPipelineLayout, 0, 1, &dc->vertexDescSet, 0, nullptr);
+    vkCmdDispatch(cmd, cellGroups, 1, 1);
+
+    // Barrier
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    // Pass 3: Generate quads
+    // Calculate number of edges to process
+    uint32_t cellRes = resolution - 1;
+    uint32_t totalEdges = cellRes * (cellRes - 1) * (cellRes - 1) +   // X edges
+                          (cellRes - 1) * cellRes * (cellRes - 1) +   // Y edges
+                          (cellRes - 1) * (cellRes - 1) * cellRes;    // Z edges
+    uint32_t edgeGroups = (totalEdges + 63) / 64;
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->quadPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dc->quadPipelineLayout, 0, 1, &dc->quadDescSet, 0, nullptr);
+    vkCmdDispatch(cmd, edgeGroups, 1, 1);
+
+    // Final barrier for host read
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(cmd);
+
+    // Submit and wait
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmd);
+
+    // Read back results
+    uint32_t vertexCount, indexCount;
+
+    vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(&vertexCount, data, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->vertexCountMemory);
+
+    vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    memcpy(&indexCount, data, sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexCountMemory);
+
+    // Read vertices
+    mesh.vertices.resize(vertexCount);
+    vkMapMemory(e->device, dc->vertexMemory, 0, vertexCount * sizeof(float) * 4, 0, &data);
+    float* verts = (float*)data;
+    for (uint32_t i = 0; i < vertexCount; i++) {
+        mesh.vertices[i] = {verts[i*4], verts[i*4+1], verts[i*4+2]};
+    }
+    vkUnmapMemory(e->device, dc->vertexMemory);
+
+    // Read indices
+    mesh.indices.resize(indexCount);
+    vkMapMemory(e->device, dc->indexMemory, 0, indexCount * sizeof(uint32_t), 0, &data);
+    memcpy(mesh.indices.data(), data, indexCount * sizeof(uint32_t));
+    vkUnmapMemory(e->device, dc->indexMemory);
+
+    auto dcEnd = std::chrono::high_resolution_clock::now();
+    auto dcDuration = std::chrono::duration_cast<std::chrono::milliseconds>(dcEnd - dcStart);
+
+    std::cout << "DC mesh (GPU): " << mesh.vertices.size() << " vertices, "
+              << (mesh.indices.size() / 3) << " triangles"
+              << " (" << dcDuration.count() << " ms)" << std::endl;
+
+    return mesh;
+}
+
+// ============================================================================
 // GPU-Based Color Sampling for Mesh Vertex Colors
 // ============================================================================
 
@@ -4075,7 +4672,19 @@ inline bool generate_mesh_preview(int resolution = -1) {
     mc::Vec3 bounds_min{-2.0f, -2.0f, -2.0f};
     mc::Vec3 bounds_max{2.0f, 2.0f, 2.0f};
     if (e->meshUseDualContouring) {
-        e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, e->meshFillWithCubes, e->meshVoxelSize);
+        if (e->meshUseGpuDC && !e->meshFillWithCubes) {
+            // GPU DC (experimental) - doesn't support fill-with-cubes mode yet
+            e->currentMesh = generate_mesh_dc_gpu(distances, resolution,
+                -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, 0.0f);
+            // Fall back to CPU if GPU DC fails (resolution too high, etc.)
+            if (e->currentMesh.vertices.empty()) {
+                std::cout << "GPU DC unavailable at this resolution, falling back to CPU DC..." << std::endl;
+                e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, false, 1.0f);
+            }
+        } else {
+            // CPU DC
+            e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, e->meshFillWithCubes, e->meshVoxelSize);
+        }
     } else {
         e->currentMesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
         std::cout << "MC mesh: " << e->currentMesh.vertices.size() << " vertices, "
@@ -4232,6 +4841,21 @@ inline void set_mesh_voxel_size(float size) {
             e->meshNeedsRegenerate = true;
             e->dirty = true;
         }
+    }
+}
+
+inline bool get_mesh_use_gpu_dc() {
+    auto* e = get_engine();
+    return e ? e->meshUseGpuDC : false;
+}
+
+inline void set_mesh_use_gpu_dc(bool useGpu) {
+    auto* e = get_engine();
+    if (!e) return;
+    if (e->meshUseGpuDC != useGpu) {
+        e->meshUseGpuDC = useGpu;
+        e->meshNeedsRegenerate = true;  // Need to regenerate with GPU/CPU mode
+        e->dirty = true;
     }
 }
 

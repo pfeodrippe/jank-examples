@@ -1,0 +1,177 @@
+#version 450
+//
+// DC QUADS - Generate quad indices for DC mesh
+// Processes edges and creates quads connecting 4 adjacent cell vertices
+//
+// Input: SDF distances, cell-to-vertex mapping
+// Output: Index buffer (triangles)
+//
+
+layout(local_size_x = 64) in;
+
+// Input: SDF distances
+layout(std430, binding = 0) readonly buffer InputDistances {
+    float distances[];
+};
+
+// Input: Cell to vertex mapping
+layout(std430, binding = 1) readonly buffer CellToVertex {
+    int cellToVertex[];
+};
+
+// Output: Index buffer (triangles, 6 indices per quad = 2 triangles)
+layout(std430, binding = 2) writeonly buffer Indices {
+    uint indices[];
+};
+
+// Atomic counter for index allocation
+layout(std430, binding = 3) buffer IndexCount {
+    uint indexCount;
+};
+
+// Parameters
+layout(std140, binding = 4) uniform DCParams {
+    uint resolution;
+    float isolevel;
+};
+
+// Get SDF value at grid vertex
+float getSDF(uint x, uint y, uint z) {
+    uint res = resolution;
+    return distances[x + y * res + z * res * res];
+}
+
+// Get cell index
+int getCellIdx(int x, int y, int z) {
+    int cellRes = int(resolution) - 1;
+    if (x < 0 || y < 0 || z < 0) return -1;
+    if (x >= cellRes || y >= cellRes || z >= cellRes) return -1;
+    return x + y * cellRes + z * cellRes * cellRes;
+}
+
+// Get vertex index for cell (-1 if no vertex)
+int getVertexIdx(int x, int y, int z) {
+    int ci = getCellIdx(x, y, z);
+    if (ci < 0) return -1;
+    return cellToVertex[ci];
+}
+
+// Write a quad as 2 triangles
+void writeQuad(int v0, int v1, int v2, int v3, bool flip) {
+    if (v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0) return;
+
+    // Allocate 6 indices (2 triangles)
+    uint baseIdx = atomicAdd(indexCount, 6u);
+
+    if (flip) {
+        // Triangle 1: v0, v2, v1
+        indices[baseIdx + 0] = uint(v0);
+        indices[baseIdx + 1] = uint(v2);
+        indices[baseIdx + 2] = uint(v1);
+        // Triangle 2: v0, v3, v2
+        indices[baseIdx + 3] = uint(v0);
+        indices[baseIdx + 4] = uint(v3);
+        indices[baseIdx + 5] = uint(v2);
+    } else {
+        // Triangle 1: v0, v1, v2
+        indices[baseIdx + 0] = uint(v0);
+        indices[baseIdx + 1] = uint(v1);
+        indices[baseIdx + 2] = uint(v2);
+        // Triangle 2: v0, v2, v3
+        indices[baseIdx + 3] = uint(v0);
+        indices[baseIdx + 4] = uint(v2);
+        indices[baseIdx + 5] = uint(v3);
+    }
+}
+
+void main() {
+    uint edgeIdx = gl_GlobalInvocationID.x;
+    uint res = resolution;
+    uint cellRes = res - 1u;
+
+    // We process 3 types of edges: X-aligned, Y-aligned, Z-aligned
+    // Total edges that can generate quads:
+    // X-edges: (cellRes) * (cellRes-1) * (cellRes-1) - edges at y>0, z>0
+    // Y-edges: (cellRes-1) * (cellRes) * (cellRes-1) - edges at x>0, z>0
+    // Z-edges: (cellRes-1) * (cellRes-1) * (cellRes) - edges at x>0, y>0
+
+    uint xEdgeCount = cellRes * (cellRes - 1u) * (cellRes - 1u);
+    uint yEdgeCount = (cellRes - 1u) * cellRes * (cellRes - 1u);
+    uint zEdgeCount = (cellRes - 1u) * (cellRes - 1u) * cellRes;
+    uint totalEdges = xEdgeCount + yEdgeCount + zEdgeCount;
+
+    if (edgeIdx >= totalEdges) return;
+
+    int x, y, z;
+    int edgeType; // 0=X, 1=Y, 2=Z
+
+    if (edgeIdx < xEdgeCount) {
+        // X-aligned edge
+        edgeType = 0;
+        uint idx = edgeIdx;
+        uint yzCount = (cellRes - 1u) * (cellRes - 1u);
+        x = int(idx / yzCount);
+        uint rem = idx % yzCount;
+        y = int(rem / (cellRes - 1u)) + 1;  // y starts at 1
+        z = int(rem % (cellRes - 1u)) + 1;  // z starts at 1
+    } else if (edgeIdx < xEdgeCount + yEdgeCount) {
+        // Y-aligned edge
+        edgeType = 1;
+        uint idx = edgeIdx - xEdgeCount;
+        uint xzCount = (cellRes - 1u) * (cellRes - 1u);
+        y = int(idx / xzCount);
+        uint rem = idx % xzCount;
+        x = int(rem / (cellRes - 1u)) + 1;  // x starts at 1
+        z = int(rem % (cellRes - 1u)) + 1;  // z starts at 1
+    } else {
+        // Z-aligned edge
+        edgeType = 2;
+        uint idx = edgeIdx - xEdgeCount - yEdgeCount;
+        uint xyCount = (cellRes - 1u) * (cellRes - 1u);
+        z = int(idx / xyCount);
+        uint rem = idx % xyCount;
+        x = int(rem / (cellRes - 1u)) + 1;  // x starts at 1
+        y = int(rem % (cellRes - 1u)) + 1;  // y starts at 1
+    }
+
+    // Get SDF values at edge endpoints
+    float v0, v1;
+    int c0, c1, c2, c3;
+
+    if (edgeType == 0) {
+        // X-aligned edge at (x, y, z) to (x+1, y, z)
+        v0 = getSDF(uint(x), uint(y), uint(z));
+        v1 = getSDF(uint(x + 1), uint(y), uint(z));
+        // Four cells sharing this edge
+        c0 = getVertexIdx(x, y - 1, z - 1);
+        c1 = getVertexIdx(x, y, z - 1);
+        c2 = getVertexIdx(x, y, z);
+        c3 = getVertexIdx(x, y - 1, z);
+    } else if (edgeType == 1) {
+        // Y-aligned edge at (x, y, z) to (x, y+1, z)
+        v0 = getSDF(uint(x), uint(y), uint(z));
+        v1 = getSDF(uint(x), uint(y + 1), uint(z));
+        // Four cells sharing this edge
+        c0 = getVertexIdx(x - 1, y, z - 1);
+        c1 = getVertexIdx(x, y, z - 1);
+        c2 = getVertexIdx(x, y, z);
+        c3 = getVertexIdx(x - 1, y, z);
+    } else {
+        // Z-aligned edge at (x, y, z) to (x, y, z+1)
+        v0 = getSDF(uint(x), uint(y), uint(z));
+        v1 = getSDF(uint(x), uint(y), uint(z + 1));
+        // Four cells sharing this edge
+        c0 = getVertexIdx(x - 1, y - 1, z);
+        c1 = getVertexIdx(x, y - 1, z);
+        c2 = getVertexIdx(x, y, z);
+        c3 = getVertexIdx(x - 1, y, z);
+    }
+
+    // Check for sign change
+    bool inside0 = v0 < isolevel;
+    bool inside1 = v1 < isolevel;
+    if (inside0 == inside1) return;
+
+    // Generate quad with correct winding
+    writeQuad(c0, c1, c2, c3, v0 >= isolevel);
+}

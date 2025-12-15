@@ -25,6 +25,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <chrono>
 
 // tinygltf for GLB export with vertex colors
 #define TINYGLTF_IMPLEMENTATION
@@ -1036,6 +1037,8 @@ inline Mesh generateMeshDC(
     bool fillWithCubes = false,
     float voxelSize = 1.0f
 ) {
+    auto dcStart = std::chrono::high_resolution_clock::now();
+
     Vec3 cell_size = {
         (bounds_max.x - bounds_min.x) / (res - 1),
         (bounds_max.y - bounds_min.y) / (res - 1),
@@ -1306,9 +1309,11 @@ inline Mesh generateMeshDC(
             indexOffset += (uint32_t)tm.vertices.size();
         }
 
+        auto dcEnd = std::chrono::high_resolution_clock::now();
+        auto dcDuration = std::chrono::duration_cast<std::chrono::milliseconds>(dcEnd - dcStart);
         std::cout << "DC mesh (cubes): " << mesh.vertices.size() << " vertices, "
                   << (mesh.indices.size() / 3) << " triangles"
-                  << " (threads: " << numThreads << ")" << std::endl;
+                  << " (threads: " << numThreads << ", " << dcDuration.count() << " ms)" << std::endl;
 
     } else {
         // =====================================================================
@@ -1424,9 +1429,11 @@ inline Mesh generateMeshDC(
             mesh.indices.insert(mesh.indices.end(), ti.begin(), ti.end());
         }
 
+        auto dcEnd = std::chrono::high_resolution_clock::now();
+        auto dcDuration = std::chrono::duration_cast<std::chrono::milliseconds>(dcEnd - dcStart);
         std::cout << "DC mesh: " << mesh.vertices.size() << " vertices, "
                   << (mesh.indices.size() / 3) << " triangles"
-                  << " (threads: " << numThreads << ")" << std::endl;
+                  << " (threads: " << numThreads << ", " << dcDuration.count() << " ms)" << std::endl;
     }
 
     return mesh;

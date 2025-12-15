@@ -919,9 +919,53 @@ For res=256 on mid-range GPU:
 ## Status
 - [x] Research completed
 - [x] Phase 1: Quick wins (CPU multithreading + early rejection) - **IMPLEMENTED 2024-12-15**
-- [ ] Phase 2: libfive evaluation
-- [ ] Phase 3: Vulkan compute implementation
+- [x] Phase 2: libfive evaluation - **EVALUATED 2024-12-15** (not integrated - architectural mismatch)
+- [~] Phase 3: Vulkan compute implementation - **IN PROGRESS**
 - [ ] Phase 4: Advanced optimizations
+
+### Phase 2 Evaluation: libfive
+
+**Decision:** Not integrated due to architectural mismatch.
+
+**libfive's approach:**
+- Evaluates SDF on-the-fly during mesh generation
+- Uses interval arithmetic for adaptive octree
+- Requires `Oracle` interface with point/interval evaluation
+
+**Our approach:**
+- Pre-samples entire SDF grid on GPU (fast, already implemented)
+- Runs DC on CPU with pre-sampled data (already multithreaded)
+
+**Issue:** Integrating libfive would require either:
+1. Rebuilding SDF scene using libfive's CSG primitives (major rewrite, loses custom shaders)
+2. Creating Oracle that dispatches GPU per-point (extremely slow due to GPU latency)
+
+**Conclusion:** Skip libfive, proceed directly to GPU compute optimization.
+
+### Phase 3 Progress: Vulkan Compute
+
+**UPDATED: Actual Measurements at Resolution 1024:**
+
+| Stage | Time | % of Total |
+|-------|------|------------|
+| SDF Sampling | 4575 ms | 31% |
+| DC Mesh (cubes) | 9982 ms | **69%** |
+| Color Sampling | 11 ms | <1% |
+
+**Key Insight:** At high resolutions, **DC mesh generation IS the bottleneck**, not SDF sampling!
+
+**Created:**
+- `vulkan_kim/dc_mark_active.comp` - Compute shader to mark active cells
+- `vulkan_kim/dc_mark_active.spv` - Compiled shader
+
+**Next Steps for Real Impact:**
+1. **Move DC to GPU** - The `dc_mark_active.comp` shader is the first step
+2. **Full GPU DC Pipeline:**
+   - Mark active cells (done)
+   - Stream compaction (prefix scan)
+   - QEF solve on GPU
+   - Quad generation on GPU
+3. **Expected: 10-50x speedup** for DC mesh generation at high resolutions
 
 ### Implementation Notes (Phase 1)
 

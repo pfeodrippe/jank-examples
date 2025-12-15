@@ -1,0 +1,78 @@
+#version 450
+//
+// DC MARK ACTIVE CELLS - First pass of GPU Dual Contouring
+// Marks cells that contain surface crossings (sign changes at corners)
+//
+// Input: SDF volume (from sdf_sampler)
+// Output: Active cell mask (1 = surface crossing, 0 = no crossing)
+//
+
+layout(local_size_x = 64) in;
+
+// Input: SDF distances from sdf_sampler
+layout(std430, binding = 0) readonly buffer InputDistances {
+    float distances[];
+};
+
+// Output: Active cell mask (one per cell, not per vertex)
+layout(std430, binding = 1) writeonly buffer ActiveMask {
+    uint activeMask[];
+};
+
+// Output: Atomic counter for total active cells
+layout(std430, binding = 2) buffer ActiveCount {
+    uint activeCount;
+};
+
+// Parameters
+layout(std140, binding = 3) uniform DCParams {
+    uint resolution;   // Grid resolution (e.g., 256 means 256^3 vertices, 255^3 cells)
+    float isolevel;    // Surface threshold (usually 0.0)
+};
+
+// Get SDF value at grid vertex (x, y, z)
+float getSDF(uint x, uint y, uint z) {
+    uint res = resolution;
+    return distances[x + y * res + z * res * res];
+}
+
+void main() {
+    uint cellIdx = gl_GlobalInvocationID.x;
+    uint res = resolution;
+    uint cellRes = res - 1u;  // Number of cells per axis
+    uint totalCells = cellRes * cellRes * cellRes;
+
+    if (cellIdx >= totalCells) return;
+
+    // Convert linear cell index to 3D cell coordinates
+    uint cx = cellIdx % cellRes;
+    uint cy = (cellIdx / cellRes) % cellRes;
+    uint cz = cellIdx / (cellRes * cellRes);
+
+    // Sample 8 corners of the cell
+    float v[8];
+    v[0] = getSDF(cx,   cy,   cz);     // 000
+    v[1] = getSDF(cx+1, cy,   cz);     // 100
+    v[2] = getSDF(cx+1, cy+1, cz);     // 110
+    v[3] = getSDF(cx,   cy+1, cz);     // 010
+    v[4] = getSDF(cx,   cy,   cz+1);   // 001
+    v[5] = getSDF(cx+1, cy,   cz+1);   // 101
+    v[6] = getSDF(cx+1, cy+1, cz+1);   // 111
+    v[7] = getSDF(cx,   cy+1, cz+1);   // 011
+
+    // Count how many corners are inside the surface
+    uint insideCount = 0;
+    for (int i = 0; i < 8; i++) {
+        if (v[i] < isolevel) insideCount++;
+    }
+
+    // Cell is active if some corners are inside and some are outside
+    bool isActive = (insideCount > 0) && (insideCount < 8);
+
+    activeMask[cellIdx] = isActive ? 1u : 0u;
+
+    // Atomically increment counter for active cells
+    if (isActive) {
+        atomicAdd(activeCount, 1u);
+    }
+}

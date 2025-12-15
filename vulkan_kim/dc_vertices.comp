@@ -1,0 +1,158 @@
+#version 450
+//
+// DC VERTICES - Compute vertex positions for active cells
+// Uses simplified QEF (mass point) for vertex placement
+//
+// Input: SDF distances, active cell mask
+// Output: Vertex positions, cell-to-vertex mapping
+//
+
+layout(local_size_x = 64) in;
+
+// Input: SDF distances
+layout(std430, binding = 0) readonly buffer InputDistances {
+    float distances[];
+};
+
+// Input: Active cell mask from dc_mark_active
+layout(std430, binding = 1) readonly buffer ActiveMask {
+    uint activeMask[];
+};
+
+// Output: Vertex positions (vec4 for alignment, w unused)
+layout(std430, binding = 2) writeonly buffer Vertices {
+    vec4 vertices[];
+};
+
+// Output: Cell to vertex index mapping (-1 for inactive cells)
+layout(std430, binding = 3) buffer CellToVertex {
+    int cellToVertex[];
+};
+
+// Atomic counter for vertex index allocation
+layout(std430, binding = 4) buffer VertexCount {
+    uint vertexCount;
+};
+
+// Parameters
+layout(std140, binding = 5) uniform DCParams {
+    uint resolution;
+    float isolevel;
+    float minX, minY, minZ;
+    float maxX, maxY, maxZ;
+};
+
+// Get SDF value at grid vertex
+float getSDF(uint x, uint y, uint z) {
+    uint res = resolution;
+    return distances[x + y * res + z * res * res];
+}
+
+// Linear interpolation to find zero crossing on edge
+vec3 interpolateEdge(vec3 p0, vec3 p1, float v0, float v1) {
+    if (abs(v0 - v1) < 1e-6) return (p0 + p1) * 0.5;
+    float t = (isolevel - v0) / (v1 - v0);
+    t = clamp(t, 0.0, 1.0);
+    return p0 + t * (p1 - p0);
+}
+
+void main() {
+    uint cellIdx = gl_GlobalInvocationID.x;
+    uint res = resolution;
+    uint cellRes = res - 1u;
+    uint totalCells = cellRes * cellRes * cellRes;
+
+    if (cellIdx >= totalCells) return;
+
+    // Initialize cell-to-vertex mapping
+    cellToVertex[cellIdx] = -1;
+
+    // Skip inactive cells
+    if (activeMask[cellIdx] == 0u) return;
+
+    // Convert linear cell index to 3D coordinates
+    uint cx = cellIdx % cellRes;
+    uint cy = (cellIdx / cellRes) % cellRes;
+    uint cz = cellIdx / (cellRes * cellRes);
+
+    // Compute cell bounds in world space
+    float stepX = (maxX - minX) / float(res - 1u);
+    float stepY = (maxY - minY) / float(res - 1u);
+    float stepZ = (maxZ - minZ) / float(res - 1u);
+
+    vec3 cellMin = vec3(
+        minX + float(cx) * stepX,
+        minY + float(cy) * stepY,
+        minZ + float(cz) * stepZ
+    );
+    vec3 cellMax = vec3(
+        minX + float(cx + 1u) * stepX,
+        minY + float(cy + 1u) * stepY,
+        minZ + float(cz + 1u) * stepZ
+    );
+
+    // Corner positions
+    vec3 corners[8];
+    corners[0] = vec3(cellMin.x, cellMin.y, cellMin.z);
+    corners[1] = vec3(cellMax.x, cellMin.y, cellMin.z);
+    corners[2] = vec3(cellMax.x, cellMax.y, cellMin.z);
+    corners[3] = vec3(cellMin.x, cellMax.y, cellMin.z);
+    corners[4] = vec3(cellMin.x, cellMin.y, cellMax.z);
+    corners[5] = vec3(cellMax.x, cellMin.y, cellMax.z);
+    corners[6] = vec3(cellMax.x, cellMax.y, cellMax.z);
+    corners[7] = vec3(cellMin.x, cellMax.y, cellMax.z);
+
+    // Sample SDF at corners
+    float v[8];
+    v[0] = getSDF(cx,   cy,   cz);
+    v[1] = getSDF(cx+1, cy,   cz);
+    v[2] = getSDF(cx+1, cy+1, cz);
+    v[3] = getSDF(cx,   cy+1, cz);
+    v[4] = getSDF(cx,   cy,   cz+1);
+    v[5] = getSDF(cx+1, cy,   cz+1);
+    v[6] = getSDF(cx+1, cy+1, cz+1);
+    v[7] = getSDF(cx,   cy+1, cz+1);
+
+    // Edge table: pairs of corner indices for each of 12 edges
+    // Edges 0-3: bottom face, 4-7: top face, 8-11: vertical
+    const int edges[12][2] = int[12][2](
+        int[2](0, 1), int[2](1, 2), int[2](2, 3), int[2](3, 0),  // bottom
+        int[2](4, 5), int[2](5, 6), int[2](6, 7), int[2](7, 4),  // top
+        int[2](0, 4), int[2](1, 5), int[2](2, 6), int[2](3, 7)   // vertical
+    );
+
+    // Find edge crossings and compute mass point (simplified QEF)
+    vec3 massPoint = vec3(0.0);
+    int crossingCount = 0;
+
+    for (int e = 0; e < 12; e++) {
+        int i0 = edges[e][0];
+        int i1 = edges[e][1];
+        float val0 = v[i0];
+        float val1 = v[i1];
+
+        // Check for sign change (edge crosses surface)
+        bool inside0 = val0 < isolevel;
+        bool inside1 = val1 < isolevel;
+        if (inside0 != inside1) {
+            vec3 crossing = interpolateEdge(corners[i0], corners[i1], val0, val1);
+            massPoint += crossing;
+            crossingCount++;
+        }
+    }
+
+    if (crossingCount == 0) return;
+
+    // Compute vertex position (mass point / crossing count)
+    vec3 vertex = massPoint / float(crossingCount);
+
+    // Clamp to cell bounds (important for stability)
+    vertex = clamp(vertex, cellMin, cellMax);
+
+    // Allocate vertex index atomically
+    uint vertexIdx = atomicAdd(vertexCount, 1u);
+
+    // Write vertex and mapping
+    vertices[vertexIdx] = vec4(vertex, 1.0);
+    cellToVertex[cellIdx] = int(vertexIdx);
+}
