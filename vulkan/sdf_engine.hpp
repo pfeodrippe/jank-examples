@@ -30,6 +30,9 @@
 // stb_image_write implementation is in stb_impl.o
 #include "stb_image_write.h"
 
+// CPU Marching Cubes for GPU-sampled SDF grids (standalone, no dependencies)
+#include "marching_cubes.hpp"
+
 namespace sdfx {
 
 // SIGINT handler for Ctrl+C
@@ -2250,6 +2253,511 @@ inline int write_png_downsampled(const char* filepath, const void* pixelsVoid,
     int result = stbi_write_png(filepath, out_w, out_h, 3, rgb, out_w * 3);
     delete[] rgb;
     return result;
+}
+
+// ============================================================================
+// Mesh Export Result (used by both libfive and GPU-based export)
+// ============================================================================
+
+struct MeshExportResult {
+    bool success;
+    size_t vertices;
+    size_t triangles;
+    const char* message;
+};
+
+// ============================================================================
+// GPU-Based SDF Sampling and Mesh Export
+// ============================================================================
+// This system samples the actual GPU-rendered SDF and converts it to a mesh,
+// avoiding code duplication between shader and C++ SDF definitions.
+
+struct SDFSampler {
+    bool initialized = false;
+    VkBuffer inputBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory inputMemory = VK_NULL_HANDLE;
+    VkBuffer outputBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory outputMemory = VK_NULL_HANDLE;
+    VkBuffer paramsBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory paramsMemory = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    size_t maxPoints = 0;
+    std::string cachedShaderName;
+};
+
+inline SDFSampler* g_sampler = nullptr;
+
+inline SDFSampler* get_sampler() {
+    if (!g_sampler) {
+        g_sampler = new SDFSampler();
+    }
+    return g_sampler;
+}
+
+// Extract sceneSDF function and its dependencies from a shader source
+inline std::string extract_scene_sdf(const std::string& shaderSource) {
+    std::string result;
+
+    size_t sceneSdfPos = shaderSource.find("float sceneSDF(vec3 p)");
+    if (sceneSdfPos == std::string::npos) {
+        sceneSdfPos = shaderSource.find("float sceneSDF(");
+    }
+    if (sceneSdfPos == std::string::npos) {
+        std::cerr << "Could not find sceneSDF function in shader" << std::endl;
+        return "";
+    }
+
+    // Find the end of sceneSDF function
+    size_t braceCount = 0;
+    size_t funcStart = shaderSource.find('{', sceneSdfPos);
+    if (funcStart == std::string::npos) return "";
+
+    size_t funcEnd = funcStart;
+    for (size_t i = funcStart; i < shaderSource.size(); i++) {
+        if (shaderSource[i] == '{') braceCount++;
+        else if (shaderSource[i] == '}') {
+            braceCount--;
+            if (braceCount == 0) {
+                funcEnd = i + 1;
+                break;
+            }
+        }
+    }
+
+    std::string sceneSdf = shaderSource.substr(sceneSdfPos, funcEnd - sceneSdfPos);
+
+    // Find helper functions (primitives and operations)
+    size_t helperStart = shaderSource.find("// SDF PRIMITIVES");
+    if (helperStart == std::string::npos) {
+        helperStart = shaderSource.find("// BOOLEAN OPERATIONS");
+    }
+    if (helperStart == std::string::npos) {
+        helperStart = shaderSource.find("float opUnion");
+    }
+    if (helperStart == std::string::npos) {
+        helperStart = 0;
+    }
+
+    std::string helpers = shaderSource.substr(helperStart, sceneSdfPos - helperStart);
+    return helpers + "\n" + sceneSdf;
+}
+
+// Build the sampler shader from template and current scene
+inline std::string build_sampler_shader(const std::string& sceneShaderPath) {
+    std::string templatePath = sceneShaderPath.substr(0, sceneShaderPath.rfind('/')) + "/sdf_sampler.comp";
+    std::string templateSrc = read_text_file(templatePath);
+    if (templateSrc.empty()) {
+        std::cerr << "Could not read sampler template: " << templatePath << std::endl;
+        return "";
+    }
+
+    std::string sceneSrc = read_text_file(sceneShaderPath);
+    if (sceneSrc.empty()) {
+        std::cerr << "Could not read scene shader: " << sceneShaderPath << std::endl;
+        return "";
+    }
+
+    std::string sceneCode = extract_scene_sdf(sceneSrc);
+    if (sceneCode.empty()) {
+        std::cerr << "Could not extract sceneSDF from shader" << std::endl;
+        return "";
+    }
+
+    size_t markerStart = templateSrc.find("// MARKER_SCENE_SDF_START");
+    size_t markerEnd = templateSrc.find("// MARKER_SCENE_SDF_END");
+    if (markerStart == std::string::npos || markerEnd == std::string::npos) {
+        std::cerr << "Could not find markers in sampler template" << std::endl;
+        return "";
+    }
+
+    markerEnd = templateSrc.find('\n', markerEnd) + 1;
+    return templateSrc.substr(0, markerStart) + "\n" + sceneCode + "\n" + templateSrc.substr(markerEnd);
+}
+
+inline void cleanup_sampler() {
+    auto* s = get_sampler();
+    auto* e = get_engine();
+    if (!s->initialized || !e || !e->device) return;
+
+    vkDeviceWaitIdle(e->device);
+
+    if (s->pipeline) vkDestroyPipeline(e->device, s->pipeline, nullptr);
+    if (s->pipelineLayout) vkDestroyPipelineLayout(e->device, s->pipelineLayout, nullptr);
+    if (s->shaderModule) vkDestroyShaderModule(e->device, s->shaderModule, nullptr);
+    if (s->descriptorPool) vkDestroyDescriptorPool(e->device, s->descriptorPool, nullptr);
+    if (s->descriptorSetLayout) vkDestroyDescriptorSetLayout(e->device, s->descriptorSetLayout, nullptr);
+
+    if (s->inputBuffer) vkDestroyBuffer(e->device, s->inputBuffer, nullptr);
+    if (s->inputMemory) vkFreeMemory(e->device, s->inputMemory, nullptr);
+    if (s->outputBuffer) vkDestroyBuffer(e->device, s->outputBuffer, nullptr);
+    if (s->outputMemory) vkFreeMemory(e->device, s->outputMemory, nullptr);
+    if (s->paramsBuffer) vkDestroyBuffer(e->device, s->paramsBuffer, nullptr);
+    if (s->paramsMemory) vkFreeMemory(e->device, s->paramsMemory, nullptr);
+
+    s->initialized = false;
+    s->maxPoints = 0;
+    s->cachedShaderName = "";
+}
+
+inline bool init_sampler(size_t numPoints) {
+    auto* s = get_sampler();
+    auto* e = get_engine();
+    if (!e || !e->initialized) {
+        std::cerr << "Engine not initialized" << std::endl;
+        return false;
+    }
+
+    if (s->initialized && s->maxPoints >= numPoints && s->cachedShaderName == e->currentShaderName) {
+        return true;
+    }
+
+    if (s->initialized) {
+        cleanup_sampler();
+    }
+
+    std::cout << "Initializing SDF sampler for " << numPoints << " points..." << std::endl;
+
+    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
+    std::string samplerSrc = build_sampler_shader(shaderPath);
+    if (samplerSrc.empty()) {
+        return false;
+    }
+
+    auto spirv = compile_glsl_to_spirv(samplerSrc, "sdf_sampler.comp", shaderc_compute_shader);
+    if (spirv.empty()) {
+        std::cerr << "Failed to compile sampler shader" << std::endl;
+        return false;
+    }
+
+    VkShaderModuleCreateInfo shaderModuleInfo{};
+    shaderModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shaderModuleInfo.codeSize = spirv.size() * sizeof(uint32_t);
+    shaderModuleInfo.pCode = spirv.data();
+
+    if (vkCreateShaderModule(e->device, &shaderModuleInfo, nullptr, &s->shaderModule) != VK_SUCCESS) {
+        std::cerr << "Failed to create sampler shader module" << std::endl;
+        return false;
+    }
+
+    VkDeviceSize inputSize = numPoints * sizeof(float) * 4;
+    VkDeviceSize outputSize = numPoints * sizeof(float);
+    VkDeviceSize paramsSize = 16;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = inputSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &s->inputBuffer) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(e->device, s->inputBuffer, &memReq);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &s->inputMemory) != VK_SUCCESS) {
+        return false;
+    }
+    vkBindBufferMemory(e->device, s->inputBuffer, s->inputMemory, 0);
+
+    bufferInfo.size = outputSize;
+    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &s->outputBuffer) != VK_SUCCESS) {
+        return false;
+    }
+
+    vkGetBufferMemoryRequirements(e->device, s->outputBuffer, &memReq);
+    allocInfo.allocationSize = memReq.size;
+
+    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &s->outputMemory) != VK_SUCCESS) {
+        return false;
+    }
+    vkBindBufferMemory(e->device, s->outputBuffer, s->outputMemory, 0);
+
+    bufferInfo.size = paramsSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &s->paramsBuffer) != VK_SUCCESS) {
+        return false;
+    }
+
+    vkGetBufferMemoryRequirements(e->device, s->paramsBuffer, &memReq);
+    allocInfo.allocationSize = memReq.size;
+
+    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &s->paramsMemory) != VK_SUCCESS) {
+        return false;
+    }
+    vkBindBufferMemory(e->device, s->paramsBuffer, s->paramsMemory, 0);
+
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[2] = {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 3;
+    layoutInfo.pBindings = bindings;
+
+    if (vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &s->descriptorSetLayout) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    poolSizes[1] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+
+    if (vkCreateDescriptorPool(e->device, &poolInfo, nullptr, &s->descriptorPool) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkDescriptorSetAllocateInfo dsAllocInfo{};
+    dsAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsAllocInfo.descriptorPool = s->descriptorPool;
+    dsAllocInfo.descriptorSetCount = 1;
+    dsAllocInfo.pSetLayouts = &s->descriptorSetLayout;
+
+    if (vkAllocateDescriptorSets(e->device, &dsAllocInfo, &s->descriptorSet) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkDescriptorBufferInfo inputBufferInfo{s->inputBuffer, 0, inputSize};
+    VkDescriptorBufferInfo outputBufferInfo{s->outputBuffer, 0, outputSize};
+    VkDescriptorBufferInfo paramsBufferInfo{s->paramsBuffer, 0, paramsSize};
+
+    VkWriteDescriptorSet writes[3] = {};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inputBufferInfo, nullptr};
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &outputBufferInfo, nullptr};
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsBufferInfo, nullptr};
+
+    vkUpdateDescriptorSets(e->device, 3, writes, 0, nullptr);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &s->descriptorSetLayout;
+
+    if (vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &s->pipelineLayout) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo shaderStageInfo{};
+    shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shaderStageInfo.module = s->shaderModule;
+    shaderStageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = shaderStageInfo;
+    pipelineInfo.layout = s->pipelineLayout;
+
+    if (vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &s->pipeline) != VK_SUCCESS) {
+        return false;
+    }
+
+    s->maxPoints = numPoints;
+    s->cachedShaderName = e->currentShaderName;
+    s->initialized = true;
+
+    std::cout << "SDF sampler initialized successfully" << std::endl;
+    return true;
+}
+
+// Sample SDF at given points, return distances
+inline std::vector<float> sample_sdf(const std::vector<float>& positions) {
+    auto* s = get_sampler();
+    auto* e = get_engine();
+
+    size_t numPoints = positions.size() / 4;
+    if (numPoints == 0) return {};
+
+    if (!init_sampler(numPoints)) {
+        std::cerr << "Failed to initialize sampler" << std::endl;
+        return {};
+    }
+
+    void* data;
+    vkMapMemory(e->device, s->inputMemory, 0, positions.size() * sizeof(float), 0, &data);
+    memcpy(data, positions.data(), positions.size() * sizeof(float));
+    vkUnmapMemory(e->device, s->inputMemory);
+
+    struct { uint32_t numPoints; float time, pad2, pad3; } params = {
+        static_cast<uint32_t>(numPoints), e->time, 0, 0
+    };
+    vkMapMemory(e->device, s->paramsMemory, 0, sizeof(params), 0, &data);
+    memcpy(data, &params, sizeof(params));
+    vkUnmapMemory(e->device, s->paramsMemory);
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = e->commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmdBuffer;
+    vkAllocateCommandBuffers(e->device, &cmdAllocInfo, &cmdBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmdBuffer, &beginInfo);
+
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, s->pipeline);
+    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            s->pipelineLayout, 0, 1, &s->descriptorSet, 0, nullptr);
+
+    uint32_t groupCount = (static_cast<uint32_t>(numPoints) + 63) / 64;
+    vkCmdDispatch(cmdBuffer, groupCount, 1, 1);
+
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+
+    vkCmdPipelineBarrier(cmdBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(cmdBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuffer;
+
+    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmdBuffer);
+
+    std::vector<float> results(numPoints);
+    vkMapMemory(e->device, s->outputMemory, 0, numPoints * sizeof(float), 0, &data);
+    memcpy(results.data(), data, numPoints * sizeof(float));
+    vkUnmapMemory(e->device, s->outputMemory);
+
+    return results;
+}
+
+// Sample SDF on a regular 3D grid for marching cubes
+inline std::vector<float> sample_sdf_grid(
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    int res) {
+
+    size_t totalPoints = static_cast<size_t>(res) * res * res;
+    std::vector<float> positions(totalPoints * 4);
+
+    float stepX = (maxX - minX) / (res - 1);
+    float stepY = (maxY - minY) / (res - 1);
+    float stepZ = (maxZ - minZ) / (res - 1);
+
+    size_t idx = 0;
+    for (int iz = 0; iz < res; iz++) {
+        for (int iy = 0; iy < res; iy++) {
+            for (int ix = 0; ix < res; ix++) {
+                positions[idx++] = minX + ix * stepX;
+                positions[idx++] = minY + iy * stepY;
+                positions[idx++] = minZ + iz * stepZ;
+                positions[idx++] = 0.0f;
+            }
+        }
+    }
+
+    std::cout << "Sampling " << totalPoints << " SDF points on GPU..." << std::endl;
+    auto start = std::chrono::high_resolution_clock::now();
+
+    auto results = sample_sdf(positions);
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "SDF sampling completed in " << duration.count() << " ms" << std::endl;
+
+    return results;
+}
+
+// Export current scene SDF to mesh using GPU sampling + CPU marching cubes
+// This is the main function - no code duplication!
+inline MeshExportResult export_scene_mesh_gpu(
+    const char* filepath,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    int resolution
+) {
+    MeshExportResult result{false, 0, 0, ""};
+
+    auto* e = get_engine();
+    if (!e || !e->initialized) {
+        result.message = "Engine not initialized";
+        return result;
+    }
+
+    std::cout << "Exporting scene mesh via GPU sampling..." << std::endl;
+    std::cout << "  Bounds: [" << minX << "," << minY << "," << minZ << "] to ["
+              << maxX << "," << maxY << "," << maxZ << "]" << std::endl;
+    std::cout << "  Resolution: " << resolution << "x" << resolution << "x" << resolution << std::endl;
+
+    // Sample SDF on GPU
+    auto distances = sample_sdf_grid(minX, minY, minZ, maxX, maxY, maxZ, resolution);
+    if (distances.empty()) {
+        result.message = "Failed to sample SDF on GPU";
+        return result;
+    }
+
+    // Generate mesh using CPU marching cubes
+    std::cout << "Running Marching Cubes..." << std::endl;
+    auto start = std::chrono::high_resolution_clock::now();
+
+    mc::Vec3 bounds_min{minX, minY, minZ};
+    mc::Vec3 bounds_max{maxX, maxY, maxZ};
+    auto mesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "Marching Cubes completed in " << duration.count() << " ms" << std::endl;
+
+    if (mesh.vertices.empty()) {
+        result.message = "No surface found in bounds";
+        return result;
+    }
+
+    result.vertices = mesh.vertices.size();
+    result.triangles = mesh.indices.size() / 3;
+
+    // Export to OBJ
+    if (mc::exportOBJ(filepath, mesh)) {
+        result.success = true;
+        result.message = "Export successful";
+        std::cout << "Exported to " << filepath << std::endl;
+        std::cout << "  Vertices: " << result.vertices << std::endl;
+        std::cout << "  Triangles: " << result.triangles << std::endl;
+    } else {
+        result.message = "Failed to write OBJ file";
+    }
+
+    return result;
+}
+
+// Convenience wrapper with default bounds
+inline MeshExportResult export_scene_mesh_gpu(const char* filepath, int resolution = 64) {
+    return export_scene_mesh_gpu(filepath, -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, resolution);
 }
 
 } // namespace sdfx

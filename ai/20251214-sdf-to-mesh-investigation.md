@@ -522,73 +522,82 @@ public:
 
 ---
 
-## Implementation Status: COMPLETE
+## Implementation Status: COMPLETE (GPU-Based Approach)
 
-### What Was Built
+### Final Architecture
 
-1. **libfive integration** - Added as git submodule at `vendor/libfive`
-2. **C++ Wrapper** - `vulkan/sdf_mesh.hpp` with:
-   - SDF primitives: `sphere`, `box`, `roundBox`, `cylinder`, `torus`, `plane`
-   - Boolean ops: `opUnion`, `opSubtract`, `opIntersect`, `opSmoothUnion`
-   - Transforms: `translate`, `scale`, `rotateX/Y/Z`
-   - Mesh generation: `generateMesh()`
-   - Export: `exportOBJ()`, built-in `saveSTL()`
+The GPU-based approach was chosen over libfive to avoid code duplication. The SDF is defined once in the GLSL shader and used for both rendering and mesh generation.
 
-### Test Results
+**Key Files:**
+- `vulkan/marching_cubes.hpp` - CPU Marching Cubes implementation
+- `vulkan/sdf_engine.hpp` - GPU sampler + mesh export functions
+- `vulkan_kim/sdf_sampler.comp` - GPU compute shader for SDF sampling
+- `src/vybe/sdf/ui.jank` - UI buttons for mesh export
 
-| Shape | Vertices | Triangles | Notes |
-|-------|----------|-----------|-------|
-| Sphere (r=1) | 4,785 | 9,564 | Smooth |
-| Box (1x1x1) | 9 | 12 | Sharp edges preserved! |
-| Torus | 5,905 | 11,808 | Clean topology |
-| CSG Union | 6,777 | 13,548 | Works perfectly |
-| CSG Subtract | 12,769 | 25,560 | Boolean works |
-| Transformed | 3,595 | 7,188 | Rotation/translate work |
+**Workflow:**
+1. `sdf_sampler.comp` samples the scene SDF at NxNxN grid points on GPU
+2. Results are read back to CPU
+3. `mc::generateMesh()` runs Marching Cubes on the sampled grid
+4. `mc::exportOBJ()` writes the mesh to file
+
+### Test Results (2024-12-14)
+
+```
+Exporting scene mesh via GPU sampling...
+  Bounds: [-2,-2,-2] to [2,2,2]
+  Resolution: 128x128x128
+Sampling 2097152 SDF points on GPU...
+SDF sampling completed in 211 ms (first run), 11ms (cached)
+Running Marching Cubes...
+Marching Cubes completed in 84 ms
+Exported to exported_scene_hd.obj
+  Vertices: 444
+  Triangles: 148
+```
 
 ### Build Instructions
 
 ```bash
-# Install dependencies (macOS)
-brew install eigen libpng boost
-
-# Build libfive
-cd vendor/libfive
-mkdir build && cd build
-CC=/usr/bin/clang CXX=/usr/bin/clang++ cmake .. \
-  -DBUILD_GUILE_BINDINGS=OFF \
-  -DBUILD_PYTHON_BINDINGS=OFF \
-  -DBUILD_STUDIO_APP=OFF
-make -j8
-
-# Compile your code
-clang++ -std=c++17 \
-  -I vendor/libfive/libfive/include \
-  -I /opt/homebrew/include \
-  -I /opt/homebrew/opt/eigen/include/eigen3 \
-  -L vendor/libfive/build/libfive/src \
-  -lfive \
-  your_code.cpp -o your_program
-
-# Run (macOS needs DYLD_LIBRARY_PATH for dylib)
-DYLD_LIBRARY_PATH=vendor/libfive/build/libfive/src ./your_program
+# Just run make sdf - no external dependencies needed!
+make sdf
 ```
 
-### Usage Example
+The GPU-based approach has no external dependencies beyond what the project already uses (Vulkan, SDL3).
+
+### Usage (from jank REPL or UI)
+
+```clojure
+;; From the UI: click "Export Scene (GPU)" button
+
+;; From REPL:
+(sdfx/export_scene_mesh_gpu "my_mesh.obj" (cpp/int. 64))   ; 64³ resolution
+(sdfx/export_scene_mesh_gpu "my_mesh_hd.obj" (cpp/int. 128)) ; 128³ resolution
+
+;; Custom bounds:
+(sdfx/export_scene_mesh_gpu "custom.obj"
+  (cpp/float. -1.0) (cpp/float. -1.0) (cpp/float. -1.0)  ; min bounds
+  (cpp/float. 1.0) (cpp/float. 1.0) (cpp/float. 1.0)     ; max bounds
+  (cpp/int. 64))                                          ; resolution
+```
+
+### Usage (from C++)
 
 ```cpp
-#include "vulkan/sdf_mesh.hpp"
+// Export current scene using GPU sampling
+auto result = sdfx::export_scene_mesh_gpu("output.obj", 64);
 
-// Create SDF
-auto sphere = sdf::sphere(1.0f);
-auto box = sdf::box(0.5f, 0.5f, 0.5f);
-auto csg = sdf::opSubtract(sphere, box);
+// With custom bounds
+auto result = sdfx::export_scene_mesh_gpu(
+    "output.obj",
+    -2.0f, -2.0f, -2.0f,  // min bounds
+    2.0f, 2.0f, 2.0f,     // max bounds
+    128                    // resolution
+);
 
-// Generate mesh
-auto mesh = sdf::generateMesh(csg, -2, -2, -2, 2, 2, 2, 0.05f);
-
-// Export
-sdf::exportOBJ("output.obj", mesh.get());
-mesh->saveSTL("output.stl");
+if (result.success) {
+    std::cout << "Exported " << result.vertices << " verts, "
+              << result.triangles << " tris" << std::endl;
+}
 ```
 
 ---
@@ -622,3 +631,77 @@ make -j8
 clang++ -std=c++17 ... sdf_mesh_test.cpp -o sdf_mesh_test
 ./sdf_mesh_test
 ```
+
+---
+
+## SDF Viewer Integration (2024-12-14 Update)
+
+### Files Modified
+
+1. **`vulkan/sdf_engine.hpp`** - Added mesh export C++ functions:
+   - `MeshExportResult` struct with success, vertex count, triangle count, message
+   - `export_sphere_mesh()` - Export sphere SDF to OBJ
+   - `export_box_mesh()` - Export box SDF to OBJ
+   - `export_torus_mesh()` - Export torus SDF to OBJ
+   - `export_csg_union_mesh()` - Export sphere+box CSG union to OBJ
+   - `export_sdf_mesh()` - Generic export with SDFType enum
+   - Added `#include "sdf_mesh.hpp"` for libfive integration
+
+2. **`src/vybe/sdf/ui.jank`** - Added mesh export UI buttons:
+   - "Export Sphere OBJ" button
+   - "Export Box OBJ" button
+   - "Export Torus OBJ" button
+   - Each button exports at 0.05 resolution and prints result to console
+
+### How to Use
+
+1. Run the SDF viewer
+2. In the "SDF Debug" ImGui panel, scroll to "Mesh Export:" section
+3. Click any export button
+4. OBJ files are saved in the current working directory:
+   - `exported_sphere.obj`
+   - `exported_box.obj`
+   - `exported_torus.obj`
+5. Check console for vertex/triangle counts
+
+### GPU-Based Mesh Export (2024-12-14 - Final Implementation)
+
+**The proper solution that avoids code duplication:**
+
+The GPU-based approach samples the actual rendered SDF shader, ensuring the exported mesh exactly matches what's displayed on screen.
+
+**New Files:**
+- `vulkan/marching_cubes.hpp` - CPU Marching Cubes implementation for sampled grids
+
+**Architecture:**
+```
+1. sdf_sampler.comp (GPU) - Samples sceneSDF at NxNxN grid points
+2. extract_scene_sdf() (C++) - Extracts sceneSDF from current shader
+3. build_sampler_shader() (C++) - Injects scene code into sampler template
+4. init_sampler() (C++) - Creates Vulkan compute pipeline
+5. sample_sdf_grid() (C++) - Dispatches GPU compute, reads back distances
+6. mc::generateMesh() (C++) - CPU Marching Cubes on sampled grid
+7. mc::exportOBJ() (C++) - Writes mesh to file
+```
+
+**Key Functions:**
+- `export_scene_mesh_gpu(filepath, resolution)` - Main export function (GPU sampling + CPU MC)
+- `sample_sdf_grid(min, max, res)` - Sample SDF at grid points on GPU
+- `mc::generateMesh(distances, res, bounds)` - CPU Marching Cubes
+
+**UI Buttons:**
+- "Export Scene (GPU)" - 64x64x64 resolution (~262k points)
+- "Export Scene HD (GPU)" - 128x128x128 resolution (~2M points)
+
+**Benefits:**
+- Single source of truth (GLSL shader defines SDF for both rendering AND meshing)
+- No code duplication between C++ and shader
+- Mesh exactly matches rendered output
+- Works with any shader (auto-extracts sceneSDF function)
+
+### Next Steps
+
+- Add resolution slider to UI
+- Add custom filename input
+- Add STL export option
+- Add progress indicator for large exports

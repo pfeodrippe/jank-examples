@@ -45,5 +45,20 @@
     (imgui/Text #cpp "Selected: %d" (cpp/int. (:selected-object edit)))
     (imgui/Separator)
     (imgui/Text #cpp "Objects: %d" (cpp/int. (count objs)))
+    (imgui/Separator)
+    (imgui/Text #cpp "Mesh Export:")
+    ;; GPU-based scene export (uses actual rendered SDF - no code duplication!)
+    (when (imgui/Button "Export Scene (GPU)")
+      (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. 64))]
+        (if (cpp/.-success result)
+          (println "Exported scene:" (cpp/.-vertices result) "verts,"
+                   (cpp/.-triangles result) "tris")
+          (println "Export failed:" (cpp/.-message result)))))
+    (when (imgui/Button "Export Scene HD (GPU)")
+      (let [result (sdfx/export_scene_mesh_gpu "exported_scene_hd.obj" (cpp/int. 128))]
+        (if (cpp/.-success result)
+          (println "Exported scene HD:" (cpp/.-vertices result) "verts,"
+                   (cpp/.-triangles result) "tris")
+          (println "Export failed:" (cpp/.-message result)))))
     (imgui/End)
     nil))

@@ -407,25 +407,25 @@ create_linux_standalone() {
     cp "$EXECUTABLE" "$DIST_DIR/bin/${APP_NAME}-bin"
 
     # Create launcher script
-    cat > "$DIST_DIR/$APP_NAME" << 'LAUNCHER'
+    cat > "$DIST_DIR/$APP_NAME" << LAUNCHER
 #!/bin/bash
-# Launcher script for Linux standalone
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Launcher script for $APP_NAME
+DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 
 # Set library path
-export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="\$DIR/lib:\$LD_LIBRARY_PATH"
 
 # Set C/C++ include paths for JIT compilation at runtime
-export CPATH="$DIR/include/c++/v1:$DIR/include:$DIR/include/flecs:$DIR/include/imgui:$DIR/include/imgui/backends"
+export CPATH="\$DIR/include/c++/v1:\$DIR/include:\$DIR/include/flecs:\$DIR/include/imgui:\$DIR/include/imgui/backends"
 
 # Set CXX to bundled clang for jank JIT compilation
-export CXX="$DIR/bin/clang++"
+export CXX="\$DIR/bin/clang++"
 
 # Set working directory to resources for shader loading
-cd "$DIR/resources"
+cd "\$DIR/resources"
 
 # Launch the actual binary
-exec "$DIR/bin/${APP_NAME##*/}-bin" "$@"
+exec "\$DIR/bin/${APP_NAME}-bin" "\$@"
 LAUNCHER
     chmod +x "$DIST_DIR/$APP_NAME"
 
