@@ -115,3 +115,180 @@ Result: `make sdf-standalone` now works and creates `SDFViewer.app` (179MB DMG).
 - `STANDALONE_OBJ_FILES` - only used for standalone builds (contains `tinygltf_impl.o`)
 
 Result: Both `make sdf` (JIT) and `make sdf-standalone` (AOT) now work correctly.
+
+## Shadow Colors Fix (same session)
+
+### Issue: Mesh shadow areas lacked colorful variations
+The raymarched view showed rich colorful shadows (warm reds, cool blues/greens) while the mesh preview had flat/bland tan shadows despite colors being sampled.
+
+### Root Cause 1: Faceted normals from marching cubes
+Marching cubes produces faceted mesh normals that create harsh, banded shadows instead of smooth shading.
+
+### Fix 1: Use SDF gradient normals instead of mesh normals
+Added `calcNormal(p)` to compute smooth normals from the SDF gradient in `color_sampler.comp`:
+
+```glsl
+// Compute smooth normal from SDF gradient (matches raymarched view)
+vec3 calcNormal(vec3 p) {
+    const float eps = 0.0001;
+    vec2 e = vec2(eps, 0);
+    return normalize(vec3(
+        sceneSDF(p + e.xyy) - sceneSDF(p - e.xyy),
+        sceneSDF(p + e.yxy) - sceneSDF(p - e.yxy),
+        sceneSDF(p + e.yyx) - sceneSDF(p - e.yyx)
+    ));
+}
+```
+
+Changed main() to use this instead of mesh normal:
+```glsl
+vec3 n = calcNormal(p);  // Instead of normals[idx].xyz
+```
+
+### Root Cause 2: Incorrect UV scale for painterly noise
+The painterly color variations use noise functions with UV coordinates. Main shader uses screen UV (0-1 range), but color_sampler used position-based UV with wrong scaling:
+
+- Main shader: `noise2D(uv * 180.0)` where uv ∈ [0, 1]
+- Color sampler (broken): `uv = p.xy * 100.0` → uv ∈ [-200, 200], then `uv * 1.8` → still huge values
+
+This created either too-low-frequency noise (1.8 scale) or way-too-high-frequency (180 scale with position-based UV).
+
+### Fix 2: Normalize position to screen-like UV range
+Changed UV calculation to normalize position coordinates:
+
+```glsl
+// Before (broken)
+vec2 uv = p.xy * 100.0 + p.zx * 50.0;
+float colorVar = noise2D(uv * 1.8 + p.xy * 20.0);
+
+// After (fixed)
+vec2 uv = (p.xy + 2.0) / 4.0 + (p.zx + 1.0) / 4.0 * 0.5;  // Normalize to [0, ~1.5]
+float colorVar = noise2D(uv * 180.0 + p.xy * 20.0);  // Now matches main shader
+```
+
+Result: Mesh preview shadow areas now show similar colorful warm/cool variations as raymarched view.
+
+### Key Files Modified
+- `vulkan_kim/color_sampler.comp` - Added calcNormal(), normalized UV calculation, correct noise scales
+
+## Viewport Screenshot Function (same session)
+
+Added `save_viewport_screenshot()` function to capture the final rendered frame (with mesh overlay) instead of just the compute shader output.
+
+### Key Changes
+- Added `currentImageIndex` field to Engine struct to track current swapchain image
+- Created `save_viewport_screenshot(filepath)` function that:
+  - Creates staging buffer
+  - Copies swapchain image to buffer (with layout transitions)
+  - Converts BGRA to RGB with vertical flip
+  - Saves PNG using stb_image_write
+
+### Usage via nREPL
+```clojure
+(in-ns 'vybe.sdf.ui)
+(sdfx/save_viewport_screenshot "viewport.png")
+```
+
+### Files Modified
+- `vulkan/sdf_engine.hpp` - Added `currentImageIndex`, `save_viewport_screenshot()`
+
+## 6-Direction Shadow Sampling (same session)
+
+Implemented view-independent shadow baking using 6 light directions for consistent mesh appearance when rotated.
+
+### CRITICAL FIX: Shadow Ray Origin Offset
+
+The initial 6-direction implementation caused blue mesh because shadow rays started ON the surface, immediately hitting it and returning 0.0 (full shadow).
+
+**The Fix:** Offset the shadow ray origin along the surface normal:
+```glsl
+// Offset shadow ray origin to avoid self-intersection
+vec3 shadowOrigin = p + n * 0.01;
+float shadow = calcSoftShadow(shadowOrigin, lightDir, 0.02, 10.0, 8.0);
+```
+
+### Key Changes to color_sampler.comp
+```glsl
+// 6-direction shadow sampling for view-independent baking
+vec3 lightDirs[6] = vec3[6](
+    normalize(vec3(0.0, 1.0, 0.3)),   // Top-front
+    normalize(vec3(0.0, 1.0, -0.3)),  // Top-back
+    normalize(vec3(1.0, 0.5, 0.0)),   // Right
+    normalize(vec3(-1.0, 0.5, 0.0)),  // Left
+    normalize(vec3(0.0, 0.3, 1.0)),   // Front
+    normalize(vec3(0.0, 0.3, -1.0))   // Back
+);
+float lightWeights[6] = float[6](0.3, 0.2, 0.15, 0.15, 0.1, 0.1);
+
+// Offset shadow ray origin to avoid self-intersection
+vec3 shadowOrigin = p + n * 0.01;
+
+// Accumulate weighted lighting from all 6 directions
+float totalLight = 0.0;
+for (int i = 0; i < 6; i++) {
+    float diff = max(dot(n, lightDirs[i]), 0.0);
+    float shadow = calcSoftShadow(shadowOrigin, lightDirs[i], 0.02, 10.0, 8.0);
+    totalLight += lightWeights[i] * diff * shadow;
+}
+
+// Ensure minimum lighting to prevent near-black colors
+float lighting = max((totalLight * 0.7 + 0.3) * ao, 0.15);
+```
+
+- Weighted shadow averaging from 6 directions
+- Shadow ray origin offset prevents self-intersection
+- Minimum lighting floor (0.15) prevents near-black colors that get ignored
+- No view-dependent effects (specular, rim light removed)
+- AO still applied for depth cues
+
+## Hot Reload Fix for color_sampler.comp
+
+Fixed bug where changes to `color_sampler.comp` weren't being hot-reloaded because only the scene shader modification time was checked.
+
+### Fix in `init_color_sampler()`
+```cpp
+// Check both scene shader AND template modification times
+std::string templatePath = e->shaderDir + "/color_sampler.comp";
+time_t templateModTime = 0;
+if (stat(templatePath.c_str(), &st) == 0) {
+    templateModTime = st.st_mtime;
+}
+// Use max of both mod times
+time_t currentModTime = sceneModTime > templateModTime ? sceneModTime : templateModTime;
+```
+
+## Painterly Effects Removed from Main Shader
+
+User requested keeping brush strokes but removing RGB noise from hand_cigarette.comp:
+
+```glsl
+// Painterly effects (brush + edge darkening, no RGB noise)
+if (matID != MAT_EMBER) {
+    float brush = brushStroke(p.xy * 60.0 + p.zx * 30.0, n, 50.0);
+    col *= (0.85 + brush * 0.3);
+
+    float edgeFactor = pow(1.0 - abs(dot(n, rd)), 0.7);
+    col *= (1.0 - edgeFactor * 0.25);
+}
+```
+
+Removed: posterization, RGB color noise variations
+
+## Default "Include Colors" Setting (continued session)
+
+Changed default for "Include Colors" checkbox from false to true:
+
+### Files Modified
+- `src/vybe/sdf/ui.jank` line 15: `(defonce *export-colors (u/v->p true))`
+- `vulkan/sdf_engine.hpp` line 237: `bool meshUseVertexColors = true;`
+
+### Why UI Overrides Engine Flag
+The UI calls `set_mesh_use_vertex_colors` every frame with the checkbox value, so setting the engine flag alone doesn't persist. The UI state must be set via the pointer.
+
+## Summary of All Fixes
+
+1. **Shadow ray origin offset** - Critical fix for calcSoftShadow, offset by `p + n * 0.01`
+2. **Minimum lighting floor** - `max(lighting, 0.15)` prevents near-black colors that get ignored
+3. **Default Include Colors = true** - Both UI and engine defaults changed
+4. **Hot reload fix** - Both template and scene shader mod times checked
+5. **6-direction shadow sampling** - View-independent baked lighting

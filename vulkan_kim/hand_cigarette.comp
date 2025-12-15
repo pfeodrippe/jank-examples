@@ -723,16 +723,10 @@ vec3 render(vec3 ro, vec3 rd) {
             col = ambient + diffuse + specular + rimLight;
         }
 
-        // Painterly effects (not on ember)
+        // Painterly effects (brush + edge darkening, no RGB noise)
         if (matID != MAT_EMBER) {
             float brush = brushStroke(p.xy * 60.0 + p.zx * 30.0, n, 50.0);
             col *= (0.85 + brush * 0.3);
-            col = posterize(col, 8.0);
-
-            float colorVar = noise2D(uv * 180.0 + p.xy * 20.0);
-            col.r += (colorVar - 0.5) * 0.08;
-            col.g += (noise2D(uv * 200.0) - 0.5) * 0.05;
-            col.b -= (colorVar - 0.5) * 0.06;
 
             float edgeFactor = pow(1.0 - abs(dot(n, rd)), 0.7);
             col *= (1.0 - edgeFactor * 0.25);

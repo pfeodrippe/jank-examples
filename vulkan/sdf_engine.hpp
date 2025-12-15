@@ -186,6 +186,7 @@ struct Engine {
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
     uint32_t currentFrame = 0;
+    uint32_t currentImageIndex = 0;  // For viewport screenshot
 
     float time = 0.0f;
     bool initialized = false;
@@ -233,7 +234,7 @@ struct Engine {
     // Mesh preview state
     bool meshPreviewVisible = false;
     bool meshRenderSolid = true;  // true = solid, false = wireframe
-    bool meshUseVertexColors = false;  // true = use sampled vertex colors
+    bool meshUseVertexColors = true;  // true = use sampled vertex colors (default on)
     float meshScale = 1.0f;       // Scale factor for mesh preview
     int meshPreviewResolution = 256;
     VkBuffer meshVertexBuffer = VK_NULL_HANDLE;
@@ -1765,6 +1766,7 @@ inline void draw_frame() {
     uint32_t imageIndex;
     vkAcquireNextImageKHR(e->device, e->swapchain, UINT64_MAX,
                           e->imageAvailableSemaphores[e->currentFrame], VK_NULL_HANDLE, &imageIndex);
+    e->currentImageIndex = imageIndex;  // Store for viewport screenshot
 
     vkResetFences(e->device, 1, &e->inFlightFences[e->currentFrame]);
 
@@ -2337,6 +2339,133 @@ inline ScreenshotBuffer create_screenshot_buffer(VkDeviceSize size) {
     vkBindBufferMemory(e->device, result.buffer, result.memory, 0);
     result.success = true;
     return result;
+}
+
+// Save viewport screenshot (captures final rendered frame with mesh overlay)
+inline bool save_viewport_screenshot(const char* filepath) {
+    auto* e = get_engine();
+    if (!e || !e->initialized) return false;
+
+    uint32_t width = e->swapchainExtent.width;
+    uint32_t height = e->swapchainExtent.height;
+    VkDeviceSize imageSize = width * height * 4;
+
+    // Create staging buffer
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    VkBufferCreateInfo bufInfo{};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufInfo.size = imageSize;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(e->device, &bufInfo, nullptr, &stagingBuffer) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(e->device, stagingBuffer, &memReq);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(e->device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(e->device, stagingBuffer, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(e->device, stagingBuffer, stagingMemory, 0);
+
+    // Get current swapchain image
+    VkImage srcImage = e->swapchainImages[e->currentImageIndex];
+
+    // Allocate command buffer
+    VkCommandBuffer cmd;
+    VkCommandBufferAllocateInfo cmdInfo{};
+    cmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdInfo.commandPool = e->commandPool;
+    cmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdInfo.commandBufferCount = 1;
+    vkAllocateCommandBuffers(e->device, &cmdInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    // Transition swapchain image to transfer src
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = srcImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    // Copy image to buffer
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {width, height, 1};
+    vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+
+    // Transition back to present
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    vkEndCommandBuffer(cmd);
+
+    // Submit and wait
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+
+    // Map memory and save
+    void* data;
+    vkMapMemory(e->device, stagingMemory, 0, imageSize, 0, &data);
+
+    // Convert BGRA to RGB and flip vertically
+    uint8_t* pixels = static_cast<uint8_t*>(data);
+    uint8_t* rgb = new uint8_t[width * height * 3];
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            uint32_t srcIdx = (y * width + x) * 4;
+            uint32_t dstIdx = ((height - 1 - y) * width + x) * 3;
+            rgb[dstIdx] = pixels[srcIdx + 2];     // R (from B)
+            rgb[dstIdx + 1] = pixels[srcIdx + 1]; // G
+            rgb[dstIdx + 2] = pixels[srcIdx];     // B (from R)
+        }
+    }
+
+    int result = stbi_write_png(filepath, width, height, 3, rgb, width * 3);
+    delete[] rgb;
+
+    vkUnmapMemory(e->device, stagingMemory);
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmd);
+    vkDestroyBuffer(e->device, stagingBuffer, nullptr);
+    vkFreeMemory(e->device, stagingMemory, nullptr);
+
+    std::cout << "Viewport screenshot saved to " << filepath << " (" << width << "x" << height << ")" << std::endl;
+    return result != 0;
 }
 
 // Write PNG with downsampling - single helper function for jank

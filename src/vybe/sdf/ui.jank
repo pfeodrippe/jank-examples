@@ -12,7 +12,7 @@
 ;; Uses header require for direct ImGui API access
 
 ;; Export options state (mutable for ImGui checkboxes)
-(defonce *export-colors (u/v->p false))
+(defonce *export-colors (u/v->p true))
 (defonce *export-uvs (u/v->p false))
 (defonce *mesh-solid-mode (u/v->p true))
 (defonce *mesh-scale (u/v->p 1.0 "float"))

@@ -688,6 +688,15 @@ if [ -n "$GLSLC" ]; then
         echo "Compiling blit.frag with $GLSLC..."
         $GLSLC $GLSLC_FLAGS vulkan_kim/blit.frag -o vulkan_kim/blit.frag.spv
     fi
+    # Mesh preview shaders (needed for mesh rendering in standalone builds)
+    if [ ! -f vulkan_kim/mesh.vert.spv ] || [ vulkan_kim/mesh.vert -nt vulkan_kim/mesh.vert.spv ]; then
+        echo "Compiling mesh.vert with $GLSLC..."
+        $GLSLC $GLSLC_FLAGS vulkan_kim/mesh.vert -o vulkan_kim/mesh.vert.spv
+    fi
+    if [ ! -f vulkan_kim/mesh.frag.spv ] || [ vulkan_kim/mesh.frag -nt vulkan_kim/mesh.frag.spv ]; then
+        echo "Compiling mesh.frag with $GLSLC..."
+        $GLSLC $GLSLC_FLAGS vulkan_kim/mesh.frag -o vulkan_kim/mesh.frag.spv
+    fi
 fi
 
 # Build stb_impl.o if needed
