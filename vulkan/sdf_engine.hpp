@@ -3045,11 +3045,18 @@ inline bool init_color_sampler(size_t numPoints) {
     }
 
     std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
-    time_t currentModTime = 0;
+    std::string templatePath = e->shaderDir + "/color_sampler.comp";
+    time_t sceneModTime = 0;
+    time_t templateModTime = 0;
     struct stat st;
     if (stat(shaderPath.c_str(), &st) == 0) {
-        currentModTime = st.st_mtime;
+        sceneModTime = st.st_mtime;
     }
+    if (stat(templatePath.c_str(), &st) == 0) {
+        templateModTime = st.st_mtime;
+    }
+    // Use max of both mod times to detect changes in either file
+    time_t currentModTime = sceneModTime > templateModTime ? sceneModTime : templateModTime;
 
     // Check if we can reuse cached sampler (same shader name, same mod time, enough capacity)
     if (s->initialized && s->maxPoints >= numPoints &&

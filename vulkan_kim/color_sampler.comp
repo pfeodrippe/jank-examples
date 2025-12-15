@@ -126,6 +126,18 @@ float brushStroke(vec2 uv, vec3 normal, float scale) {
     rotUV.x *= 3.0;
     return fbm(rotUV * scale);
 }
+
+// Compute smooth normal from SDF gradient (matches raymarched view)
+// This gives much better results than using mesh normals from marching cubes
+vec3 calcNormal(vec3 p) {
+    const float eps = 0.0001;
+    vec2 e = vec2(eps, 0);
+    return normalize(vec3(
+        sceneSDF(p + e.xyy) - sceneSDF(p - e.xyy),
+        sceneSDF(p + e.yxy) - sceneSDF(p - e.yxy),
+        sceneSDF(p + e.yyx) - sceneSDF(p - e.yyx)
+    ));
+}
 // MARKER_SCENE_SDF_END
 
 // ============================================================================
@@ -144,7 +156,10 @@ void main() {
     ubo.resolution = vec4(1.0, 1.0, time, 1.0);
 
     vec3 p = positions[idx].xyz;
-    vec3 n = normalize(normals[idx].xyz);
+
+    // Use SDF gradient normal instead of mesh normal for smooth shading
+    // Mesh normals from marching cubes are faceted and cause harsh shadows
+    vec3 n = calcNormal(p);
 
     // Get material at this point
     vec2 mat = sceneSDF_mat(p);
@@ -191,16 +206,20 @@ void main() {
     vec3 col = ambient + diffuse + specular + rimLight;
 
     // Painterly effects (using extracted functions from main shader)
-    vec2 uv = p.xy * 100.0 + p.zx * 50.0;
+    // For vertex coloring, use MUCH lower frequency noise than per-pixel rendering
+    // Mesh has ~3000-7000 vertices vs millions of pixels, so need smooth gradients
+    vec2 uv = (p.xy + 2.0) / 4.0 + (p.zx + 1.0) / 4.0 * 0.5;
 
-    float brush = brushStroke(p.xy * 60.0 + p.zx * 30.0, n, 50.0);
-    col *= (0.85 + brush * 0.3);
+    // Lower frequency brush strokes for smooth appearance at vertex resolution
+    float brush = brushStroke(p.xy * 8.0 + p.zx * 4.0, n, 8.0);
+    col *= (0.92 + brush * 0.16);
     col = posterize(col, 8.0);
 
-    float colorVar = noise2D(uv * 1.8 + p.xy * 20.0);
-    col.r += (colorVar - 0.5) * 0.08;
-    col.g += (noise2D(uv * 2.0) - 0.5) * 0.05;
-    col.b -= (colorVar - 0.5) * 0.06;
+    // Much lower frequency noise for smooth color gradients (not per-pixel noise)
+    float colorVar = noise2D(uv * 12.0 + p.xy * 3.0);
+    col.r += (colorVar - 0.5) * 0.06;
+    col.g += (noise2D(uv * 14.0) - 0.5) * 0.04;
+    col.b -= (colorVar - 0.5) * 0.05;
 
     // Edge darkening
     float edgeFactor = pow(1.0 - abs(dot(n, viewDir)), 0.7);
