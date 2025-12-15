@@ -407,6 +407,13 @@ create_linux_standalone() {
     cp "$EXECUTABLE" "$DIST_DIR/bin/${APP_NAME}-bin"
 
     # Create launcher script
+    # Detect architecture for include path
+    local ARCH=$(uname -m)
+    local TRIPLE="x86_64-unknown-linux-gnu"
+    if [ "$ARCH" = "aarch64" ]; then
+        TRIPLE="aarch64-unknown-linux-gnu"
+    fi
+
     cat > "$DIST_DIR/$APP_NAME" << LAUNCHER
 #!/bin/bash
 # Launcher script for $APP_NAME
@@ -416,7 +423,8 @@ DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 export LD_LIBRARY_PATH="\$DIR/lib:\$LD_LIBRARY_PATH"
 
 # Set C/C++ include paths for JIT compilation at runtime
-export CPATH="\$DIR/include/c++/v1:\$DIR/include:\$DIR/include/flecs:\$DIR/include/imgui:\$DIR/include/imgui/backends"
+# Include architecture-specific dir for __config_site
+export CPATH="\$DIR/include/$TRIPLE/c++/v1:\$DIR/include/c++/v1:\$DIR/include:\$DIR/include/flecs:\$DIR/include/imgui:\$DIR/include/imgui/backends"
 
 # Set CXX to bundled clang for jank JIT compilation
 export CXX="\$DIR/bin/clang++"
@@ -459,12 +467,23 @@ LAUNCHER
     cp "$JANK_BIN_DIR/clang-22" "$DIST_DIR/bin/"
     ln -sf clang-22 "$DIST_DIR/bin/clang"
 
-    # Create clang++ wrapper
+    # Create clang++ wrapper (with architecture detection)
     cat > "$DIST_DIR/bin/clang++" << 'CLANG_WRAPPER'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
 RESOURCES="$(cd "$DIR/.." && pwd)"
+
+# Detect architecture for include path
+ARCH=$(uname -m)
+TRIPLE="x86_64-unknown-linux-gnu"
+if [ "$ARCH" = "aarch64" ]; then
+    TRIPLE="aarch64-unknown-linux-gnu"
+fi
+
+# -nostdinc++ removes hardcoded C++ include paths (avoids libstdc++ conflict)
+# -isystem adds bundled libc++ headers as system includes
 exec "$DIR/clang-22" -nostdinc++ \
+    -isystem "$RESOURCES/include/$TRIPLE/c++/v1" \
     -isystem "$RESOURCES/include/c++/v1" \
     -isystem "$RESOURCES/lib/clang/22/include" \
     "$@"
@@ -513,7 +532,7 @@ CLANG_WRAPPER
         cp "vulkan/libsdf_deps.so" "$DIST_DIR/lib/"
     fi
 
-    # System libraries needed (find and copy from system)
+    # System libraries needed (find and copy actual files, not symlinks)
     local SYSTEM_LIBS=(
         libvulkan.so
         libSDL3.so
@@ -521,17 +540,37 @@ CLANG_WRAPPER
     )
 
     for lib in "${SYSTEM_LIBS[@]}"; do
-        # Try to find the library
+        # Try to find the library using ldconfig
         local lib_path=$(ldconfig -p 2>/dev/null | grep "$lib" | head -1 | awk '{print $NF}')
         if [ -n "$lib_path" ] && [ -f "$lib_path" ]; then
-            echo "  Copying $lib from $lib_path"
-            cp "$lib_path" "$DIST_DIR/lib/"
+            # Follow symlinks to get the actual file
+            local real_path=$(readlink -f "$lib_path")
+            local real_name=$(basename "$real_path")
+            echo "  Copying $real_name from $real_path"
+            cp "$real_path" "$DIST_DIR/lib/"
+            # Create symlink from expected name to actual file
+            if [ "$real_name" != "$lib" ]; then
+                (cd "$DIST_DIR/lib" && ln -sf "$real_name" "$lib")
+            fi
         else
             # Try common paths
             for search_path in /usr/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/local/lib; do
-                if [ -f "$search_path/$lib" ]; then
-                    echo "  Copying $lib from $search_path"
-                    cp "$search_path/$lib" "$DIST_DIR/lib/"
+                local found_lib=""
+                # Look for versioned or unversioned library
+                for pattern in "$search_path/$lib"* "$search_path/${lib%.so}"*.so*; do
+                    if [ -f "$pattern" ]; then
+                        found_lib="$pattern"
+                        break
+                    fi
+                done
+                if [ -n "$found_lib" ]; then
+                    local real_path=$(readlink -f "$found_lib")
+                    local real_name=$(basename "$real_path")
+                    echo "  Copying $real_name from $real_path"
+                    cp "$real_path" "$DIST_DIR/lib/"
+                    if [ "$real_name" != "$lib" ]; then
+                        (cd "$DIST_DIR/lib" && ln -sf "$real_name" "$lib")
+                    fi
                     break
                 fi
             done
@@ -558,10 +597,16 @@ CLANG_WRAPPER
     fi
 
     # Create versioned symlinks
+    # LLVM/Clang use git-versioned names like libLLVM.so.22.0git
     echo "Creating versioned library symlinks..."
     (cd "$DIST_DIR/lib" && \
+        # LLVM versioned symlinks (binary looks for .22.0git)
+        ln -sf libLLVM.so libLLVM.so.22.0git 2>/dev/null || true && \
+        ln -sf libclang-cpp.so libclang-cpp.so.22.0git 2>/dev/null || true && \
+        # SDL3 and Vulkan versioned symlinks
         ln -sf libvulkan.so libvulkan.so.1 2>/dev/null || true && \
         ln -sf libSDL3.so libSDL3.so.0 2>/dev/null || true && \
+        # libc++ symlinks
         ln -sf libc++.so.1 libc++.so 2>/dev/null || true && \
         ln -sf libc++abi.so.1 libc++abi.so 2>/dev/null || true)
 

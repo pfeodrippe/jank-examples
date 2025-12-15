@@ -5,10 +5,15 @@
    ["imgui_impl_vulkan.h" :as imgui-vk :scope ""]
    ["imgui_impl_sdl3.h" :as imgui-sdl :scope ""]
    ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
-   [vybe.sdf.state :as state]))
+   [vybe.sdf.state :as state]
+   [vybe.util :as u]))
 
 ;; ImGui wrapper for SDF viewer
 ;; Uses header require for direct ImGui API access
+
+;; Export options state (mutable for ImGui checkboxes)
+(defonce *export-colors (u/v->p false))
+(defonce *export-uvs (u/v->p false))
 
 (defn new-frame!
   "Start a new ImGui frame. Call before any UI code."
@@ -74,13 +79,22 @@
       (sdfx/generate_mesh_preview (cpp/int. -1)))
     (imgui/Separator)
     (imgui/Text #cpp "Mesh Export:")
+    ;; Export options checkboxes
+    (imgui/Checkbox "Include Colors" (cpp/unbox *export-colors))
+    (imgui/Checkbox "Include UVs" (cpp/unbox *export-uvs))
     ;; GPU-based scene export using current resolution
-    (let [res (sdfx/get_mesh_preview_resolution)]
+    (let [res (sdfx/get_mesh_preview_resolution)
+          inc-colors (u/p->v *export-colors)
+          inc-uvs (u/p->v *export-uvs)]
       (when (imgui/Button "Export OBJ")
-        (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. res))]
+        (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. res)
+                                                  inc-colors inc-uvs)]
           (if (cpp/.-success result)
-            (println "Exported at" res "res:" (cpp/.-vertices result) "verts,"
-                     (cpp/.-triangles result) "tris")
+            (do
+              (println "Exported at" res "res:" (cpp/.-vertices result) "verts,"
+                       (cpp/.-triangles result) "tris")
+              (when inc-colors (println "  With vertex colors"))
+              (when inc-uvs (println "  With UV coordinates")))
             (println "Export failed:" (cpp/.-message result))))))
     (imgui/End)
     nil))

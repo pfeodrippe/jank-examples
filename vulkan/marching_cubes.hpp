@@ -1,10 +1,17 @@
 // Marching Cubes - CPU implementation for sampled SDF grids
 // Works with GPU-sampled distance fields
 //
+// Features:
+//   - Parallel processing (uses std::thread)
+//   - Optional vertex colors (from color sampling)
+//   - Optional UV coordinates (triplanar mapping)
+//   - Automatic normal computation
+//
 // Usage:
 //   std::vector<float> distances = sample_sdf_from_gpu(...);
 //   auto mesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
-//   mc::exportOBJ("output.obj", mesh);
+//   mc::exportOBJ("output.obj", mesh);  // Basic export
+//   mc::exportOBJ("output.obj", mesh, true, true);  // With colors and UVs
 
 #pragma once
 
@@ -13,6 +20,9 @@
 #include <fstream>
 #include <cmath>
 #include <locale>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 namespace mc {
 
@@ -23,15 +33,53 @@ struct Vec3 {
     Vec3 operator+(const Vec3& o) const { return {x + o.x, y + o.y, z + o.z}; }
     Vec3 operator-(const Vec3& o) const { return {x - o.x, y - o.y, z - o.z}; }
     Vec3 operator*(float s) const { return {x * s, y * s, z * s}; }
+    float dot(const Vec3& o) const { return x * o.x + y * o.y + z * o.z; }
+    Vec3 cross(const Vec3& o) const {
+        return {y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x};
+    }
+    float length() const { return std::sqrt(x*x + y*y + z*z); }
+    Vec3 normalized() const {
+        float len = length();
+        if (len < 0.00001f) return {0, 1, 0};
+        return *this * (1.0f / len);
+    }
+};
+
+struct Vec2 {
+    float u, v;
+    Vec2() : u(0), v(0) {}
+    Vec2(float u_, float v_) : u(u_), v(v_) {}
+};
+
+struct Color3 {
+    float r, g, b;
+    Color3() : r(0.8f), g(0.8f), b(0.8f) {}
+    Color3(float r_, float g_, float b_) : r(r_), g(g_), b(b_) {}
+};
+
+// Extended vertex with all attributes
+struct Vertex {
+    Vec3 pos;
+    Vec3 normal;
+    Color3 color;
+    Vec2 uv;
 };
 
 struct Triangle {
     Vec3 v[3];
 };
 
+// Mesh with extended vertex data
 struct Mesh {
-    std::vector<Vec3> vertices;
+    std::vector<Vec3> vertices;      // Positions (always filled)
+    std::vector<Vec3> normals;       // Per-vertex normals (computed automatically)
+    std::vector<Color3> colors;      // Per-vertex colors (optional, from color sampling)
+    std::vector<Vec2> uvs;           // Per-vertex UVs (optional, triplanar mapping)
     std::vector<uint32_t> indices;
+
+    bool hasColors() const { return !colors.empty() && colors.size() == vertices.size(); }
+    bool hasUVs() const { return !uvs.empty() && uvs.size() == vertices.size(); }
+    bool hasNormals() const { return !normals.empty() && normals.size() == vertices.size(); }
 };
 
 // Marching Cubes lookup tables
@@ -340,7 +388,40 @@ inline Vec3 vertexInterp(float isolevel, const Vec3& p1, const Vec3& p2, float v
     return p1 + (p2 - p1) * mu;
 }
 
-// Generate mesh from a 3D grid of SDF values
+// Compute triplanar UV from position and normal
+inline Vec2 triplanarUV(const Vec3& pos, const Vec3& normal, float scale = 10.0f) {
+    Vec3 absN = {std::abs(normal.x), std::abs(normal.y), std::abs(normal.z)};
+
+    // Blend weights based on normal
+    float u, v;
+    if (absN.x >= absN.y && absN.x >= absN.z) {
+        // X-axis dominant - project onto YZ
+        u = pos.y * scale;
+        v = pos.z * scale;
+    } else if (absN.y >= absN.x && absN.y >= absN.z) {
+        // Y-axis dominant - project onto XZ
+        u = pos.x * scale;
+        v = pos.z * scale;
+    } else {
+        // Z-axis dominant - project onto XY
+        u = pos.x * scale;
+        v = pos.y * scale;
+    }
+
+    // Wrap to [0,1]
+    u = u - std::floor(u);
+    v = v - std::floor(v);
+
+    return Vec2(u, v);
+}
+
+// Thread-local mesh buffer for parallel processing
+struct ThreadMesh {
+    std::vector<Vec3> vertices;
+    std::vector<uint32_t> indices;
+};
+
+// Generate mesh from a 3D grid of SDF values (PARALLEL VERSION)
 // distances: flattened 3D array of size res*res*res (x varies fastest)
 // res: grid resolution in each dimension
 // bounds_min, bounds_max: world-space bounds
@@ -351,8 +432,6 @@ inline Mesh generateMesh(
     Vec3 bounds_max,
     float isolevel = 0.0f
 ) {
-    Mesh mesh;
-
     Vec3 cell_size = {
         (bounds_max.x - bounds_min.x) / (res - 1),
         (bounds_max.y - bounds_min.y) / (res - 1),
@@ -361,82 +440,180 @@ inline Mesh generateMesh(
 
     auto idx = [res](int x, int y, int z) { return x + y * res + z * res * res; };
 
-    Vec3 vertList[12];
+    // Determine number of threads
+    unsigned int numThreads = std::thread::hardware_concurrency();
+    if (numThreads == 0) numThreads = 4;  // Fallback
+    numThreads = std::min(numThreads, (unsigned int)(res - 1));
 
-    for (int z = 0; z < res - 1; z++) {
-        for (int y = 0; y < res - 1; y++) {
-            for (int x = 0; x < res - 1; x++) {
-                // Get 8 corner values
-                float v[8] = {
-                    distances[idx(x,   y,   z)],
-                    distances[idx(x+1, y,   z)],
-                    distances[idx(x+1, y+1, z)],
-                    distances[idx(x,   y+1, z)],
-                    distances[idx(x,   y,   z+1)],
-                    distances[idx(x+1, y,   z+1)],
-                    distances[idx(x+1, y+1, z+1)],
-                    distances[idx(x,   y+1, z+1)]
-                };
+    // Per-thread mesh buffers
+    std::vector<ThreadMesh> threadMeshes(numThreads);
 
-                // Get 8 corner positions
-                Vec3 p[8] = {
-                    {bounds_min.x + x * cell_size.x,     bounds_min.y + y * cell_size.y,     bounds_min.z + z * cell_size.z},
-                    {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + y * cell_size.y,     bounds_min.z + z * cell_size.z},
-                    {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + (y+1) * cell_size.y, bounds_min.z + z * cell_size.z},
-                    {bounds_min.x + x * cell_size.x,     bounds_min.y + (y+1) * cell_size.y, bounds_min.z + z * cell_size.z},
-                    {bounds_min.x + x * cell_size.x,     bounds_min.y + y * cell_size.y,     bounds_min.z + (z+1) * cell_size.z},
-                    {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + y * cell_size.y,     bounds_min.z + (z+1) * cell_size.z},
-                    {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + (y+1) * cell_size.y, bounds_min.z + (z+1) * cell_size.z},
-                    {bounds_min.x + x * cell_size.x,     bounds_min.y + (y+1) * cell_size.y, bounds_min.z + (z+1) * cell_size.z}
-                };
+    // Parallel processing - each thread handles a range of Z slices
+    std::vector<std::thread> threads;
+    int zPerThread = (res - 1 + numThreads - 1) / numThreads;
 
-                // Determine cube index
-                int cubeIndex = 0;
-                if (v[0] < isolevel) cubeIndex |= 1;
-                if (v[1] < isolevel) cubeIndex |= 2;
-                if (v[2] < isolevel) cubeIndex |= 4;
-                if (v[3] < isolevel) cubeIndex |= 8;
-                if (v[4] < isolevel) cubeIndex |= 16;
-                if (v[5] < isolevel) cubeIndex |= 32;
-                if (v[6] < isolevel) cubeIndex |= 64;
-                if (v[7] < isolevel) cubeIndex |= 128;
+    for (unsigned int t = 0; t < numThreads; t++) {
+        int zStart = t * zPerThread;
+        int zEnd = std::min(zStart + zPerThread, res - 1);
 
-                // Skip if completely inside or outside
-                if (edgeTable[cubeIndex] == 0) continue;
+        threads.emplace_back([&, t, zStart, zEnd]() {
+            ThreadMesh& tm = threadMeshes[t];
+            Vec3 vertList[12];
 
-                // Interpolate vertices on edges
-                if (edgeTable[cubeIndex] & 1)    vertList[0]  = vertexInterp(isolevel, p[0], p[1], v[0], v[1]);
-                if (edgeTable[cubeIndex] & 2)    vertList[1]  = vertexInterp(isolevel, p[1], p[2], v[1], v[2]);
-                if (edgeTable[cubeIndex] & 4)    vertList[2]  = vertexInterp(isolevel, p[2], p[3], v[2], v[3]);
-                if (edgeTable[cubeIndex] & 8)    vertList[3]  = vertexInterp(isolevel, p[3], p[0], v[3], v[0]);
-                if (edgeTable[cubeIndex] & 16)   vertList[4]  = vertexInterp(isolevel, p[4], p[5], v[4], v[5]);
-                if (edgeTable[cubeIndex] & 32)   vertList[5]  = vertexInterp(isolevel, p[5], p[6], v[5], v[6]);
-                if (edgeTable[cubeIndex] & 64)   vertList[6]  = vertexInterp(isolevel, p[6], p[7], v[6], v[7]);
-                if (edgeTable[cubeIndex] & 128)  vertList[7]  = vertexInterp(isolevel, p[7], p[4], v[7], v[4]);
-                if (edgeTable[cubeIndex] & 256)  vertList[8]  = vertexInterp(isolevel, p[0], p[4], v[0], v[4]);
-                if (edgeTable[cubeIndex] & 512)  vertList[9]  = vertexInterp(isolevel, p[1], p[5], v[1], v[5]);
-                if (edgeTable[cubeIndex] & 1024) vertList[10] = vertexInterp(isolevel, p[2], p[6], v[2], v[6]);
-                if (edgeTable[cubeIndex] & 2048) vertList[11] = vertexInterp(isolevel, p[3], p[7], v[3], v[7]);
+            for (int z = zStart; z < zEnd; z++) {
+                for (int y = 0; y < res - 1; y++) {
+                    for (int x = 0; x < res - 1; x++) {
+                        // Get 8 corner values
+                        float v[8] = {
+                            distances[idx(x,   y,   z)],
+                            distances[idx(x+1, y,   z)],
+                            distances[idx(x+1, y+1, z)],
+                            distances[idx(x,   y+1, z)],
+                            distances[idx(x,   y,   z+1)],
+                            distances[idx(x+1, y,   z+1)],
+                            distances[idx(x+1, y+1, z+1)],
+                            distances[idx(x,   y+1, z+1)]
+                        };
 
-                // Add triangles
-                for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
-                    uint32_t baseIdx = (uint32_t)mesh.vertices.size();
-                    mesh.vertices.push_back(vertList[triTable[cubeIndex][i]]);
-                    mesh.vertices.push_back(vertList[triTable[cubeIndex][i+1]]);
-                    mesh.vertices.push_back(vertList[triTable[cubeIndex][i+2]]);
-                    mesh.indices.push_back(baseIdx);
-                    mesh.indices.push_back(baseIdx + 1);
-                    mesh.indices.push_back(baseIdx + 2);
+                        // Get 8 corner positions
+                        Vec3 p[8] = {
+                            {bounds_min.x + x * cell_size.x,     bounds_min.y + y * cell_size.y,     bounds_min.z + z * cell_size.z},
+                            {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + y * cell_size.y,     bounds_min.z + z * cell_size.z},
+                            {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + (y+1) * cell_size.y, bounds_min.z + z * cell_size.z},
+                            {bounds_min.x + x * cell_size.x,     bounds_min.y + (y+1) * cell_size.y, bounds_min.z + z * cell_size.z},
+                            {bounds_min.x + x * cell_size.x,     bounds_min.y + y * cell_size.y,     bounds_min.z + (z+1) * cell_size.z},
+                            {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + y * cell_size.y,     bounds_min.z + (z+1) * cell_size.z},
+                            {bounds_min.x + (x+1) * cell_size.x, bounds_min.y + (y+1) * cell_size.y, bounds_min.z + (z+1) * cell_size.z},
+                            {bounds_min.x + x * cell_size.x,     bounds_min.y + (y+1) * cell_size.y, bounds_min.z + (z+1) * cell_size.z}
+                        };
+
+                        // Determine cube index
+                        int cubeIndex = 0;
+                        if (v[0] < isolevel) cubeIndex |= 1;
+                        if (v[1] < isolevel) cubeIndex |= 2;
+                        if (v[2] < isolevel) cubeIndex |= 4;
+                        if (v[3] < isolevel) cubeIndex |= 8;
+                        if (v[4] < isolevel) cubeIndex |= 16;
+                        if (v[5] < isolevel) cubeIndex |= 32;
+                        if (v[6] < isolevel) cubeIndex |= 64;
+                        if (v[7] < isolevel) cubeIndex |= 128;
+
+                        // Skip if completely inside or outside
+                        if (edgeTable[cubeIndex] == 0) continue;
+
+                        // Interpolate vertices on edges
+                        if (edgeTable[cubeIndex] & 1)    vertList[0]  = vertexInterp(isolevel, p[0], p[1], v[0], v[1]);
+                        if (edgeTable[cubeIndex] & 2)    vertList[1]  = vertexInterp(isolevel, p[1], p[2], v[1], v[2]);
+                        if (edgeTable[cubeIndex] & 4)    vertList[2]  = vertexInterp(isolevel, p[2], p[3], v[2], v[3]);
+                        if (edgeTable[cubeIndex] & 8)    vertList[3]  = vertexInterp(isolevel, p[3], p[0], v[3], v[0]);
+                        if (edgeTable[cubeIndex] & 16)   vertList[4]  = vertexInterp(isolevel, p[4], p[5], v[4], v[5]);
+                        if (edgeTable[cubeIndex] & 32)   vertList[5]  = vertexInterp(isolevel, p[5], p[6], v[5], v[6]);
+                        if (edgeTable[cubeIndex] & 64)   vertList[6]  = vertexInterp(isolevel, p[6], p[7], v[6], v[7]);
+                        if (edgeTable[cubeIndex] & 128)  vertList[7]  = vertexInterp(isolevel, p[7], p[4], v[7], v[4]);
+                        if (edgeTable[cubeIndex] & 256)  vertList[8]  = vertexInterp(isolevel, p[0], p[4], v[0], v[4]);
+                        if (edgeTable[cubeIndex] & 512)  vertList[9]  = vertexInterp(isolevel, p[1], p[5], v[1], v[5]);
+                        if (edgeTable[cubeIndex] & 1024) vertList[10] = vertexInterp(isolevel, p[2], p[6], v[2], v[6]);
+                        if (edgeTable[cubeIndex] & 2048) vertList[11] = vertexInterp(isolevel, p[3], p[7], v[3], v[7]);
+
+                        // Add triangles
+                        for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
+                            uint32_t baseIdx = (uint32_t)tm.vertices.size();
+                            tm.vertices.push_back(vertList[triTable[cubeIndex][i]]);
+                            tm.vertices.push_back(vertList[triTable[cubeIndex][i+1]]);
+                            tm.vertices.push_back(vertList[triTable[cubeIndex][i+2]]);
+                            tm.indices.push_back(baseIdx);
+                            tm.indices.push_back(baseIdx + 1);
+                            tm.indices.push_back(baseIdx + 2);
+                        }
+                    }
                 }
             }
+        });
+    }
+
+    // Wait for all threads
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    // Merge all thread meshes
+    Mesh mesh;
+    size_t totalVerts = 0, totalIndices = 0;
+    for (const auto& tm : threadMeshes) {
+        totalVerts += tm.vertices.size();
+        totalIndices += tm.indices.size();
+    }
+    mesh.vertices.reserve(totalVerts);
+    mesh.indices.reserve(totalIndices);
+
+    uint32_t indexOffset = 0;
+    for (const auto& tm : threadMeshes) {
+        mesh.vertices.insert(mesh.vertices.end(), tm.vertices.begin(), tm.vertices.end());
+        for (uint32_t idx : tm.indices) {
+            mesh.indices.push_back(idx + indexOffset);
         }
+        indexOffset += (uint32_t)tm.vertices.size();
     }
 
     return mesh;
 }
 
-// Export mesh to OBJ file
-inline bool exportOBJ(const std::string& filename, const Mesh& mesh) {
+// Compute normals from triangle geometry
+inline void computeNormals(Mesh& mesh) {
+    mesh.normals.resize(mesh.vertices.size(), Vec3(0, 0, 0));
+
+    // Compute face normals and accumulate at vertices
+    for (size_t i = 0; i < mesh.indices.size(); i += 3) {
+        uint32_t i0 = mesh.indices[i];
+        uint32_t i1 = mesh.indices[i+1];
+        uint32_t i2 = mesh.indices[i+2];
+
+        Vec3 v0 = mesh.vertices[i0];
+        Vec3 v1 = mesh.vertices[i1];
+        Vec3 v2 = mesh.vertices[i2];
+
+        Vec3 e1 = v1 - v0;
+        Vec3 e2 = v2 - v0;
+        Vec3 normal = e1.cross(e2);
+
+        mesh.normals[i0] = mesh.normals[i0] + normal;
+        mesh.normals[i1] = mesh.normals[i1] + normal;
+        mesh.normals[i2] = mesh.normals[i2] + normal;
+    }
+
+    // Normalize
+    for (auto& n : mesh.normals) {
+        n = n.normalized();
+    }
+}
+
+// Compute triplanar UVs from positions and normals
+inline void computeUVs(Mesh& mesh, float scale = 10.0f) {
+    if (!mesh.hasNormals()) {
+        computeNormals(mesh);
+    }
+
+    mesh.uvs.resize(mesh.vertices.size());
+    for (size_t i = 0; i < mesh.vertices.size(); i++) {
+        mesh.uvs[i] = triplanarUV(mesh.vertices[i], mesh.normals[i], scale);
+    }
+}
+
+// Set uniform vertex color
+inline void setUniformColor(Mesh& mesh, float r, float g, float b) {
+    mesh.colors.resize(mesh.vertices.size(), Color3(r, g, b));
+}
+
+// Set colors from external color array (e.g., from GPU sampling)
+inline void setColors(Mesh& mesh, const std::vector<Color3>& colors) {
+    if (colors.size() == mesh.vertices.size()) {
+        mesh.colors = colors;
+    }
+}
+
+// Export mesh to OBJ file with optional colors and UVs
+inline bool exportOBJ(const std::string& filename, const Mesh& mesh,
+                      bool includeColors = false, bool includeUVs = false) {
     if (mesh.vertices.empty()) return false;
 
     std::ofstream file(filename);
@@ -445,20 +622,67 @@ inline bool exportOBJ(const std::string& filename, const Mesh& mesh) {
     // Use C locale to avoid thousands separators in numbers
     file.imbue(std::locale::classic());
 
-    file << "# Generated by Marching Cubes\n";
+    file << "# Generated by Marching Cubes (Parallel)\n";
     file << "# Vertices: " << mesh.vertices.size() << "\n";
-    file << "# Triangles: " << mesh.indices.size() / 3 << "\n\n";
-
-    for (const auto& v : mesh.vertices) {
-        file << "v " << v.x << " " << v.y << " " << v.z << "\n";
-    }
-
+    file << "# Triangles: " << mesh.indices.size() / 3 << "\n";
+    if (includeColors && mesh.hasColors()) file << "# With vertex colors\n";
+    if (includeUVs && mesh.hasUVs()) file << "# With UV coordinates\n";
     file << "\n";
 
+    // Write vertices (optionally with colors)
+    bool writeColors = includeColors && mesh.hasColors();
+    for (size_t i = 0; i < mesh.vertices.size(); i++) {
+        const Vec3& v = mesh.vertices[i];
+        if (writeColors) {
+            const Color3& c = mesh.colors[i];
+            file << "v " << v.x << " " << v.y << " " << v.z
+                 << " " << c.r << " " << c.g << " " << c.b << "\n";
+        } else {
+            file << "v " << v.x << " " << v.y << " " << v.z << "\n";
+        }
+    }
+
+    // Write texture coordinates
+    if (includeUVs && mesh.hasUVs()) {
+        file << "\n";
+        for (const auto& uv : mesh.uvs) {
+            file << "vt " << uv.u << " " << uv.v << "\n";
+        }
+    }
+
+    // Write normals
+    if (mesh.hasNormals()) {
+        file << "\n";
+        for (const auto& n : mesh.normals) {
+            file << "vn " << n.x << " " << n.y << " " << n.z << "\n";
+        }
+    }
+
+    // Write faces
+    file << "\n";
+    bool hasUV = includeUVs && mesh.hasUVs();
+    bool hasN = mesh.hasNormals();
+
     for (size_t i = 0; i < mesh.indices.size(); i += 3) {
-        file << "f " << (mesh.indices[i] + 1) << " "
-             << (mesh.indices[i+1] + 1) << " "
-             << (mesh.indices[i+2] + 1) << "\n";
+        uint32_t i0 = mesh.indices[i] + 1;
+        uint32_t i1 = mesh.indices[i+1] + 1;
+        uint32_t i2 = mesh.indices[i+2] + 1;
+
+        if (hasUV && hasN) {
+            file << "f " << i0 << "/" << i0 << "/" << i0 << " "
+                        << i1 << "/" << i1 << "/" << i1 << " "
+                        << i2 << "/" << i2 << "/" << i2 << "\n";
+        } else if (hasN) {
+            file << "f " << i0 << "//" << i0 << " "
+                        << i1 << "//" << i1 << " "
+                        << i2 << "//" << i2 << "\n";
+        } else if (hasUV) {
+            file << "f " << i0 << "/" << i0 << " "
+                        << i1 << "/" << i1 << " "
+                        << i2 << "/" << i2 << "\n";
+        } else {
+            file << "f " << i0 << " " << i1 << " " << i2 << "\n";
+        }
     }
 
     file.close();

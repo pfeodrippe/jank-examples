@@ -2730,7 +2730,9 @@ inline MeshExportResult export_scene_mesh_gpu(
     const char* filepath,
     float minX, float minY, float minZ,
     float maxX, float maxY, float maxZ,
-    int resolution
+    int resolution,
+    bool includeColors = false,
+    bool includeUVs = false
 ) {
     MeshExportResult result{false, 0, 0, ""};
 
@@ -2744,6 +2746,8 @@ inline MeshExportResult export_scene_mesh_gpu(
     std::cout << "  Bounds: [" << minX << "," << minY << "," << minZ << "] to ["
               << maxX << "," << maxY << "," << maxZ << "]" << std::endl;
     std::cout << "  Resolution: " << resolution << "x" << resolution << "x" << resolution << std::endl;
+    if (includeColors) std::cout << "  Including vertex colors" << std::endl;
+    if (includeUVs) std::cout << "  Including UV coordinates" << std::endl;
 
     // Sample SDF on GPU
     auto distances = sample_sdf_grid(minX, minY, minZ, maxX, maxY, maxZ, resolution);
@@ -2769,11 +2773,24 @@ inline MeshExportResult export_scene_mesh_gpu(
         return result;
     }
 
+    // Compute normals (always useful for rendering)
+    mc::computeNormals(mesh);
+
+    // Compute UVs if requested
+    if (includeUVs) {
+        mc::computeUVs(mesh);
+    }
+
+    // Set a default color if colors requested but not set
+    if (includeColors && !mesh.hasColors()) {
+        mc::setUniformColor(mesh, 0.8f, 0.8f, 0.8f);
+    }
+
     result.vertices = mesh.vertices.size();
     result.triangles = mesh.indices.size() / 3;
 
     // Export to OBJ
-    if (mc::exportOBJ(filepath, mesh)) {
+    if (mc::exportOBJ(filepath, mesh, includeColors, includeUVs)) {
         result.success = true;
         result.message = "Export successful";
         std::cout << "Exported to " << filepath << std::endl;
@@ -2788,7 +2805,12 @@ inline MeshExportResult export_scene_mesh_gpu(
 
 // Convenience wrapper with default bounds
 // Convenience wrapper - uses stored mesh if available at matching resolution
-inline MeshExportResult export_scene_mesh_gpu(const char* filepath, int resolution = 64) {
+inline MeshExportResult export_scene_mesh_gpu(
+    const char* filepath, 
+    int resolution = 64,
+    bool includeColors = false,
+    bool includeUVs = false
+) {
     auto* e = get_engine();
     MeshExportResult result{false, 0, 0, ""};
 
@@ -2797,14 +2819,34 @@ inline MeshExportResult export_scene_mesh_gpu(const char* filepath, int resoluti
         return result;
     }
 
-    // If we have a stored mesh at the requested resolution, just export it
+    // If we have a stored mesh at the requested resolution, use it
     if (e->currentMeshResolution == resolution && !e->currentMesh.vertices.empty()) {
         std::cout << "Exporting stored mesh (resolution " << resolution << ")..." << std::endl;
+        if (includeColors) std::cout << "  Including vertex colors" << std::endl;
+        if (includeUVs) std::cout << "  Including UV coordinates" << std::endl;
 
-        result.vertices = e->currentMesh.vertices.size();
-        result.triangles = e->currentMesh.indices.size() / 3;
+        // Make a copy to add normals/colors/UVs if needed
+        mc::Mesh exportMesh = e->currentMesh;
 
-        if (mc::exportOBJ(filepath, e->currentMesh)) {
+        // Compute normals if not already present
+        if (!exportMesh.hasNormals()) {
+            mc::computeNormals(exportMesh);
+        }
+
+        // Compute UVs if requested and not present
+        if (includeUVs && !exportMesh.hasUVs()) {
+            mc::computeUVs(exportMesh);
+        }
+
+        // Set default color if colors requested but not present
+        if (includeColors && !exportMesh.hasColors()) {
+            mc::setUniformColor(exportMesh, 0.8f, 0.8f, 0.8f);
+        }
+
+        result.vertices = exportMesh.vertices.size();
+        result.triangles = exportMesh.indices.size() / 3;
+
+        if (mc::exportOBJ(filepath, exportMesh, includeColors, includeUVs)) {
             result.success = true;
             result.message = "Export successful";
             std::cout << "Exported to " << filepath << std::endl;
@@ -2817,7 +2859,8 @@ inline MeshExportResult export_scene_mesh_gpu(const char* filepath, int resoluti
     }
 
     // Otherwise, regenerate mesh at requested resolution
-    return export_scene_mesh_gpu(filepath, -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, resolution);
+    return export_scene_mesh_gpu(filepath, -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, 
+                                  resolution, includeColors, includeUVs);
 }
 
 // ============================================================================

@@ -56,13 +56,71 @@ Both artifacts are created:
 
 ## Testing Notes
 
-- Tested Linux binary download in tart VM using `tart exec`
-- Cannot run x86_64 Linux binary on ARM64 VM (architecture mismatch)
-- Would need x86_64 Linux machine to fully test the standalone
+### Lima x86_64 VM Testing (2025-12-15)
+
+Successfully tested Linux binary in Lima x86_64 emulated VM on macOS ARM64:
+
+**Quick Test Script:**
+```bash
+# One command to setup VM, download artifact, and run:
+./bin/test-linux-lima.sh
+
+# Or individual steps:
+./bin/test-linux-lima.sh --setup     # Create Lima VM (first time)
+./bin/test-linux-lima.sh --download  # Download latest CI artifact
+./bin/test-linux-lima.sh --run       # Run in VM
+```
+
+**Manual Lima VM Setup:**
+```bash
+# Install Lima
+brew install lima lima-additional-guestagents
+
+# Create x86_64 config
+cat > /tmp/lima-x86_64.yaml << 'EOF'
+vmType: qemu
+arch: x86_64
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+cpus: 2
+memory: "4GiB"
+EOF
+
+# Start VM
+limactl start --name=linux-x64 /tmp/lima-x86_64.yaml
+
+# Run commands
+limactl shell linux-x64 uname -a
+```
+
+**Issues Found & Fixed:**
+
+### 8. LLVM Versioned Library Symlinks
+- **Problem**: Binary looks for `libLLVM.so.22.0git` but we bundle `libLLVM.so`
+- **Solution**: Create versioned symlinks: `ln -sf libLLVM.so libLLVM.so.22.0git`
+
+### 9. Architecture-Specific Include Path
+- **Problem**: `__config_site` header is in `include/x86_64-unknown-linux-gnu/c++/v1/`
+- **Solution**: Added architecture-specific path to CPATH in launcher and clang++ wrapper
+
+### 10. libc++ vs libstdc++ Header Conflict
+- **Problem**: JIT picks up both bundled libc++ AND system libstdc++ headers
+- **Solution**: clang++ wrapper now uses `-nostdinc++` to exclude system C++ headers
+
+### 11. SDL3/Vulkan Library Bundling
+- **Problem**: SYSTEM_LIBS created symlinks pointing to non-existent files
+- **Solution**: Copy actual library files and create proper symlinks
+
+**Testing Results:**
+- Binary loads correctly (all shared libraries resolve)
+- JIT compilation starts
+- Requires SDL3 and Vulkan on system (or properly bundled)
 
 ## Tart VM Usage
 
-Key discovery: Use `tart exec` to run commands in VM without SSH:
+- Cannot run x86_64 Linux binary on ARM64 tart VM (architecture mismatch)
+- Use `tart exec` to run commands in VM without SSH:
 ```bash
 tart exec ubuntu-sdf-test bash -c "command here"
 ```

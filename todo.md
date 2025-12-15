@@ -11,6 +11,7 @@
   - [x] sdf to obj in runtime
   - [ ] with texture?
   - [ ] generate it faster
+  - [ ] make hand-exploding animation
 - [ ] linux
   - [ ] tests
   - [ ] standalone
