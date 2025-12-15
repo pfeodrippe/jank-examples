@@ -658,15 +658,16 @@ inline bool exportOBJ(const std::string& filename, const Mesh& mesh,
         }
     }
 
-    // Write faces
+    // Write faces (winding order flipped for correct OBJ convention: CCW = front face)
     file << "\n";
     bool hasUV = includeUVs && mesh.hasUVs();
     bool hasN = mesh.hasNormals();
 
     for (size_t i = 0; i < mesh.indices.size(); i += 3) {
+        // Flip winding: i0, i2, i1 instead of i0, i1, i2
         uint32_t i0 = mesh.indices[i] + 1;
-        uint32_t i1 = mesh.indices[i+1] + 1;
-        uint32_t i2 = mesh.indices[i+2] + 1;
+        uint32_t i1 = mesh.indices[i+2] + 1;  // Swapped
+        uint32_t i2 = mesh.indices[i+1] + 1;  // Swapped
 
         if (hasUV && hasN) {
             file << "f " << i0 << "/" << i0 << "/" << i0 << " "

@@ -222,8 +222,16 @@ struct Engine {
     // Temporary SPIR-V storage for jank-orchestrated pipeline creation
     std::vector<uint32_t> pendingSpirvData;
 
+    // Depth buffer for solid mesh rendering
+    VkImage depthImage = VK_NULL_HANDLE;
+    VkDeviceMemory depthMemory = VK_NULL_HANDLE;
+    VkImageView depthImageView = VK_NULL_HANDLE;
+    VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
+
     // Mesh preview state
     bool meshPreviewVisible = false;
+    bool meshRenderSolid = true;  // true = solid, false = wireframe
+    float meshScale = 1.0f;       // Scale factor for mesh preview
     int meshPreviewResolution = 256;
     VkBuffer meshVertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory meshVertexMemory = VK_NULL_HANDLE;
@@ -1259,40 +1267,93 @@ inline bool init(const char* shader_dir) {
 
     vkUpdateDescriptorSets(e->device, 1, &blitWrite, 0, nullptr);
 
-    // Render pass
-    VkAttachmentDescription colorAttachment{};
-    colorAttachment.format = e->swapchainFormat;
-    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    // Create depth buffer
+    {
+        VkImageCreateInfo depthImageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        depthImageInfo.imageType = VK_IMAGE_TYPE_2D;
+        depthImageInfo.format = e->depthFormat;
+        depthImageInfo.extent = {g_framebufferWidth, g_framebufferHeight, 1};
+        depthImageInfo.mipLevels = 1;
+        depthImageInfo.arrayLayers = 1;
+        depthImageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        depthImageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        depthImageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+        vkCreateImage(e->device, &depthImageInfo, nullptr, &e->depthImage);
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(e->device, e->depthImage, &memReq);
+
+        VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vkAllocateMemory(e->device, &allocInfo, nullptr, &e->depthMemory);
+        vkBindImageMemory(e->device, e->depthImage, e->depthMemory, 0);
+
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = e->depthImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = e->depthFormat;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        vkCreateImageView(e->device, &viewInfo, nullptr, &e->depthImageView);
+    }
+
+    // Render pass with depth attachment
+    VkAttachmentDescription attachments[2] = {};
+
+    // Color attachment
+    attachments[0].format = e->swapchainFormat;
+    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    // Depth attachment
+    attachments[1].format = e->depthFormat;
+    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkAttachmentReference colorRef = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depthRef = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
 
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
 
     vkCreateRenderPass(e->device, &renderPassInfo, nullptr, &e->renderPass);
 
-    // Framebuffers
+    // Framebuffers with depth attachment
     e->framebuffers.resize(e->swapchainImageViews.size());
     for (size_t i = 0; i < e->swapchainImageViews.size(); i++) {
+        VkImageView fbAttachments[2] = {e->swapchainImageViews[i], e->depthImageView};
+
         VkFramebufferCreateInfo fbInfo{};
         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fbInfo.renderPass = e->renderPass;
-        fbInfo.attachmentCount = 1;
-        fbInfo.pAttachments = &e->swapchainImageViews[i];
+        fbInfo.attachmentCount = 2;
+        fbInfo.pAttachments = fbAttachments;
         fbInfo.width = g_framebufferWidth;
         fbInfo.height = g_framebufferHeight;
         fbInfo.layers = 1;
@@ -1636,6 +1697,7 @@ inline void update_uniforms(double dt) {
     ubo.resolution[0] = g_framebufferWidth;
     ubo.resolution[1] = g_framebufferHeight;
     ubo.resolution[2] = e->time;
+    ubo.resolution[3] = e->meshScale;  // Mesh scale in w component
 
     // Edit mode uniforms
     ubo.editMode[0] = e->editMode ? 1.0f : 0.0f;
@@ -1743,22 +1805,32 @@ inline void draw_frame() {
     }
     // When clean, computeImage is already in SHADER_READ_ONLY_OPTIMAL from previous frame
 
-    // Render pass
-    VkClearValue clearColor = {{{0, 0, 0, 1}}};
+    // Render pass with depth clear
+    VkClearValue clearValues[2] = {};
+    clearValues[0].color = {{0, 0, 0, 1}};
+    clearValues[1].depthStencil = {1.0f, 0};
+
     VkRenderPassBeginInfo renderPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     renderPassInfo.renderPass = e->renderPass;
     renderPassInfo.framebuffer = e->framebuffers[imageIndex];
     renderPassInfo.renderArea = {{0, 0}, {g_framebufferWidth, g_framebufferHeight}};
-    renderPassInfo.clearValueCount = 1;
-    renderPassInfo.pClearValues = &clearColor;
+    renderPassInfo.clearValueCount = 2;
+    renderPassInfo.pClearValues = clearValues;
 
     vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e->graphicsPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e->graphicsPipelineLayout,
-                           0, 1, &e->blitDescriptorSet, 0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
 
-    // Render mesh preview overlay if visible
+    // If mesh preview is visible and solid mode, skip SDF and render only mesh
+    bool meshOnly = e->meshPreviewVisible && e->meshRenderSolid && e->meshPipelineInitialized && e->meshIndexCount > 0;
+
+    if (!meshOnly) {
+        // Render SDF raymarching result
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e->graphicsPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e->graphicsPipelineLayout,
+                               0, 1, &e->blitDescriptorSet, 0, nullptr);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
+
+    // Render mesh preview if visible
     render_mesh_preview(cmd);
 
     // Render ImGui draw data (if imgui_render was called before draw_frame)
@@ -2724,6 +2796,502 @@ inline std::vector<float> sample_sdf_grid(
     return results;
 }
 
+// ============================================================================
+// GPU-Based Color Sampling for Mesh Vertex Colors
+// ============================================================================
+
+struct ColorSampler {
+    bool initialized = false;
+    VkBuffer positionBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory positionMemory = VK_NULL_HANDLE;
+    VkBuffer normalBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory normalMemory = VK_NULL_HANDLE;
+    VkBuffer colorBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory colorMemory = VK_NULL_HANDLE;
+    VkBuffer paramsBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory paramsMemory = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderModule shaderModule = VK_NULL_HANDLE;
+    size_t maxPoints = 0;
+    std::string cachedShaderName;
+};
+
+inline ColorSampler* g_colorSampler = nullptr;
+
+inline ColorSampler* get_color_sampler() {
+    if (!g_colorSampler) {
+        g_colorSampler = new ColorSampler();
+    }
+    return g_colorSampler;
+}
+
+// Extract scene code for color sampling (includes sceneSDF_mat and getMaterialColor)
+inline std::string extract_scene_for_colors(const std::string& shaderSource) {
+    std::string result;
+
+    // Find the start of SDF primitives or helper functions
+    size_t helperStart = shaderSource.find("// SDF PRIMITIVES");
+    if (helperStart == std::string::npos) {
+        helperStart = shaderSource.find("// BOOLEAN OPERATIONS");
+    }
+    if (helperStart == std::string::npos) {
+        helperStart = shaderSource.find("float opUnion");
+    }
+    if (helperStart == std::string::npos) {
+        helperStart = shaderSource.find("float sdSphere");
+    }
+    if (helperStart == std::string::npos) {
+        std::cerr << "Could not find SDF helpers in shader" << std::endl;
+        return "";
+    }
+
+    // Find sceneSDF function
+    size_t sceneSdfPos = shaderSource.find("float sceneSDF(vec3 p)");
+    if (sceneSdfPos == std::string::npos) {
+        sceneSdfPos = shaderSource.find("float sceneSDF(");
+    }
+    if (sceneSdfPos == std::string::npos) {
+        std::cerr << "Could not find sceneSDF function" << std::endl;
+        return "";
+    }
+
+    // Find sceneSDF_mat function
+    size_t sceneSdfMatPos = shaderSource.find("vec2 sceneSDF_mat(vec3 p)");
+    if (sceneSdfMatPos == std::string::npos) {
+        sceneSdfMatPos = shaderSource.find("vec2 sceneSDF_mat(");
+    }
+
+    // Find getMaterialColor function
+    size_t getMaterialPos = shaderSource.find("vec3 getMaterialColor(");
+
+    // Find the end position - look for the RAYMARCHING section or render function
+    size_t endPos = shaderSource.find("// RAYMARCHING");
+    if (endPos == std::string::npos) {
+        endPos = shaderSource.find("vec3 render(");
+    }
+    if (endPos == std::string::npos) {
+        // Fallback: find end of getMaterialColor function
+        if (getMaterialPos != std::string::npos) {
+            size_t braceCount = 0;
+            size_t funcStart = shaderSource.find('{', getMaterialPos);
+            if (funcStart != std::string::npos) {
+                for (size_t i = funcStart; i < shaderSource.size(); i++) {
+                    if (shaderSource[i] == '{') braceCount++;
+                    else if (shaderSource[i] == '}') {
+                        braceCount--;
+                        if (braceCount == 0) {
+                            endPos = i + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (endPos == std::string::npos) {
+        std::cerr << "Could not find end of scene code" << std::endl;
+        return "";
+    }
+
+    // Extract everything from helpers to end
+    result = shaderSource.substr(helperStart, endPos - helperStart);
+
+    // If getMaterialColor wasn't found, add a default
+    if (getMaterialPos == std::string::npos || getMaterialPos >= endPos) {
+        result += R"(
+
+vec3 getMaterialColor(int matID, vec3 p) {
+    return vec3(0.8, 0.8, 0.8);
+}
+)";
+    }
+
+    // If sceneSDF_mat wasn't found, add a default that uses sceneSDF
+    if (sceneSdfMatPos == std::string::npos || sceneSdfMatPos >= endPos) {
+        result += R"(
+
+vec2 sceneSDF_mat(vec3 p) {
+    return vec2(sceneSDF(p), 1.0);
+}
+)";
+    }
+
+    return result;
+}
+
+// Build the color sampler shader from template and current scene
+inline std::string build_color_sampler_shader(const std::string& sceneShaderPath) {
+    auto* e = get_engine();
+    std::string templatePath = e->shaderDir + "/color_sampler.comp";
+    std::string templateSrc = read_text_file(templatePath);
+    if (templateSrc.empty()) {
+        std::cerr << "Could not read color sampler template: " << templatePath << std::endl;
+        return "";
+    }
+
+    std::string sceneSrc = read_text_file(sceneShaderPath);
+    if (sceneSrc.empty()) {
+        std::cerr << "Could not read scene shader: " << sceneShaderPath << std::endl;
+        return "";
+    }
+
+    std::string sceneCode = extract_scene_for_colors(sceneSrc);
+    if (sceneCode.empty()) {
+        std::cerr << "Could not extract scene code for color sampling" << std::endl;
+        return "";
+    }
+
+    size_t markerStart = templateSrc.find("// MARKER_SCENE_SDF_START");
+    size_t markerEnd = templateSrc.find("// MARKER_SCENE_SDF_END");
+    if (markerStart == std::string::npos || markerEnd == std::string::npos) {
+        std::cerr << "Could not find markers in color sampler template" << std::endl;
+        return "";
+    }
+
+    markerEnd = templateSrc.find('\n', markerEnd) + 1;
+    return templateSrc.substr(0, markerStart) + "\n" + sceneCode + "\n" + templateSrc.substr(markerEnd);
+}
+
+inline void cleanup_color_sampler() {
+    auto* s = get_color_sampler();
+    auto* e = get_engine();
+    if (!s->initialized || !e || !e->device) return;
+
+    vkDeviceWaitIdle(e->device);
+
+    if (s->pipeline) vkDestroyPipeline(e->device, s->pipeline, nullptr);
+    if (s->pipelineLayout) vkDestroyPipelineLayout(e->device, s->pipelineLayout, nullptr);
+    if (s->shaderModule) vkDestroyShaderModule(e->device, s->shaderModule, nullptr);
+    if (s->descriptorPool) vkDestroyDescriptorPool(e->device, s->descriptorPool, nullptr);
+    if (s->descriptorSetLayout) vkDestroyDescriptorSetLayout(e->device, s->descriptorSetLayout, nullptr);
+
+    if (s->positionBuffer) vkDestroyBuffer(e->device, s->positionBuffer, nullptr);
+    if (s->positionMemory) vkFreeMemory(e->device, s->positionMemory, nullptr);
+    if (s->normalBuffer) vkDestroyBuffer(e->device, s->normalBuffer, nullptr);
+    if (s->normalMemory) vkFreeMemory(e->device, s->normalMemory, nullptr);
+    if (s->colorBuffer) vkDestroyBuffer(e->device, s->colorBuffer, nullptr);
+    if (s->colorMemory) vkFreeMemory(e->device, s->colorMemory, nullptr);
+    if (s->paramsBuffer) vkDestroyBuffer(e->device, s->paramsBuffer, nullptr);
+    if (s->paramsMemory) vkFreeMemory(e->device, s->paramsMemory, nullptr);
+
+    s->initialized = false;
+    s->maxPoints = 0;
+    s->cachedShaderName = "";
+}
+
+inline bool init_color_sampler(size_t numPoints) {
+    auto* s = get_color_sampler();
+    auto* e = get_engine();
+    if (!e || !e->initialized) {
+        std::cerr << "Engine not initialized" << std::endl;
+        return false;
+    }
+
+    if (s->initialized && s->maxPoints >= numPoints && s->cachedShaderName == e->currentShaderName) {
+        return true;
+    }
+
+    if (s->initialized) {
+        cleanup_color_sampler();
+    }
+
+    std::cout << "Initializing color sampler for " << numPoints << " points..." << std::endl;
+
+    std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
+    std::string samplerSrc = build_color_sampler_shader(shaderPath);
+    if (samplerSrc.empty()) {
+        return false;
+    }
+
+    auto spirv = compile_glsl_to_spirv(samplerSrc, "color_sampler.comp", shaderc_compute_shader);
+    if (spirv.empty()) {
+        std::cerr << "Failed to compile color sampler shader" << std::endl;
+        return false;
+    }
+
+    VkShaderModuleCreateInfo shaderModuleInfo{};
+    shaderModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shaderModuleInfo.codeSize = spirv.size() * sizeof(uint32_t);
+    shaderModuleInfo.pCode = spirv.data();
+
+    if (vkCreateShaderModule(e->device, &shaderModuleInfo, nullptr, &s->shaderModule) != VK_SUCCESS) {
+        std::cerr << "Failed to create color sampler shader module" << std::endl;
+        return false;
+    }
+
+    VkDeviceSize positionSize = numPoints * sizeof(float) * 4;
+    VkDeviceSize normalSize = numPoints * sizeof(float) * 4;
+    VkDeviceSize colorSize = numPoints * sizeof(float) * 4;
+    VkDeviceSize paramsSize = 48;  // numPoints(4) + time(4) + padding(8) + cameraPos(16) + lightDir(16)
+
+    auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(e->device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+            return false;
+        }
+
+        VkMemoryRequirements memReq;
+        vkGetBufferMemoryRequirements(e->device, buffer, &memReq);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        if (vkAllocateMemory(e->device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
+            return false;
+        }
+        vkBindBufferMemory(e->device, buffer, memory, 0);
+        return true;
+    };
+
+    if (!createBuffer(positionSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, s->positionBuffer, s->positionMemory)) return false;
+    if (!createBuffer(normalSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, s->normalBuffer, s->normalMemory)) return false;
+    if (!createBuffer(colorSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, s->colorBuffer, s->colorMemory)) return false;
+    if (!createBuffer(paramsSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, s->paramsBuffer, s->paramsMemory)) return false;
+
+    // Create descriptor set layout (4 bindings: positions, normals, colors, params)
+    VkDescriptorSetLayoutBinding bindings[4] = {};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[3] = {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 4;
+    layoutInfo.pBindings = bindings;
+
+    if (vkCreateDescriptorSetLayout(e->device, &layoutInfo, nullptr, &s->descriptorSetLayout) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
+    poolSizes[1] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+
+    if (vkCreateDescriptorPool(e->device, &poolInfo, nullptr, &s->descriptorPool) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkDescriptorSetAllocateInfo dsAllocInfo{};
+    dsAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsAllocInfo.descriptorPool = s->descriptorPool;
+    dsAllocInfo.descriptorSetCount = 1;
+    dsAllocInfo.pSetLayouts = &s->descriptorSetLayout;
+
+    if (vkAllocateDescriptorSets(e->device, &dsAllocInfo, &s->descriptorSet) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkDescriptorBufferInfo positionBufferInfo{s->positionBuffer, 0, positionSize};
+    VkDescriptorBufferInfo normalBufferInfo{s->normalBuffer, 0, normalSize};
+    VkDescriptorBufferInfo colorBufferInfo{s->colorBuffer, 0, colorSize};
+    VkDescriptorBufferInfo paramsBufferInfo{s->paramsBuffer, 0, paramsSize};
+
+    VkWriteDescriptorSet writes[4] = {};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &positionBufferInfo, nullptr};
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &normalBufferInfo, nullptr};
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &colorBufferInfo, nullptr};
+    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s->descriptorSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &paramsBufferInfo, nullptr};
+
+    vkUpdateDescriptorSets(e->device, 4, writes, 0, nullptr);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &s->descriptorSetLayout;
+
+    if (vkCreatePipelineLayout(e->device, &pipelineLayoutInfo, nullptr, &s->pipelineLayout) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo shaderStageInfo{};
+    shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shaderStageInfo.module = s->shaderModule;
+    shaderStageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = shaderStageInfo;
+    pipelineInfo.layout = s->pipelineLayout;
+
+    if (vkCreateComputePipelines(e->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &s->pipeline) != VK_SUCCESS) {
+        return false;
+    }
+
+    s->maxPoints = numPoints;
+    s->cachedShaderName = e->currentShaderName;
+    s->initialized = true;
+
+    std::cout << "Color sampler initialized successfully" << std::endl;
+    return true;
+}
+
+// Sample colors at mesh vertex positions
+inline std::vector<mc::Color3> sample_vertex_colors(const mc::Mesh& mesh) {
+    auto* s = get_color_sampler();
+    auto* e = get_engine();
+
+    size_t numPoints = mesh.vertices.size();
+    if (numPoints == 0) return {};
+
+    // Ensure normals are computed
+    if (mesh.normals.size() != numPoints) {
+        std::cerr << "Mesh normals not computed" << std::endl;
+        return {};
+    }
+
+    if (!init_color_sampler(numPoints)) {
+        std::cerr << "Failed to initialize color sampler" << std::endl;
+        return {};
+    }
+
+    std::cout << "Sampling colors for " << numPoints << " vertices on GPU..." << std::endl;
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // Upload positions
+    std::vector<float> positions(numPoints * 4);
+    for (size_t i = 0; i < numPoints; i++) {
+        positions[i * 4 + 0] = mesh.vertices[i].x;
+        positions[i * 4 + 1] = mesh.vertices[i].y;
+        positions[i * 4 + 2] = mesh.vertices[i].z;
+        positions[i * 4 + 3] = 0.0f;
+    }
+
+    void* data;
+    vkMapMemory(e->device, s->positionMemory, 0, positions.size() * sizeof(float), 0, &data);
+    memcpy(data, positions.data(), positions.size() * sizeof(float));
+    vkUnmapMemory(e->device, s->positionMemory);
+
+    // Upload normals
+    std::vector<float> normals(numPoints * 4);
+    for (size_t i = 0; i < numPoints; i++) {
+        normals[i * 4 + 0] = mesh.normals[i].x;
+        normals[i * 4 + 1] = mesh.normals[i].y;
+        normals[i * 4 + 2] = mesh.normals[i].z;
+        normals[i * 4 + 3] = 0.0f;
+    }
+
+    vkMapMemory(e->device, s->normalMemory, 0, normals.size() * sizeof(float), 0, &data);
+    memcpy(data, normals.data(), normals.size() * sizeof(float));
+    vkUnmapMemory(e->device, s->normalMemory);
+
+    // Upload params (numPoints, time, cameraPos, lightDir)
+    struct {
+        uint32_t numPoints;
+        float time;
+        float pad1, pad2;
+        float cameraPos[4];
+        float lightDir[4];
+    } params;
+
+    params.numPoints = static_cast<uint32_t>(numPoints);
+    params.time = e->time;
+    params.pad1 = 0;
+    params.pad2 = 0;
+
+    // Get camera position
+    float camPos[3];
+    e->camera.getPosition(camPos);
+    params.cameraPos[0] = camPos[0];
+    params.cameraPos[1] = camPos[1];
+    params.cameraPos[2] = camPos[2];
+    params.cameraPos[3] = 1.5f;  // fov
+
+    // Default light direction (normalized)
+    params.lightDir[0] = 0.5f;
+    params.lightDir[1] = 0.8f;
+    params.lightDir[2] = 0.6f;
+    params.lightDir[3] = 0.0f;
+
+    vkMapMemory(e->device, s->paramsMemory, 0, sizeof(params), 0, &data);
+    memcpy(data, &params, sizeof(params));
+    vkUnmapMemory(e->device, s->paramsMemory);
+
+    // Execute compute shader
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = e->commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmdBuffer;
+    vkAllocateCommandBuffers(e->device, &cmdAllocInfo, &cmdBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmdBuffer, &beginInfo);
+
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, s->pipeline);
+    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            s->pipelineLayout, 0, 1, &s->descriptorSet, 0, nullptr);
+
+    uint32_t groupCount = (static_cast<uint32_t>(numPoints) + 63) / 64;
+    vkCmdDispatch(cmdBuffer, groupCount, 1, 1);
+
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+
+    vkCmdPipelineBarrier(cmdBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(cmdBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuffer;
+
+    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmdBuffer);
+
+    // Read back colors
+    std::vector<float> colorData(numPoints * 4);
+    vkMapMemory(e->device, s->colorMemory, 0, colorData.size() * sizeof(float), 0, &data);
+    memcpy(colorData.data(), data, colorData.size() * sizeof(float));
+    vkUnmapMemory(e->device, s->colorMemory);
+
+    // Convert to mc::Color3
+    std::vector<mc::Color3> colors(numPoints);
+    for (size_t i = 0; i < numPoints; i++) {
+        colors[i].r = colorData[i * 4 + 0];
+        colors[i].g = colorData[i * 4 + 1];
+        colors[i].b = colorData[i * 4 + 2];
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "Color sampling completed in " << duration.count() << " ms" << std::endl;
+
+    return colors;
+}
+
 // Export current scene SDF to mesh using GPU sampling + CPU marching cubes
 // This is the main function - no code duplication!
 inline MeshExportResult export_scene_mesh_gpu(
@@ -2781,9 +3349,17 @@ inline MeshExportResult export_scene_mesh_gpu(
         mc::computeUVs(mesh);
     }
 
-    // Set a default color if colors requested but not set
-    if (includeColors && !mesh.hasColors()) {
-        mc::setUniformColor(mesh, 0.8f, 0.8f, 0.8f);
+    // Sample colors from GPU if requested
+    if (includeColors) {
+        auto colors = sample_vertex_colors(mesh);
+        if (!colors.empty()) {
+            mesh.colors = std::move(colors);
+            std::cout << "  Applied GPU-sampled vertex colors" << std::endl;
+        } else {
+            // Fallback to default gray
+            mc::setUniformColor(mesh, 0.8f, 0.8f, 0.8f);
+            std::cout << "  Using fallback uniform color" << std::endl;
+        }
     }
 
     result.vertices = mesh.vertices.size();
@@ -2838,9 +3414,16 @@ inline MeshExportResult export_scene_mesh_gpu(
             mc::computeUVs(exportMesh);
         }
 
-        // Set default color if colors requested but not present
-        if (includeColors && !exportMesh.hasColors()) {
-            mc::setUniformColor(exportMesh, 0.8f, 0.8f, 0.8f);
+        // Sample colors from GPU if requested
+        if (includeColors) {
+            auto colors = sample_vertex_colors(exportMesh);
+            if (!colors.empty()) {
+                exportMesh.colors = std::move(colors);
+                std::cout << "  Applied GPU-sampled vertex colors" << std::endl;
+            } else {
+                mc::setUniformColor(exportMesh, 0.8f, 0.8f, 0.8f);
+                std::cout << "  Using fallback uniform color" << std::endl;
+            }
         }
 
         result.vertices = exportMesh.vertices.size();
@@ -3036,25 +3619,27 @@ inline bool init_mesh_pipeline() {
     viewportState.pScissors = &scissor;
 
     VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rasterizer.polygonMode = VK_POLYGON_MODE_LINE;  // Wireframe mode!
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;  // Solid mode for proper preview
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;  // Backface culling for solid mesh
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // Enable alpha blending for overlay effect
+    // Depth testing for proper solid mesh rendering
+    VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    // No blending for solid mesh - opaque rendering
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_TRUE;
-    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.blendEnable = VK_FALSE;
 
     VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     colorBlending.attachmentCount = 1;
@@ -3068,6 +3653,7 @@ inline bool init_mesh_pipeline() {
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = e->meshPipelineLayout;
     pipelineInfo.renderPass = e->renderPass;
@@ -3300,6 +3886,34 @@ inline void set_mesh_preview_visible(bool visible) {
     if (!e) return;
     e->meshPreviewVisible = visible;
     e->dirty = true;
+}
+
+inline bool get_mesh_render_solid() {
+    auto* e = get_engine();
+    return e ? e->meshRenderSolid : true;
+}
+
+inline void set_mesh_render_solid(bool solid) {
+    auto* e = get_engine();
+    if (!e) return;
+    if (e->meshRenderSolid != solid) {
+        e->meshRenderSolid = solid;
+        e->dirty = true;
+    }
+}
+
+inline float get_mesh_scale() {
+    auto* e = get_engine();
+    return e ? e->meshScale : 1.0f;
+}
+
+inline void set_mesh_scale(float scale) {
+    auto* e = get_engine();
+    if (!e) return;
+    if (e->meshScale != scale) {
+        e->meshScale = scale;
+        e->dirty = true;
+    }
 }
 
 inline int get_mesh_preview_resolution() {

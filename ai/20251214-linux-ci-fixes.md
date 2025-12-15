@@ -113,9 +113,19 @@ limactl shell linux-x64 uname -a
 - **Solution**: Copy actual library files and create proper symlinks
 
 **Testing Results:**
-- Binary loads correctly (all shared libraries resolve)
-- JIT compilation starts
-- Requires SDL3 and Vulkan on system (or properly bundled)
+- ✅ Binary loads correctly (all shared libraries resolve)
+- ✅ Launcher script and clang++ wrapper work correctly
+- ✅ SDL3 and Vulkan properly bundled
+- ❌ JIT compilation fails due to libc++/libstdc++ header conflict
+
+**Root Cause (jank issue):**
+jank's internal JIT uses libclang APIs directly (not the CXX env var wrapper).
+libclang has hardcoded include paths that include system libstdc++ headers,
+which conflict with bundled libc++ headers.
+
+**Required jank fix:**
+Pass `-nostdinc++` to jank's internal JIT compilation to exclude system C++ headers.
+This needs to be fixed in jank's `compiler+runtime` code.
 
 ## Tart VM Usage
 

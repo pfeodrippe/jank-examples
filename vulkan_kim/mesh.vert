@@ -31,11 +31,12 @@ mat4 lookAt(vec3 eye, vec3 target, vec3 up) {
     return m;
 }
 
-mat4 perspective(float fov, float aspect, float near, float far) {
-    float tanHalfFov = tan(fov * 0.5);
+mat4 perspective(float focalLength, float aspect, float near, float far) {
+    // SDF uses fov as focal length (Z component of ray direction)
+    // Perspective projection: focalLength determines field of view
     mat4 m = mat4(0.0);
-    m[0][0] = 1.0 / (aspect * tanHalfFov);
-    m[1][1] = -1.0 / tanHalfFov;  // Flip Y for Vulkan
+    m[0][0] = focalLength / aspect;
+    m[1][1] = focalLength;  // No Y flip - SDF uses negative up vector
     m[2][2] = far / (near - far);
     m[2][3] = -1.0;
     m[3][2] = (far * near) / (near - far);
@@ -47,13 +48,16 @@ void main() {
     vec3 target = ubo.cameraTarget.xyz;
     float fov = ubo.cameraPos.w;
     float aspect = ubo.resolution.x / ubo.resolution.y;
+    float scale = ubo.resolution.w;  // Mesh scale from UI
 
-    mat4 view = lookAt(eye, target, vec3(0.0, 1.0, 0.0));
-    mat4 proj = perspective(fov, aspect, 0.1, 100.0);
+    // Match SDF raymarcher's coordinate system (Y-down up vector)
+    mat4 view = lookAt(eye, target, vec3(0.0, -1.0, 0.0));
+    mat4 proj = perspective(fov, aspect, 0.01, 100.0);
 
-    vec4 worldPos = vec4(inPosition, 1.0);
+    vec3 scaledPos = inPosition * scale;
+    vec4 worldPos = vec4(scaledPos, 1.0);
     gl_Position = proj * view * worldPos;
 
     fragNormal = inNormal;
-    fragWorldPos = inPosition;
+    fragWorldPos = scaledPos;
 }
