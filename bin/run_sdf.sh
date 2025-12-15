@@ -648,7 +648,7 @@ fi
 # Build stb_impl.o if needed
 if [ ! -f vulkan/stb_impl.o ] || [ vulkan/stb_impl.c -nt vulkan/stb_impl.o ]; then
     echo "Compiling stb_impl..."
-    clang -c vulkan/stb_impl.c -o vulkan/stb_impl.o
+    clang -fPIC -c vulkan/stb_impl.c -o vulkan/stb_impl.o
 fi
 
 # Build vybe_flecs_jank.o if needed (jank-runtime-dependent flecs helpers)
