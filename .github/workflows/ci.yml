@@ -265,7 +265,7 @@ jobs:
             pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
             doctest-dev libgc-dev ccache patchelf
           # Vulkan deps (SDL3 built from source below)
-          sudo apt-get install -y libvulkan-dev glslang-tools libshaderc-dev
+          sudo apt-get install -y libvulkan-dev glslang-tools libshaderc-dev libshaderc1
           # X11/Wayland deps for SDL3
           sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev
 
