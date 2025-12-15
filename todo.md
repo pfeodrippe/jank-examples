@@ -31,4 +31,4 @@
 
 ## Others
 
-- [ ]
+- [ ] jank-focused llm

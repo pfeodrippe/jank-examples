@@ -516,7 +516,7 @@ CLANG_WRAPPER
     # System libraries needed (find and copy from system)
     local SYSTEM_LIBS=(
         libvulkan.so
-        libSDL2-2.0.so
+        libSDL3.so
         libshaderc_shared.so
     )
 
@@ -561,7 +561,7 @@ CLANG_WRAPPER
     echo "Creating versioned library symlinks..."
     (cd "$DIST_DIR/lib" && \
         ln -sf libvulkan.so libvulkan.so.1 2>/dev/null || true && \
-        ln -sf libSDL2-2.0.so libSDL2.so 2>/dev/null || true && \
+        ln -sf libSDL3.so libSDL3.so.0 2>/dev/null || true && \
         ln -sf libc++.so.1 libc++.so 2>/dev/null || true && \
         ln -sf libc++abi.so.1 libc++abi.so 2>/dev/null || true)
 
@@ -713,7 +713,8 @@ case "$(uname -s)" in
     Linux)
         JANK_ARGS=(
             -I/usr/include
-            -I/usr/include/SDL2
+            -I/usr/local/include
+            -I/usr/local/include/SDL3
             -I.
             -Ivendor
             -Ivendor/imgui
@@ -722,11 +723,12 @@ case "$(uname -s)" in
             -L/usr/lib
             -L/usr/lib/x86_64-linux-gnu
             -L/usr/lib/aarch64-linux-gnu
+            -L/usr/local/lib
             --module-path src
         )
-        # Find SDL2 and Vulkan libraries on Linux
+        # Find SDL3 and Vulkan libraries on Linux
         DYLIBS=()
-        for lib in libvulkan.so libSDL2-2.0.so libshaderc_shared.so; do
+        for lib in libvulkan.so libSDL3.so libshaderc_shared.so; do
             lib_path=$(ldconfig -p 2>/dev/null | grep "$lib" | head -1 | awk '{print $NF}')
             if [ -n "$lib_path" ] && [ -f "$lib_path" ]; then
                 DYLIBS+=("$lib_path")
@@ -752,8 +754,8 @@ if [ "$STANDALONE" = true ]; then
             ;;
         Linux)
             clang++ -shared -fPIC -o "$SHARED_LIB" "${OBJ_FILES[@]}" \
-                -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/aarch64-linux-gnu \
-                -lvulkan -lSDL2 -lshaderc_shared \
+                -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/aarch64-linux-gnu -L/usr/local/lib \
+                -lvulkan -lSDL3 -lshaderc_shared \
                 -Wl,--allow-shlib-undefined
             ;;
     esac
