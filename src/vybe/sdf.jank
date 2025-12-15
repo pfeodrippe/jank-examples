@@ -98,7 +98,7 @@
         (ui/render!)
         (render/draw-frame!)
         (when (= frame-count 10)
-          (render/save-screenshot! "kim_screenshot.png")
+          (render/save-screenshot "kim_screenshot.png")
           (println "Screenshot saved to kim_screenshot.png"))
         (recur (inc frame-count))))
     (render/cleanup!)

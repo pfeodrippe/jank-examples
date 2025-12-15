@@ -164,7 +164,7 @@
                               (cpp/uint32_t height)
                               (cpp/uint32_t scale)))
 
-(defn save-screenshot!
+(defn save-screenshot
   "Capture current frame and save to PNG file."
   [filepath]
   (if (not (sdfx/engine_initialized))
@@ -199,4 +199,17 @@
         (do
           (println "Failed to write PNG:" filepath)
           false)))))
-#_ (save-screenshot! "eita.png")
+#_ (save-screenshot "eita.png")
+
+(defn save-viewport-screenshot
+  "Capture final rendered viewport (with mesh overlay) and save to PNG file.
+   Unlike save-screenshot which captures the compute shader output,
+   this captures the actual displayed frame including any mesh preview."
+  [filepath]
+  (if (not (sdfx/engine_initialized))
+    (do
+      (println "Viewport screenshot failed - engine not initialized")
+      false)
+    (sdfx/save_viewport_screenshot filepath)))
+
+#_ (save-viewport-screenshot "viewport.png")

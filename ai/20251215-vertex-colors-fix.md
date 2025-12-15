@@ -291,4 +291,38 @@ The UI calls `set_mesh_use_vertex_colors` every frame with the checkbox value, s
 2. **Minimum lighting floor** - `max(lighting, 0.15)` prevents near-black colors that get ignored
 3. **Default Include Colors = true** - Both UI and engine defaults changed
 4. **Hot reload fix** - Both template and scene shader mod times checked
-5. **6-direction shadow sampling** - View-independent baked lighting
+5. **Match main shader lighting** - Use same light direction and formula as raymarched view
+
+## Lighting Formula Match (continued session)
+
+Changed color_sampler.comp to match hand_cigarette.comp lighting exactly:
+
+```glsl
+// Match main shader's lighting formula
+float ao = calcAO(p, n);
+
+// Warm/cool ambient (from main shader)
+vec3 warmAmbient = vec3(0.25, 0.18, 0.12) * ao;
+vec3 coolAmbient = vec3(0.08, 0.12, 0.16) * ao;
+vec3 ambient = mix(warmAmbient, coolAmbient, max(0.0, -n.y) * 0.5);
+
+// Single main light direction (matches raymarched shader)
+vec3 ldir = normalize(ubo.lightDir.xyz);
+
+// Match main shader: diff * 0.85 + 0.15, then mix(0.4, 1.0, shadow)
+float diff = max(dot(n, ldir), 0.0);
+float shadow = calcSoftShadow(shadowOrigin, ldir, 0.02, 10.0, 6.0);
+float diffIntensity = diff * 0.85 + 0.15;
+diffIntensity *= mix(0.4, 1.0, shadow);
+vec3 diffuse = albedo * diffIntensity;
+
+vec3 col = ambient + diffuse;
+```
+
+Also fixed light direction in sdf_engine.hpp to match: `(1, 2, 1)` normalized.
+
+## Helper Functions Added
+
+Added CLI-friendly screenshot functions (without `!` suffix):
+- `vybe.sdf.screenshot/save-screenshot` - Capture raymarched view
+- `vybe.sdf.screenshot/save-viewport-screenshot` - Capture viewport with mesh overlay

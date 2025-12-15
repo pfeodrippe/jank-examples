@@ -94,7 +94,7 @@
   (sdfx/set_dirty))
 
 ;; Screenshot - fully implemented in jank
-(defn save-screenshot!
+(defn save-screenshot
   "Capture screenshot and save to PNG file."
   [filepath]
-  (screenshot/save-screenshot! filepath))
+  (screenshot/save-screenshot filepath))

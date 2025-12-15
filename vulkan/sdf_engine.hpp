@@ -3414,10 +3414,11 @@ inline std::vector<mc::Color3> sample_vertex_colors(const mc::Mesh& mesh) {
     params.cameraPos[2] = camPos[2];
     params.cameraPos[3] = 1.5f;  // fov
 
-    // Default light direction (normalized)
-    params.lightDir[0] = 0.5f;
-    params.lightDir[1] = 0.8f;
-    params.lightDir[2] = 0.6f;
+    // Match main shader light direction: (1, 2, 1) normalized
+    float lightLen = sqrt(1.0f + 4.0f + 1.0f);  // sqrt(6)
+    params.lightDir[0] = 1.0f / lightLen;
+    params.lightDir[1] = 2.0f / lightLen;
+    params.lightDir[2] = 1.0f / lightLen;
     params.lightDir[3] = 0.0f;
 
     vkMapMemory(e->device, s->paramsMemory, 0, sizeof(params), 0, &data);

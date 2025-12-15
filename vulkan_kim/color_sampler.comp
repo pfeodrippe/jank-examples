@@ -166,33 +166,30 @@ void main() {
     int matID = int(mat.y);
     vec3 albedo = getMaterialColor(matID, p);
 
-    // 6-direction shadow sampling for view-independent baked lighting
-    vec3 lightDirs[6] = vec3[6](
-        normalize(vec3(0.0, 1.0, 0.3)),   // Top-front
-        normalize(vec3(0.0, 1.0, -0.3)),  // Top-back
-        normalize(vec3(1.0, 0.5, 0.0)),   // Right
-        normalize(vec3(-1.0, 0.5, 0.0)),  // Left
-        normalize(vec3(0.0, 0.3, 1.0)),   // Front
-        normalize(vec3(0.0, 0.3, -1.0))   // Back
-    );
-    float lightWeights[6] = float[6](0.3, 0.2, 0.15, 0.15, 0.1, 0.1);
-
+    // Match main shader's lighting formula for consistent look
     float ao = calcAO(p, n);
+
+    // Warm/cool ambient (from main shader)
+    vec3 warmAmbient = vec3(0.25, 0.18, 0.12) * ao;
+    vec3 coolAmbient = vec3(0.08, 0.12, 0.16) * ao;
+    vec3 ambient = mix(warmAmbient, coolAmbient, max(0.0, -n.y) * 0.5);
+
+    // Single main light direction (matches raymarched shader)
+    vec3 ldir = normalize(ubo.lightDir.xyz);  // From UBO
 
     // Offset shadow ray origin to avoid self-intersection
     vec3 shadowOrigin = p + n * 0.01;
 
-    // Accumulate weighted lighting from all 6 directions
-    float totalLight = 0.0;
-    for (int i = 0; i < 6; i++) {
-        float diff = max(dot(n, lightDirs[i]), 0.0);
-        float shadow = calcSoftShadow(shadowOrigin, lightDirs[i], 0.02, 10.0, 8.0);
-        totalLight += lightWeights[i] * diff * shadow;
-    }
+    // Match main shader lighting exactly
+    float diff = max(dot(n, ldir), 0.0);
+    float shadow = calcSoftShadow(shadowOrigin, ldir, 0.02, 10.0, 6.0);
 
-    // Ensure minimum lighting to prevent near-black colors (which get ignored)
-    float lighting = max((totalLight * 0.7 + 0.3) * ao, 0.15);
-    vec3 col = albedo * lighting;
+    // Main shader formula: diff * 0.85 + 0.15, then mix(0.4, 1.0, shadow)
+    float diffIntensity = diff * 0.85 + 0.15;
+    diffIntensity *= mix(0.4, 1.0, shadow);
+    vec3 diffuse = albedo * diffIntensity;
+
+    vec3 col = ambient + diffuse;
 
     // No painterly effects for clean mesh export
 
