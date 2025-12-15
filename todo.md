@@ -1,12 +1,12 @@
 - [x] standalone sdf script
-- [ ] remove more stuff from sdf_engine.hpp
+- [x] remove more stuff from sdf_engine.hpp
   - [x] dispatch-compute!
     - [x] (vk/vkCmdBindPipeline vk-cmd vk/VK_PIPELINE_BIND_POINT_COMPUTE (sdfx/get_compute_pipeline))
   - [x] copy-image-to-buffer!
   - [-] write-png-downsampled
     - [-] gc-issue
       - unable to fix it, see ai/20251214-jank-gc-large-loops.md
-  - [ ] macro to set multiple fields using map
+  - [x] macro to set multiple fields using map
 - [ ] sdf
   - [ ] sdf to obj in runtime
 - [ ] linux
@@ -21,6 +21,7 @@
   - better to just move things to jank as much as possible
 - [ ] ios sample
   - townscaper-like
+- [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
 
 

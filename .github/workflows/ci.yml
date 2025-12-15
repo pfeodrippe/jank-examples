@@ -264,8 +264,29 @@ jobs:
           sudo apt-get install -y curl git build-essential libssl-dev libdouble-conversion-dev \
             pkg-config ninja-build cmake zlib1g-dev libffi-dev libboost-dev libboost-system-dev \
             doctest-dev libgc-dev ccache patchelf
-          # SDL3 and Vulkan deps
-          sudo apt-get install -y libsdl2-dev libvulkan-dev glslang-tools libshaderc-dev
+          # Vulkan deps (SDL3 built from source below)
+          sudo apt-get install -y libvulkan-dev glslang-tools libshaderc-dev
+
+      - name: Cache SDL3
+        id: cache-sdl3
+        uses: actions/cache@v4
+        with:
+          path: ~/SDL3-install
+          key: sdl3-linux-x64-3.2.x-v1
+
+      - name: Build SDL3 from source
+        if: steps.cache-sdl3.outputs.cache-hit != 'true'
+        run: |
+          # SDL3 not in Ubuntu 24.04 repos, build from source
+          git clone --depth 1 --branch release-3.2.x https://github.com/libsdl-org/SDL.git ~/SDL3
+          cd ~/SDL3
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/SDL3-install
+          cmake --build build -j$(nproc)
+          cmake --install build
+
+      - name: Install SDL3
+        run: |
+          sudo cp -r ~/SDL3-install/* /usr/local/
 
       - name: Restore Clang/LLVM cache
         uses: actions/cache/restore@v4
