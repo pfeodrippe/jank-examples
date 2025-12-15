@@ -16,3 +16,6 @@
 [submodule "vendor/rlImGui"]
 	path = vendor/rlImGui
 	url = https://github.com/raylib-extras/rlImGui.git
+[submodule "vendor/libfive"]
+	path = vendor/libfive
+	url = https://github.com/libfive/libfive.git
