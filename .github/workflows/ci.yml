@@ -266,13 +266,15 @@ jobs:
             doctest-dev libgc-dev ccache patchelf
           # Vulkan deps (SDL3 built from source below)
           sudo apt-get install -y libvulkan-dev glslang-tools libshaderc-dev
+          # X11/Wayland deps for SDL3
+          sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev
 
       - name: Cache SDL3
         id: cache-sdl3
         uses: actions/cache@v4
         with:
           path: ~/SDL3-install
-          key: sdl3-linux-x64-3.2.x-v1
+          key: sdl3-linux-x64-3.2.x-v2
 
       - name: Build SDL3 from source
         if: steps.cache-sdl3.outputs.cache-hit != 'true'

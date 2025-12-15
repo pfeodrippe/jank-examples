@@ -24,8 +24,11 @@
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
 
-
-# Jank
+## Jank
 
 - [x] void as nil
   - 97fed5973
+
+## Others
+
+- [ ]

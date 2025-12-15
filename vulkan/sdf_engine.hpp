@@ -617,6 +617,7 @@ inline void handle_mouse_motion(float x, float y, float xrel, float yrel) {
 
 // Forward declarations
 inline std::vector<char> read_file(const std::string& filename);
+inline std::string read_text_file(const std::string& filename);
 
 inline void select_object(Engine* e, int id) {
     if (id >= 0 && id < (int)e->objects.size() && e->objects[id].selectable) {
@@ -639,6 +640,9 @@ inline void select_object(Engine* e, int id) {
 // Forward declarations for shader switching
 inline void scan_shaders();
 inline void load_shader_by_name(const std::string& name);
+inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
+                                                    const std::string& filename,
+                                                    shaderc_shader_kind kind);
 
 // ============================================================================
 // Shader switching functions
@@ -702,36 +706,34 @@ inline void load_shader_by_name(const std::string& name) {
     vkDeviceWaitIdle(e->device);
 
     std::string compPath = e->shaderDir + "/" + name + ".comp";
-    std::string spvPath = e->shaderDir + "/" + name + ".spv";
     std::cout << "[DEBUG] load_shader_by_name: compPath=" << compPath << std::endl;
-    std::cout << "[DEBUG] load_shader_by_name: spvPath=" << spvPath << std::endl;
 
-    // Compile shader
-    std::string compCmd = "glslangValidator -V " + compPath + " -o " + spvPath;
-    std::cout << "[DEBUG] load_shader_by_name: compiling..." << std::endl;
-    int result = std::system(compCmd.c_str());
-    if (result != 0) {
-        std::cerr << "[DEBUG] load_shader_by_name: compile FAILED! result=" << result << std::endl;
+    // Read GLSL source
+    std::string glslSource = read_text_file(compPath);
+    if (glslSource.empty()) {
+        std::cerr << "[DEBUG] load_shader_by_name: Failed to read shader source: " << compPath << std::endl;
         return;
     }
-    std::cout << "[DEBUG] load_shader_by_name: compile SUCCESS" << std::endl;
+
+    // Compile GLSL to SPIR-V using bundled shaderc library (no external glslangValidator needed)
+    std::cout << "[DEBUG] load_shader_by_name: compiling with shaderc..." << std::endl;
+    auto spirv = compile_glsl_to_spirv(glslSource, name + ".comp", shaderc_compute_shader);
+    if (spirv.empty()) {
+        std::cerr << "[DEBUG] load_shader_by_name: compile FAILED!" << std::endl;
+        return;
+    }
+    std::cout << "[DEBUG] load_shader_by_name: compile SUCCESS (" << spirv.size() << " words)" << std::endl;
 
     // Destroy old pipeline and shader module
     vkDestroyPipeline(e->device, e->computePipeline, nullptr);
     vkDestroyPipelineLayout(e->device, e->computePipelineLayout, nullptr);
     vkDestroyShaderModule(e->device, e->computeShaderModule, nullptr);
 
-    // Load new shader
-    auto code = read_file(spvPath);
-    if (code.empty()) {
-        std::cerr << "Failed to read shader: " << spvPath << std::endl;
-        return;
-    }
-
+    // Create shader module from in-memory SPIR-V
     VkShaderModuleCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = code.size();
-    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+    createInfo.codeSize = spirv.size() * sizeof(uint32_t);
+    createInfo.pCode = spirv.data();
     if (vkCreateShaderModule(e->device, &createInfo, nullptr, &e->computeShaderModule) != VK_SUCCESS) {
         std::cerr << "Failed to create shader module" << std::endl;
         return;
