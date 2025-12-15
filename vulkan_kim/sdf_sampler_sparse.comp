@@ -1,0 +1,87 @@
+#version 450
+//
+// SPARSE SDF SAMPLER - Only evaluates SDF at specified indices
+// Uses indirect dispatch for efficient sparse evaluation
+//
+// Input: list of grid indices to sample
+// Output: SDF distances at those indices (written to corresponding output locations)
+//
+
+layout(local_size_x = 64) in;
+
+// Output: SDF distances (full grid, but only active cells are written)
+layout(std430, binding = 0) writeonly buffer OutputDistances {
+    float distances[];
+};
+
+// Input: list of active cell indices to sample
+layout(std430, binding = 2) readonly buffer ActiveIndices {
+    uint indices[];
+};
+
+// Grid parameters
+layout(std140, binding = 1) uniform SamplerParams {
+    uint resolution;    // Grid resolution (e.g., 1024)
+    float time;         // Time value for animated SDFs
+    float minX, minY, minZ;  // Bounds min
+    float maxX, maxY, maxZ;  // Bounds max
+    uint activeCount;   // Number of active indices
+};
+
+// Provide ubo-like struct for compatibility with extracted scene code
+struct UboCompat {
+    vec4 resolution;
+    vec4 lightDir;
+};
+UboCompat ubo;
+
+// ============================================================================
+// SCENE SDF - Extracted from main shader (replaced at build time)
+// ============================================================================
+
+// MARKER_SCENE_SDF_START
+float sdSphere(vec3 p, float r) {
+    return length(p) - r;
+}
+
+float sceneSDF(vec3 p) {
+    return sdSphere(p, 1.0);
+}
+// MARKER_SCENE_SDF_END
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+void main() {
+    uint workIdx = gl_GlobalInvocationID.x;
+
+    // Each invocation processes one active index
+    if (workIdx >= activeCount) return;
+
+    // Get the actual grid index from the sparse index list
+    uint idx = indices[workIdx];
+
+    // Set up ubo compatibility
+    ubo.resolution = vec4(1.0, 1.0, time, 1.0);
+    ubo.lightDir = vec4(0.5, 0.8, 0.6, 0.0);
+
+    // Compute 3D grid position from linear index
+    uint res = resolution;
+    uint ix = idx % res;
+    uint iy = (idx / res) % res;
+    uint iz = idx / (res * res);
+
+    // Compute world position from grid coordinates
+    float stepX = (maxX - minX) / float(res - 1u);
+    float stepY = (maxY - minY) / float(res - 1u);
+    float stepZ = (maxZ - minZ) / float(res - 1u);
+
+    vec3 p = vec3(
+        minX + float(ix) * stepX,
+        minY + float(iy) * stepY,
+        minZ + float(iz) * stepZ
+    );
+
+    distances[idx] = sceneSDF(p);
+}

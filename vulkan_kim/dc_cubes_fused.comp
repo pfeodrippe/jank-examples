@@ -1,0 +1,185 @@
+#version 450
+//
+// DC CUBES FUSED - Combines SDF sampling and mesh generation in one pass
+// Eliminates the need for a 4GB intermediate distance buffer
+//
+// This shader evaluates SDF on-the-fly for each cell and generates cube vertices
+// for surface-crossing cells.
+//
+
+layout(local_size_x = 64) in;
+
+// Output: vertices (position + normal)
+layout(std430, binding = 0) writeonly buffer OutVertices {
+    vec4 vertices[];  // xyz = position, w = nx compressed, followed by ny,nz in next vec4
+};
+
+// Output: indices
+layout(std430, binding = 1) writeonly buffer OutIndices {
+    uint indices[];
+};
+
+// Output: vertex count
+layout(std430, binding = 2) buffer VertexCount {
+    uint vertexCount;
+};
+
+// Output: index count
+layout(std430, binding = 3) buffer IndexCount {
+    uint indexCount;
+};
+
+// Parameters
+layout(std140, binding = 4) uniform Params {
+    uint resolution;
+    float isolevel;
+    float voxelSize;
+    float time;
+    float minX, minY, minZ;
+    float maxX, maxY, maxZ;
+    uint maxVertices;
+    uint maxIndices;
+};
+
+// Provide ubo-like struct for compatibility with extracted scene code
+struct UboCompat {
+    vec4 resolution;
+    vec4 lightDir;
+};
+UboCompat ubo;
+
+// ============================================================================
+// SCENE SDF - Will be replaced with extracted scene code
+// ============================================================================
+
+// MARKER_SCENE_SDF_START
+float sdSphere(vec3 p, float r) {
+    return length(p) - r;
+}
+
+float sceneSDF(vec3 p) {
+    return sdSphere(p, 1.0);
+}
+// MARKER_SCENE_SDF_END
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Compute world position from grid coordinates
+vec3 gridToWorld(uint x, uint y, uint z) {
+    float stepX = (maxX - minX) / float(resolution - 1u);
+    float stepY = (maxY - minY) / float(resolution - 1u);
+    float stepZ = (maxZ - minZ) / float(resolution - 1u);
+    return vec3(
+        minX + float(x) * stepX,
+        minY + float(y) * stepY,
+        minZ + float(z) * stepZ
+    );
+}
+
+// Evaluate SDF at grid vertex
+float getSDF(uint x, uint y, uint z) {
+    vec3 p = gridToWorld(x, y, z);
+    return sceneSDF(p);
+}
+
+// Compute gradient (for normals)
+vec3 computeNormal(vec3 p) {
+    float eps = 0.001;
+    return normalize(vec3(
+        sceneSDF(p + vec3(eps, 0, 0)) - sceneSDF(p - vec3(eps, 0, 0)),
+        sceneSDF(p + vec3(0, eps, 0)) - sceneSDF(p - vec3(0, eps, 0)),
+        sceneSDF(p + vec3(0, 0, eps)) - sceneSDF(p - vec3(0, 0, eps))
+    ));
+}
+
+void main() {
+    // Set up ubo compatibility
+    ubo.resolution = vec4(1.0, 1.0, time, 1.0);
+    ubo.lightDir = vec4(0.5, 0.8, 0.6, 0.0);
+
+    uint cellIdx = gl_GlobalInvocationID.x;
+    uint res = resolution;
+    uint cellRes = res - 1u;
+    uint totalCells = cellRes * cellRes * cellRes;
+
+    if (cellIdx >= totalCells) return;
+
+    // Convert linear cell index to 3D cell coordinates
+    uint cx = cellIdx % cellRes;
+    uint cy = (cellIdx / cellRes) % cellRes;
+    uint cz = cellIdx / (cellRes * cellRes);
+
+    // Sample 8 corners of the cell (computing SDF on-the-fly!)
+    float v[8];
+    v[0] = getSDF(cx,   cy,   cz);
+    v[1] = getSDF(cx+1, cy,   cz);
+    v[2] = getSDF(cx+1, cy+1, cz);
+    v[3] = getSDF(cx,   cy+1, cz);
+    v[4] = getSDF(cx,   cy,   cz+1);
+    v[5] = getSDF(cx+1, cy,   cz+1);
+    v[6] = getSDF(cx+1, cy+1, cz+1);
+    v[7] = getSDF(cx,   cy+1, cz+1);
+
+    // Count inside/outside
+    uint insideCount = 0;
+    for (int i = 0; i < 8; i++) {
+        if (v[i] < isolevel) insideCount++;
+    }
+
+    // Skip if cell doesn't cross surface
+    if (insideCount == 0 || insideCount == 8) return;
+
+    // Cell is active - generate cube vertices
+    vec3 cellMin = gridToWorld(cx, cy, cz);
+    float cellSize = (maxX - minX) / float(cellRes);
+    float cubeSize = cellSize * voxelSize;
+
+    // Center of cell
+    vec3 center = cellMin + vec3(cellSize * 0.5);
+    float half = cubeSize * 0.5;
+
+    // Compute normal at cell center
+    vec3 normal = computeNormal(center);
+
+    // Allocate 8 vertices and 36 indices atomically
+    uint baseVertex = atomicAdd(vertexCount, 8u);
+    uint baseIndex = atomicAdd(indexCount, 36u);
+
+    // Check bounds
+    if (baseVertex + 8 > maxVertices || baseIndex + 36 > maxIndices) return;
+
+    // 8 cube corners (stored as position + packed normal)
+    vec3 corners[8] = vec3[8](
+        center + vec3(-half, -half, -half),
+        center + vec3( half, -half, -half),
+        center + vec3( half,  half, -half),
+        center + vec3(-half,  half, -half),
+        center + vec3(-half, -half,  half),
+        center + vec3( half, -half,  half),
+        center + vec3( half,  half,  half),
+        center + vec3(-half,  half,  half)
+    );
+
+    // Write vertices (position in xyz, normal.x in w, then normal.yz in next entry)
+    for (int i = 0; i < 8; i++) {
+        uint vIdx = (baseVertex + uint(i)) * 2u;
+        vertices[vIdx] = vec4(corners[i], normal.x);
+        vertices[vIdx + 1] = vec4(normal.yz, 0.0, 0.0);
+    }
+
+    // 12 triangles (36 indices) for cube
+    uint cubeIndices[36] = uint[36](
+        0, 2, 1,  0, 3, 2,  // Front
+        4, 5, 6,  4, 6, 7,  // Back
+        0, 1, 5,  0, 5, 4,  // Bottom
+        2, 3, 7,  2, 7, 6,  // Top
+        0, 4, 7,  0, 7, 3,  // Left
+        1, 2, 6,  1, 6, 5   // Right
+    );
+
+    for (int i = 0; i < 36; i++) {
+        indices[baseIndex + uint(i)] = baseVertex + cubeIndices[i];
+    }
+}

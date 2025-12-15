@@ -2823,17 +2823,290 @@ inline bool init_sampler(size_t numPoints) {
     return true;
 }
 
+// Sample a single region of SDF grid (used by hierarchical sampler)
+inline bool sample_sdf_region(
+    std::vector<float>& output,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    int res,
+    size_t outputOffset = 0) {
+
+    auto* s = get_sampler();
+    auto* e = get_engine();
+
+    size_t totalPoints = static_cast<size_t>(res) * res * res;
+    if (totalPoints == 0) return false;
+
+    if (!init_sampler(totalPoints)) {
+        return false;
+    }
+
+    struct SamplerParams {
+        uint32_t resolution;
+        float time;
+        float minX, minY, minZ;
+        float maxX, maxY, maxZ;
+    } params = {
+        static_cast<uint32_t>(res),
+        e->time,
+        minX, minY, minZ,
+        maxX, maxY, maxZ
+    };
+
+    void* data;
+    vkMapMemory(e->device, s->paramsMemory, 0, sizeof(params), 0, &data);
+    memcpy(data, &params, sizeof(params));
+    vkUnmapMemory(e->device, s->paramsMemory);
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = e->commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmdBuffer;
+    vkAllocateCommandBuffers(e->device, &cmdAllocInfo, &cmdBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmdBuffer, &beginInfo);
+
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, s->pipeline);
+    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            s->pipelineLayout, 0, 1, &s->descriptorSet, 0, nullptr);
+
+    uint32_t groupCount = (static_cast<uint32_t>(totalPoints) + 63) / 64;
+    vkCmdDispatch(cmdBuffer, groupCount, 1, 1);
+
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+
+    vkCmdPipelineBarrier(cmdBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    vkEndCommandBuffer(cmdBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuffer;
+
+    vkQueueSubmit(e->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(e->graphicsQueue);
+
+    vkFreeCommandBuffers(e->device, e->commandPool, 1, &cmdBuffer);
+
+    // Read back results directly to output at offset
+    vkMapMemory(e->device, s->outputMemory, 0, totalPoints * sizeof(float), 0, &data);
+    memcpy(output.data() + outputOffset, data, totalPoints * sizeof(float));
+    vkUnmapMemory(e->device, s->outputMemory);
+
+    return true;
+}
+
+// Hierarchical SDF sampling - coarse pass to find surface, batched fine pass
+// Uses super-cell batching to minimize GPU dispatch count
+inline std::vector<float> sample_sdf_grid_hierarchical(
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    int fineRes) {
+
+    auto* e = get_engine();
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // Use coarser grid (1/16 of fine) for faster initial pass
+    // Then batch into super-cells (4x4x4 coarse cells = 64x64x64 fine cells per batch)
+    int coarseRes = std::max(16, fineRes / 16);  // 1024 -> 64
+    int superCellSize = 4;  // Group 4x4x4 coarse cells into one batch
+    size_t coarsePoints = static_cast<size_t>(coarseRes) * coarseRes * coarseRes;
+    size_t finePoints = static_cast<size_t>(fineRes) * fineRes * fineRes;
+
+    std::cout << "Hierarchical SDF sampling: coarse " << coarseRes << "³, fine " << fineRes << "³..." << std::endl;
+
+    // Step 1: Coarse sampling
+    auto coarseStart = std::chrono::high_resolution_clock::now();
+    std::vector<float> coarseDistances(coarsePoints);
+    if (!sample_sdf_region(coarseDistances, minX, minY, minZ, maxX, maxY, maxZ, coarseRes)) {
+        std::cerr << "Coarse sampling failed" << std::endl;
+        return {};
+    }
+    auto coarseEnd = std::chrono::high_resolution_clock::now();
+    auto coarseDuration = std::chrono::duration_cast<std::chrono::milliseconds>(coarseEnd - coarseStart);
+
+    // Step 2: Find super-cells that contain surface
+    // A super-cell is 4x4x4 coarse cells = (4*16)³ = 64³ fine cells per batch
+    float stepX = (maxX - minX) / float(coarseRes - 1);
+    float stepY = (maxY - minY) / float(coarseRes - 1);
+    float stepZ = (maxZ - minZ) / float(coarseRes - 1);
+    float cellDiagonal = std::sqrt(stepX*stepX + stepY*stepY + stepZ*stepZ);
+    float threshold = cellDiagonal * 2.0f;
+
+    int coarseCellRes = coarseRes - 1;
+    int superCellRes = (coarseCellRes + superCellSize - 1) / superCellSize;
+
+    // Track which super-cells contain surface
+    std::vector<std::tuple<int,int,int>> surfaceSuperCells;
+    int totalCoarseCellsNearSurface = 0;
+
+    for (int scz = 0; scz < superCellRes; scz++) {
+        for (int scy = 0; scy < superCellRes; scy++) {
+            for (int scx = 0; scx < superCellRes; scx++) {
+                bool hasSurface = false;
+
+                // Check all coarse cells in this super-cell
+                for (int lcz = 0; lcz < superCellSize && !hasSurface; lcz++) {
+                    for (int lcy = 0; lcy < superCellSize && !hasSurface; lcy++) {
+                        for (int lcx = 0; lcx < superCellSize && !hasSurface; lcx++) {
+                            int cx = scx * superCellSize + lcx;
+                            int cy = scy * superCellSize + lcy;
+                            int cz = scz * superCellSize + lcz;
+                            if (cx >= coarseCellRes || cy >= coarseCellRes || cz >= coarseCellRes) continue;
+
+                            // Check if this coarse cell is near surface
+                            float minDist = std::numeric_limits<float>::max();
+                            for (int dz = 0; dz <= 1; dz++) {
+                                for (int dy = 0; dy <= 1; dy++) {
+                                    for (int dx = 0; dx <= 1; dx++) {
+                                        int ix = cx + dx;
+                                        int iy = cy + dy;
+                                        int iz = cz + dz;
+                                        size_t idx = ix + iy * coarseRes + iz * coarseRes * coarseRes;
+                                        minDist = std::min(minDist, std::abs(coarseDistances[idx]));
+                                    }
+                                }
+                            }
+                            if (minDist < threshold) {
+                                hasSurface = true;
+                                totalCoarseCellsNearSurface++;
+                            }
+                        }
+                    }
+                }
+
+                if (hasSurface) {
+                    surfaceSuperCells.push_back({scx, scy, scz});
+                }
+            }
+        }
+    }
+
+    int totalSuperCells = superCellRes * superCellRes * superCellRes;
+    std::cout << "  Found " << surfaceSuperCells.size() << " / " << totalSuperCells
+              << " super-cells with surface (" << coarseDuration.count() << " ms coarse)" << std::endl;
+
+    // If most super-cells contain surface, just do full sampling
+    float surfaceFraction = float(surfaceSuperCells.size()) / float(totalSuperCells);
+    if (surfaceFraction > 0.5f || surfaceSuperCells.empty()) {
+        std::cout << "  Surface fraction " << (surfaceFraction*100) << "%, using full sampling" << std::endl;
+        std::vector<float> results(finePoints);
+        if (!sample_sdf_region(results, minX, minY, minZ, maxX, maxY, maxZ, fineRes)) {
+            return {};
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "SDF sampling completed in " << duration.count() << " ms" << std::endl;
+        return results;
+    }
+
+    // Step 3: Initialize fine grid with large distance (far from surface)
+    // Use parallel initialization for the large 4GB buffer
+    auto initStart = std::chrono::high_resolution_clock::now();
+    std::vector<float> fineDistances(finePoints);
+    const float farValue = 1000.0f;
+    #pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < finePoints; i++) {
+        fineDistances[i] = farValue;
+    }
+    auto initEnd = std::chrono::high_resolution_clock::now();
+    auto initDuration = std::chrono::duration_cast<std::chrono::milliseconds>(initEnd - initStart);
+    std::cout << "  Fine grid allocation: " << initDuration.count() << " ms" << std::endl;
+
+    // Step 4: Sample fine grid for each super-cell containing surface
+    int finePerCoarse = fineRes / coarseRes;  // e.g., 1024/64 = 16
+    int finePerSuperCell = finePerCoarse * superCellSize;  // e.g., 16*4 = 64
+    int sampledBatches = 0;
+
+    auto batchStart = std::chrono::high_resolution_clock::now();
+
+    for (const auto& [scx, scy, scz] : surfaceSuperCells) {
+        // Compute fine grid bounds for this super-cell
+        int fineX0 = scx * finePerSuperCell;
+        int fineY0 = scy * finePerSuperCell;
+        int fineZ0 = scz * finePerSuperCell;
+        int fineX1 = std::min((scx + 1) * finePerSuperCell + 1, fineRes);
+        int fineY1 = std::min((scy + 1) * finePerSuperCell + 1, fineRes);
+        int fineZ1 = std::min((scz + 1) * finePerSuperCell + 1, fineRes);
+
+        int localResX = fineX1 - fineX0;
+        int localResY = fineY1 - fineY0;
+        int localResZ = fineZ1 - fineZ0;
+        int localRes = std::max({localResX, localResY, localResZ});
+
+        // Compute world bounds for this region
+        float localMinX = minX + fineX0 * (maxX - minX) / float(fineRes - 1);
+        float localMinY = minY + fineY0 * (maxY - minY) / float(fineRes - 1);
+        float localMinZ = minZ + fineZ0 * (maxZ - minZ) / float(fineRes - 1);
+        float localMaxX = minX + (fineX1 - 1) * (maxX - minX) / float(fineRes - 1);
+        float localMaxY = minY + (fineY1 - 1) * (maxY - minY) / float(fineRes - 1);
+        float localMaxZ = minZ + (fineZ1 - 1) * (maxZ - minZ) / float(fineRes - 1);
+
+        // Sample this super-cell region (one GPU dispatch per super-cell)
+        std::vector<float> localDistances(localRes * localRes * localRes);
+        if (sample_sdf_region(localDistances, localMinX, localMinY, localMinZ,
+                              localMaxX, localMaxY, localMaxZ, localRes)) {
+            // Copy to fine grid
+            for (int lz = 0; lz < localResZ; lz++) {
+                for (int ly = 0; ly < localResY; ly++) {
+                    for (int lx = 0; lx < localResX; lx++) {
+                        int fx = fineX0 + lx;
+                        int fy = fineY0 + ly;
+                        int fz = fineZ0 + lz;
+                        if (fx < fineRes && fy < fineRes && fz < fineRes) {
+                            size_t fineIdx = fx + fy * fineRes + fz * static_cast<size_t>(fineRes) * fineRes;
+                            size_t localIdx = lx + ly * localRes + lz * localRes * localRes;
+                            fineDistances[fineIdx] = localDistances[localIdx];
+                        }
+                    }
+                }
+            }
+            sampledBatches++;
+        }
+    }
+
+    auto batchEnd = std::chrono::high_resolution_clock::now();
+    auto batchDuration = std::chrono::duration_cast<std::chrono::milliseconds>(batchEnd - batchStart);
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "  Sampled " << sampledBatches << " batches (" << batchDuration.count() << " ms fine)" << std::endl;
+    std::cout << "SDF sampling (hierarchical) completed in " << duration.count() << " ms" << std::endl;
+
+    return fineDistances;
+}
+
 // Sample SDF on a regular 3D grid for marching cubes (memory optimized - positions computed in shader)
 inline std::vector<float> sample_sdf_grid(
     float minX, float minY, float minZ,
     float maxX, float maxY, float maxZ,
-    int res) {
+    int res,
+    bool useHierarchical = true) {
 
     auto* s = get_sampler();
     auto* e = get_engine();
 
     size_t totalPoints = static_cast<size_t>(res) * res * res;
     if (totalPoints == 0) return {};
+
+    // Hierarchical sampling disabled for now - allocation overhead is worse than full sampling
+    // TODO: Implement true sparse sampling with indirect dispatch
+    // if (useHierarchical && res > 256) {
+    //     return sample_sdf_grid_hierarchical(minX, minY, minZ, maxX, maxY, maxZ, res);
+    // }
 
     std::cout << "Sampling " << totalPoints << " SDF points on GPU (memory optimized)..." << std::endl;
     auto start = std::chrono::high_resolution_clock::now();
@@ -3777,6 +4050,178 @@ inline mc::Mesh generate_mesh_dc_gpu_chunked(
     std::cout << "DC mesh (GPU chunked): " << finalMesh.vertices.size() << " vertices, "
               << (finalMesh.indices.size() / 3) << " triangles"
               << " (" << dcDuration.count() << " ms)" << std::endl;
+
+    return finalMesh;
+}
+
+// Streaming sparse mesh generation - avoids 4GB allocation by processing regions incrementally
+// 1. Coarse sample to find surface regions
+// 2. For each surface region: fine sample + DC + merge
+inline mc::Mesh generate_mesh_sparse_streaming(
+    int resolution,
+    float minX, float minY, float minZ,
+    float maxX, float maxY, float maxZ,
+    bool fillWithCubes = true,
+    float voxelSize = 1.0f,
+    float isolevel = 0.0f
+) {
+    auto totalStart = std::chrono::high_resolution_clock::now();
+    mc::Mesh finalMesh;
+
+    auto* e = get_engine();
+    if (!e || !e->initialized) return finalMesh;
+
+    // Step 1: Coarse sampling to find surface regions
+    // Use higher coarse resolution for better surface detection
+    int coarseRes = std::max(64, resolution / 8);  // 1024 -> 128
+    int superCellSize = 4;  // 4x4x4 coarse cells per super-cell
+
+    auto coarseStart = std::chrono::high_resolution_clock::now();
+    std::vector<float> coarseDistances = sample_sdf_grid(minX, minY, minZ, maxX, maxY, maxZ, coarseRes, false);
+    auto coarseEnd = std::chrono::high_resolution_clock::now();
+    auto coarseDuration = std::chrono::duration_cast<std::chrono::milliseconds>(coarseEnd - coarseStart);
+
+    if (coarseDistances.empty()) {
+        std::cerr << "Coarse sampling failed" << std::endl;
+        return finalMesh;
+    }
+
+    // Step 2: Find super-cells containing surface
+    // Threshold based on coarse cell diagonal - be generous to capture all surface regions
+    float coarseStep = (maxX - minX) / float(coarseRes - 1);
+    float coarseCellDiag = std::sqrt(3.0f) * coarseStep;  // Diagonal of coarse cell
+    // Use super-cell diagonal as threshold since surface can be anywhere in the super-cell
+    float superCellDiag = coarseCellDiag * superCellSize;  // 4 coarse cells diagonal
+    float threshold = superCellDiag;
+
+    int coarseCellRes = coarseRes - 1;
+    int superCellRes = (coarseCellRes + superCellSize - 1) / superCellSize;
+
+    std::vector<std::tuple<int,int,int>> surfaceSuperCells;
+
+    for (int scz = 0; scz < superCellRes; scz++) {
+        for (int scy = 0; scy < superCellRes; scy++) {
+            for (int scx = 0; scx < superCellRes; scx++) {
+                bool hasSurface = false;
+
+                for (int lcz = 0; lcz < superCellSize && !hasSurface; lcz++) {
+                    for (int lcy = 0; lcy < superCellSize && !hasSurface; lcy++) {
+                        for (int lcx = 0; lcx < superCellSize && !hasSurface; lcx++) {
+                            int cx = scx * superCellSize + lcx;
+                            int cy = scy * superCellSize + lcy;
+                            int cz = scz * superCellSize + lcz;
+                            if (cx >= coarseCellRes || cy >= coarseCellRes || cz >= coarseCellRes) continue;
+
+                            // Check for sign change at cell corners (actual surface crossing)
+                            float minVal = std::numeric_limits<float>::max();
+                            float maxVal = std::numeric_limits<float>::lowest();
+                            for (int dz = 0; dz <= 1; dz++) {
+                                for (int dy = 0; dy <= 1; dy++) {
+                                    for (int dx = 0; dx <= 1; dx++) {
+                                        int ix = cx + dx;
+                                        int iy = cy + dy;
+                                        int iz = cz + dz;
+                                        size_t idx = ix + iy * coarseRes + iz * coarseRes * coarseRes;
+                                        float d = coarseDistances[idx];
+                                        minVal = std::min(minVal, d);
+                                        maxVal = std::max(maxVal, d);
+                                    }
+                                }
+                            }
+                            // Has surface if there's a sign change (surface crossing)
+                            if (minVal <= 0 && maxVal >= 0) {
+                                hasSurface = true;
+                            }
+                        }
+                    }
+                }
+
+                if (hasSurface) {
+                    surfaceSuperCells.push_back({scx, scy, scz});
+                }
+            }
+        }
+    }
+
+    std::cout << "Sparse streaming: " << surfaceSuperCells.size() << " surface regions, "
+              << "coarse " << coarseRes << "³ (" << coarseDuration.count() << " ms)" << std::endl;
+
+    if (surfaceSuperCells.empty()) return finalMesh;
+
+    // Step 3: Process each super-cell: sample fine + DC + merge
+    int finePerCoarse = resolution / coarseRes;
+    int finePerSuperCell = finePerCoarse * superCellSize;
+
+    auto processStart = std::chrono::high_resolution_clock::now();
+    int processedRegions = 0;
+
+    for (const auto& [scx, scy, scz] : surfaceSuperCells) {
+        // Compute fine grid bounds for this super-cell
+        int fineX0 = scx * finePerSuperCell;
+        int fineY0 = scy * finePerSuperCell;
+        int fineZ0 = scz * finePerSuperCell;
+        int fineX1 = std::min((scx + 1) * finePerSuperCell + 1, resolution);
+        int fineY1 = std::min((scy + 1) * finePerSuperCell + 1, resolution);
+        int fineZ1 = std::min((scz + 1) * finePerSuperCell + 1, resolution);
+
+        int localRes = std::max({fineX1 - fineX0, fineY1 - fineY0, fineZ1 - fineZ0});
+
+        // Compute world bounds for this region
+        float localMinX = minX + fineX0 * (maxX - minX) / float(resolution - 1);
+        float localMinY = minY + fineY0 * (maxY - minY) / float(resolution - 1);
+        float localMinZ = minZ + fineZ0 * (maxZ - minZ) / float(resolution - 1);
+        float localMaxX = minX + (fineX1 - 1) * (maxX - minX) / float(resolution - 1);
+        float localMaxY = minY + (fineY1 - 1) * (maxY - minY) / float(resolution - 1);
+        float localMaxZ = minZ + (fineZ1 - 1) * (maxZ - minZ) / float(resolution - 1);
+
+        // Sample this region
+        std::vector<float> localDistances = sample_sdf_grid(localMinX, localMinY, localMinZ,
+                                                            localMaxX, localMaxY, localMaxZ, localRes, false);
+        if (localDistances.empty()) continue;
+
+        // Run DC on this region
+        mc::Mesh localMesh;
+        try {
+            if (fillWithCubes) {
+                localMesh = generate_mesh_cubes_gpu(localDistances, localRes,
+                    localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ,
+                    voxelSize, isolevel);
+            } else {
+                localMesh = generate_mesh_dc_gpu(localDistances, localRes,
+                    localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ,
+                    isolevel);
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "  DC failed for region " << processedRegions << ": " << ex.what() << std::endl;
+            continue;
+        }
+
+        if (localMesh.vertices.empty()) continue;
+
+        // Offset indices and merge
+        uint32_t vertexOffset = (uint32_t)finalMesh.vertices.size();
+        for (auto& idx : localMesh.indices) {
+            idx += vertexOffset;
+        }
+
+        finalMesh.vertices.insert(finalMesh.vertices.end(),
+            localMesh.vertices.begin(), localMesh.vertices.end());
+        finalMesh.indices.insert(finalMesh.indices.end(),
+            localMesh.indices.begin(), localMesh.indices.end());
+
+        processedRegions++;
+    }
+
+    auto processEnd = std::chrono::high_resolution_clock::now();
+    auto processDuration = std::chrono::duration_cast<std::chrono::milliseconds>(processEnd - processStart);
+
+    auto totalEnd = std::chrono::high_resolution_clock::now();
+    auto totalDuration = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart);
+
+    std::cout << "DC mesh (sparse streaming): " << finalMesh.vertices.size() << " vertices, "
+              << (finalMesh.indices.size() / 3) << " triangles ("
+              << processedRegions << " regions, " << processDuration.count() << " ms process, "
+              << totalDuration.count() << " ms total)" << std::endl;
 
     return finalMesh;
 }
@@ -5246,35 +5691,50 @@ inline bool generate_mesh_preview(int resolution = -1) {
 
     std::cout << "Generating mesh preview at resolution " << resolution << "..." << std::endl;
 
-    // Sample SDF on GPU
-    auto distances = sample_sdf_grid(-2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, resolution);
-    if (distances.empty()) {
-        std::cerr << "Failed to sample SDF" << std::endl;
-        return false;
-    }
-
-    // Generate mesh using CPU marching cubes or dual contouring
     mc::Vec3 bounds_min{-2.0f, -2.0f, -2.0f};
     mc::Vec3 bounds_max{2.0f, 2.0f, 2.0f};
-    if (e->meshUseDualContouring) {
-        if (e->meshUseGpuDC) {
-            // Use chunked GPU processing - handles any resolution
-            e->currentMesh = generate_mesh_dc_gpu_chunked(distances, resolution,
-                -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f,
-                e->meshFillWithCubes, e->meshVoxelSize, 0.0f);
-            // Fall back to CPU if GPU fails
-            if (e->currentMesh.vertices.empty()) {
-                std::cout << "GPU DC failed, falling back to CPU..." << std::endl;
+
+    // For GPU DC at high resolution, use sparse streaming to avoid 4GB allocation
+    if (e->meshUseDualContouring && e->meshUseGpuDC && resolution > 256) {
+        e->currentMesh = generate_mesh_sparse_streaming(resolution,
+            -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f,
+            e->meshFillWithCubes, e->meshVoxelSize, 0.0f);
+
+        if (e->currentMesh.vertices.empty()) {
+            std::cout << "Sparse streaming failed, falling back to standard approach..." << std::endl;
+        }
+    }
+
+    // Standard approach for small resolutions or fallback
+    if (e->currentMesh.vertices.empty()) {
+        // Sample SDF on GPU
+        auto distances = sample_sdf_grid(-2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f, resolution);
+        if (distances.empty()) {
+            std::cerr << "Failed to sample SDF" << std::endl;
+            return false;
+        }
+
+        // Generate mesh using CPU marching cubes or dual contouring
+        if (e->meshUseDualContouring) {
+            if (e->meshUseGpuDC) {
+                // Use chunked GPU processing - handles any resolution
+                e->currentMesh = generate_mesh_dc_gpu_chunked(distances, resolution,
+                    -2.0f, -2.0f, -2.0f, 2.0f, 2.0f, 2.0f,
+                    e->meshFillWithCubes, e->meshVoxelSize, 0.0f);
+                // Fall back to CPU if GPU fails
+                if (e->currentMesh.vertices.empty()) {
+                    std::cout << "GPU DC failed, falling back to CPU..." << std::endl;
+                    e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, e->meshFillWithCubes, e->meshVoxelSize);
+                }
+            } else {
+                // CPU DC
                 e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, e->meshFillWithCubes, e->meshVoxelSize);
             }
         } else {
-            // CPU DC
-            e->currentMesh = mc::generateMeshDC(distances, resolution, bounds_min, bounds_max, 0.0f, e->meshFillWithCubes, e->meshVoxelSize);
+            e->currentMesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
+            std::cout << "MC mesh: " << e->currentMesh.vertices.size() << " vertices, "
+                      << (e->currentMesh.indices.size() / 3) << " triangles" << std::endl;
         }
-    } else {
-        e->currentMesh = mc::generateMesh(distances, resolution, bounds_min, bounds_max);
-        std::cout << "MC mesh: " << e->currentMesh.vertices.size() << " vertices, "
-                  << (e->currentMesh.indices.size() / 3) << " triangles" << std::endl;
     }
     e->currentMeshResolution = resolution;
 

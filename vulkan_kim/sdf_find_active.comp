@@ -1,0 +1,90 @@
+#version 450
+//
+// FIND ACTIVE CELLS - Identifies fine grid cells that need SDF evaluation
+// Based on coarse grid distances, marks fine cells near the surface
+//
+// For each coarse cell, if any corner is near surface (|distance| < threshold),
+// all fine cells within that coarse cell are marked as active.
+//
+
+layout(local_size_x = 64) in;
+
+// Input: coarse grid distances
+layout(std430, binding = 0) readonly buffer CoarseDistances {
+    float coarseDistances[];
+};
+
+// Output: list of active fine grid indices
+layout(std430, binding = 1) buffer ActiveIndices {
+    uint indices[];
+};
+
+// Output: atomic counter for number of active indices
+layout(std430, binding = 2) buffer Counter {
+    uint activeCount;
+};
+
+// Parameters
+layout(std140, binding = 3) uniform Params {
+    uint coarseRes;      // Coarse grid resolution (e.g., 64)
+    uint fineRes;        // Fine grid resolution (e.g., 1024)
+    float threshold;     // Distance threshold for "near surface"
+    uint maxIndices;     // Maximum indices we can store
+};
+
+void main() {
+    // Each invocation handles one coarse cell
+    uint coarseCellIdx = gl_GlobalInvocationID.x;
+    uint coarseCellRes = coarseRes - 1u;  // Number of cells = resolution - 1
+    uint totalCoarseCells = coarseCellRes * coarseCellRes * coarseCellRes;
+
+    if (coarseCellIdx >= totalCoarseCells) return;
+
+    // Compute 3D coarse cell coordinates
+    uint ccx = coarseCellIdx % coarseCellRes;
+    uint ccy = (coarseCellIdx / coarseCellRes) % coarseCellRes;
+    uint ccz = coarseCellIdx / (coarseCellRes * coarseCellRes);
+
+    // Check if any corner of this coarse cell is near the surface
+    float minDist = 1e10;
+    for (uint dz = 0u; dz <= 1u; dz++) {
+        for (uint dy = 0u; dy <= 1u; dy++) {
+            for (uint dx = 0u; dx <= 1u; dx++) {
+                uint ix = ccx + dx;
+                uint iy = ccy + dy;
+                uint iz = ccz + dz;
+                uint idx = ix + iy * coarseRes + iz * coarseRes * coarseRes;
+                minDist = min(minDist, abs(coarseDistances[idx]));
+            }
+        }
+    }
+
+    // Skip if not near surface
+    if (minDist >= threshold) return;
+
+    // This coarse cell is near surface - add all fine cells within it
+    uint finePerCoarse = fineRes / coarseRes;
+
+    // Compute fine cell range for this coarse cell
+    uint fineX0 = ccx * finePerCoarse;
+    uint fineY0 = ccy * finePerCoarse;
+    uint fineZ0 = ccz * finePerCoarse;
+    uint fineX1 = min((ccx + 1u) * finePerCoarse + 1u, fineRes);
+    uint fineY1 = min((ccy + 1u) * finePerCoarse + 1u, fineRes);
+    uint fineZ1 = min((ccz + 1u) * finePerCoarse + 1u, fineRes);
+
+    // Add each fine cell index to the active list
+    for (uint fz = fineZ0; fz < fineZ1; fz++) {
+        for (uint fy = fineY0; fy < fineY1; fy++) {
+            for (uint fx = fineX0; fx < fineX1; fx++) {
+                uint fineIdx = fx + fy * fineRes + fz * fineRes * fineRes;
+
+                // Atomically add to the active list
+                uint slot = atomicAdd(activeCount, 1u);
+                if (slot < maxIndices) {
+                    indices[slot] = fineIdx;
+                }
+            }
+        }
+    }
+}
