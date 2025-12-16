@@ -12,7 +12,9 @@
   - [x] with color
   - [x] generate it faster
   - [x] make hand-exploding animation
-- [ ] `make sdf` initialization really slow!
+- [x] `make sdf` initialization really slow!
+  - just by removing cache-clean
+- [ ] print atom
 - [ ] linux
   - [ ] tests
   - [ ] standalone

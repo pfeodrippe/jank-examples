@@ -67,7 +67,10 @@ build-deps: build-jolt build-imgui build-flecs build-raylib
 	@echo "All dependencies built."
 
 # Run targets (clean cache first to avoid stale module issues)
-sdf: clean-cache
+sdf:
+	./bin/run_sdf.sh
+
+sdf-clean: clean-cache
 	./bin/run_sdf.sh
 
 integrated: clean-cache
