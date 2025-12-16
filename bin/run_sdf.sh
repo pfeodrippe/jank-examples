@@ -656,80 +656,13 @@ case "$(uname -s)" in
         ;;
 esac
 
-# Build imgui objects if needed
-if [ ! -f vulkan/imgui/imgui.o ]; then
-    echo "Building imgui..."
-    make -C vulkan/imgui
-fi
-
-# Compile blit shaders if needed
-# Use platform-specific shader compiler (glslangValidator or glslc from shaderc)
-GLSLC=""
-GLSLC_FLAGS=""
-if command -v glslangValidator &> /dev/null; then
-    GLSLC=glslangValidator
-    GLSLC_FLAGS="-V"  # glslangValidator needs -V for SPIR-V output
-elif command -v glslangValidator4 &> /dev/null; then
-    GLSLC=glslangValidator4
-    GLSLC_FLAGS="-V"
-elif command -v glslc &> /dev/null; then
-    GLSLC=glslc
-    GLSLC_FLAGS=""  # glslc auto-detects from file extension
+# Build SDF dependencies using Makefile (with proper dependency tracking)
+if [ "$STANDALONE" = true ]; then
+    echo "Building SDF dependencies (standalone mode)..."
+    make build-sdf-deps-standalone JANK_SRC="$JANK_SRC"
 else
-    echo "Warning: No GLSL compiler found (glslangValidator or glslc), skipping shader compilation"
-fi
-
-if [ -n "$GLSLC" ]; then
-    if [ ! -f vulkan_kim/blit.vert.spv ] || [ vulkan_kim/blit.vert -nt vulkan_kim/blit.vert.spv ]; then
-        echo "Compiling blit.vert with $GLSLC..."
-        $GLSLC $GLSLC_FLAGS vulkan_kim/blit.vert -o vulkan_kim/blit.vert.spv
-    fi
-    if [ ! -f vulkan_kim/blit.frag.spv ] || [ vulkan_kim/blit.frag -nt vulkan_kim/blit.frag.spv ]; then
-        echo "Compiling blit.frag with $GLSLC..."
-        $GLSLC $GLSLC_FLAGS vulkan_kim/blit.frag -o vulkan_kim/blit.frag.spv
-    fi
-    # Mesh preview shaders (needed for mesh rendering in standalone builds)
-    if [ ! -f vulkan_kim/mesh.vert.spv ] || [ vulkan_kim/mesh.vert -nt vulkan_kim/mesh.vert.spv ]; then
-        echo "Compiling mesh.vert with $GLSLC..."
-        $GLSLC $GLSLC_FLAGS vulkan_kim/mesh.vert -o vulkan_kim/mesh.vert.spv
-    fi
-    if [ ! -f vulkan_kim/mesh.frag.spv ] || [ vulkan_kim/mesh.frag -nt vulkan_kim/mesh.frag.spv ]; then
-        echo "Compiling mesh.frag with $GLSLC..."
-        $GLSLC $GLSLC_FLAGS vulkan_kim/mesh.frag -o vulkan_kim/mesh.frag.spv
-    fi
-fi
-
-# Build stb_impl.o if needed
-if [ ! -f vulkan/stb_impl.o ] || [ vulkan/stb_impl.c -nt vulkan/stb_impl.o ]; then
-    echo "Compiling stb_impl..."
-    clang -fPIC -c vulkan/stb_impl.c -o vulkan/stb_impl.o
-fi
-
-# Build tinygltf_impl.o if needed (for GLB/glTF export in standalone builds)
-if [ ! -f vulkan/tinygltf_impl.o ] || [ vulkan/tinygltf_impl.cpp -nt vulkan/tinygltf_impl.o ] || [ vulkan/marching_cubes.hpp -nt vulkan/tinygltf_impl.o ]; then
-    echo "Compiling tinygltf_impl..."
-    clang++ -fPIC -c vulkan/tinygltf_impl.cpp -o vulkan/tinygltf_impl.o \
-        -I. -Ivendor -std=c++17
-fi
-
-# Build vybe_flecs_jank.o if needed (jank-runtime-dependent flecs helpers)
-if [ ! -f vendor/vybe/vybe_flecs_jank.o ] || [ vendor/vybe/vybe_flecs_jank.cpp -nt vendor/vybe/vybe_flecs_jank.o ]; then
-    echo "Compiling vybe_flecs_jank..."
-    # Use jank's clang for header compatibility
-    JANK_CXX="$JANK_SRC/build/llvm-install/usr/local/bin/clang++"
-    "$JANK_CXX" -c vendor/vybe/vybe_flecs_jank.cpp -o vendor/vybe/vybe_flecs_jank.o \
-        -DIMMER_HAS_LIBGC=1 \
-        -I$JANK_SRC/include/cpp \
-        -I$JANK_SRC/third-party \
-        -I$JANK_SRC/third-party/bdwgc/include \
-        -I$JANK_SRC/third-party/immer \
-        -I$JANK_SRC/third-party/bpptree/include \
-        -I$JANK_SRC/third-party/folly \
-        -I$JANK_SRC/third-party/boost-multiprecision/include \
-        -I$JANK_SRC/third-party/boost-preprocessor/include \
-        -I$JANK_SRC/build/llvm-install/usr/local/include \
-        -Ivendor -Ivendor/flecs/distr \
-        -std=c++20 -fPIC
+    echo "Building SDF dependencies (JIT mode)..."
+    make build-sdf-deps JANK_SRC="$JANK_SRC"
 fi
 
 # Object files needed for both JIT and linking
@@ -809,27 +742,8 @@ esac
 if [ "$STANDALONE" = true ]; then
     echo "Building standalone executable: $OUTPUT_NAME"
 
-    # Create a shared library from object files for JIT loading and AOT linking
-    # For standalone builds, include STANDALONE_OBJ_FILES (like tinygltf_impl.o)
+    # Shared library is already built by 'make build-sdf-deps-standalone'
     SHARED_LIB="vulkan/libsdf_deps.$SHARED_LIB_EXT"
-    echo "Creating shared library..."
-
-    ALL_OBJ_FILES=("${OBJ_FILES[@]}" "${STANDALONE_OBJ_FILES[@]}")
-
-    case "$(uname -s)" in
-        Darwin)
-            clang++ -dynamiclib -o "$SHARED_LIB" "${ALL_OBJ_FILES[@]}" \
-                -framework Cocoa -framework IOKit -framework IOSurface -framework Metal -framework QuartzCore \
-                -L/opt/homebrew/lib -lvulkan -lSDL3 -lshaderc_shared \
-                -Wl,-undefined,dynamic_lookup
-            ;;
-        Linux)
-            clang++ -shared -fPIC -o "$SHARED_LIB" "${ALL_OBJ_FILES[@]}" \
-                -L/usr/lib -L/usr/lib/x86_64-linux-gnu -L/usr/lib/aarch64-linux-gnu -L/usr/local/lib \
-                -lvulkan -lSDL3 -lshaderc \
-                -Wl,--allow-shlib-undefined
-            ;;
-    esac
 
     # JIT needs dylibs (for symbol resolution during compilation)
     for lib in "${DYLIBS[@]}"; do
