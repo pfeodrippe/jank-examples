@@ -20,6 +20,7 @@
 (defonce *fill-with-cubes (u/v->p true))      ;; Fill with cubes instead of DC quads (default on)
 (defonce *voxel-size (u/v->p 1.0 "float"))    ;; Voxel size multiplier (1.0 = cell size)
 (defonce *use-gpu-dc (u/v->p true))           ;; Use GPU compute for DC (default on)
+(defonce *auto-rotate (u/v->p false))         ;; Auto-rotate mesh for viewing
 
 (defn new-frame!
   "Start a new ImGui frame. Call before any UI code."
@@ -46,6 +47,23 @@
                             imgui-h/ImGuiCond_FirstUseEver)
     (imgui/Begin "SDF Debug")
     (imgui/Text #cpp "FPS: %.1f" fps)
+    ;; SDF compute status with detailed breakdown
+    (let [mesh-visible (sdfx/get_mesh_preview_visible)
+          mesh-solid (sdfx/get_mesh_render_solid)
+          mesh-initialized (sdfx/get_mesh_pipeline_initialized)
+          mesh-has-indices (> (sdfx/get_mesh_preview_triangle_count) 0)
+          compute-skipped (and mesh-visible mesh-solid mesh-initialized mesh-has-indices)]
+      (if compute-skipped
+        (imgui/TextColored (imgui-h/ImVec4. (cpp/float. 0.0) (cpp/float. 1.0) (cpp/float. 0.0) (cpp/float. 1.0))
+                           "SDF Compute: SKIPPED")
+        (do
+          (imgui/TextColored (imgui-h/ImVec4. (cpp/float. 1.0) (cpp/float. 0.5) (cpp/float. 0.0) (cpp/float. 1.0))
+                             "SDF Compute: RUNNING")
+          ;; Show why it's running
+          (when-not mesh-visible (imgui/Text "  - mesh not visible"))
+          (when-not mesh-solid (imgui/Text "  - solid mode off"))
+          (when-not mesh-initialized (imgui/Text "  - pipeline not init"))
+          (when-not mesh-has-indices (imgui/Text "  - no triangles")))))
     (imgui/Separator)
     (imgui/Text #cpp "Camera:")
     (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (:distance cam)))
@@ -65,6 +83,8 @@
     ;; Solid/wireframe mode checkbox (syncs with engine)
     (imgui/Checkbox "Solid Mode" (cpp/unbox *mesh-solid-mode))
     (sdfx/set_mesh_render_solid (u/p->v *mesh-solid-mode))
+    ;; Auto-rotate checkbox
+    (imgui/Checkbox "Auto Rotate" (cpp/unbox *auto-rotate))
     ;; Mesh scale slider
     (imgui/SliderFloat "Mesh Scale" (cpp/unbox *mesh-scale) (cpp/float. 0.1) (cpp/float. 3.0))
     (sdfx/set_mesh_scale (u/p->v *mesh-scale))
@@ -146,7 +166,13 @@
     ;; Auto-regenerate mesh if needed (e.g., colors toggled)
     (when (and (sdfx/get_mesh_preview_visible)
                (sdfx/mesh_preview_needs_regenerate))
+      (println "REGENERATING MESH!")  ;; Debug: should NOT print continuously!
       (sdfx/generate_mesh_preview (cpp/int. -1))
       (sdfx/clear_mesh_regenerate_flag))
     (imgui/End)
     nil))
+
+(defn auto-rotate?
+  "Check if auto-rotation is enabled."
+  []
+  (u/p->v *auto-rotate))

@@ -73,6 +73,9 @@ sdf:
 sdf-clean: clean-cache
 	./bin/run_sdf.sh
 
+sdf-standalone: clean-cache
+	./bin/run_sdf.sh --standalone -o SDFViewer
+
 integrated: clean-cache
 	./bin/run_integrated.sh
 
@@ -84,7 +87,3 @@ jolt:
 
 test tests: build-flecs
 	./bin/run_tests.sh
-
-# Standalone build
-sdf-standalone: clean-cache
-	./bin/run_sdf.sh --standalone -o SDFViewer

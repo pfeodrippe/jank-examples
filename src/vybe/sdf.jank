@@ -74,6 +74,30 @@
   (println "Objects loaded:" (state/object-count))
   true)
 
+;; Draw
+
+(defn draw
+  [frame-count]
+  (render/poll-events-jank!)
+  (render/sync-edit-mode-from-cpp!)
+  (render/sync-camera-from-cpp!)
+  ;; Auto-rotate when enabled
+  (when (ui/auto-rotate?)
+    (state/update-camera! update :angle-y + 0.01)
+    (render/sync-camera-to-cpp!)
+    (render/set-dirty!))
+  (process-pending-shader-switch!)
+  (shader/check-shader-reload!)
+  ;; (shader/check-mesh-shader-reload!)  ;; Hot reload for mesh shaders - TODO: fix JIT issue
+  (ui/new-frame!)
+  (ui/draw-debug-ui!)
+  (render/update-uniforms! 0.016)
+  (ui/render!)
+  (render/draw-frame!)
+  (when (= frame-count 10)
+    (render/save-screenshot "kim_screenshot.png")
+    (println "Screenshot saved to kim_screenshot.png")))
+
 ;; ============================================================================
 ;; Main Loop
 ;; ============================================================================
@@ -86,20 +110,7 @@
     (loop [frame-count 0]
       (when-not (render/should-close?)
         ;; Use jank-based event handling (events processed in jank!)
-        (render/poll-events-jank!)
-        (render/sync-edit-mode-from-cpp!)
-        (render/sync-camera-from-cpp!)
-        (process-pending-shader-switch!)
-        (shader/check-shader-reload!)
-        ;; (shader/check-mesh-shader-reload!)  ;; Hot reload for mesh shaders - TODO: fix JIT issue
-        (ui/new-frame!)
-        (ui/draw-debug-ui!)
-        (render/update-uniforms! 0.016)
-        (ui/render!)
-        (render/draw-frame!)
-        (when (= frame-count 10)
-          (render/save-screenshot "kim_screenshot.png")
-          (println "Screenshot saved to kim_screenshot.png"))
+        (draw frame-count)
         (recur (inc frame-count))))
     (render/cleanup!)
     (println "")

@@ -22,3 +22,4 @@ sdf-viewer*
 
 *.obj
 *.glb
+.sdf_header_marker

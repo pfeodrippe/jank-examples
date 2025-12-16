@@ -1783,8 +1783,11 @@ inline void draw_frame() {
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // Only run compute shader when dirty (scene changed)
-    if (e->dirty) {
+    // Check if we're in mesh-only mode (skip expensive SDF compute)
+    bool meshOnly = e->meshPreviewVisible && e->meshRenderSolid && e->meshPipelineInitialized && e->meshIndexCount > 0;
+
+    // Only run compute shader when dirty AND not in mesh-only mode
+    if (e->dirty && !meshOnly) {
         // Transition to general
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1818,7 +1821,7 @@ inline void draw_frame() {
             e->dirty = false;
         }
     }
-    // When clean, computeImage is already in SHADER_READ_ONLY_OPTIMAL from previous frame
+    // When clean or mesh-only, computeImage is already in SHADER_READ_ONLY_OPTIMAL from previous frame
 
     // Render pass with depth clear
     VkClearValue clearValues[2] = {};
@@ -1833,9 +1836,6 @@ inline void draw_frame() {
     renderPassInfo.pClearValues = clearValues;
 
     vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-    // If mesh preview is visible and solid mode, skip SDF and render only mesh
-    bool meshOnly = e->meshPreviewVisible && e->meshRenderSolid && e->meshPipelineInitialized && e->meshIndexCount > 0;
 
     if (!meshOnly) {
         // Render SDF raymarching result
@@ -5854,6 +5854,13 @@ inline bool get_mesh_preview_visible() {
     return e ? e->meshPreviewVisible : false;
 }
 
+// Check if SDF compute shader is being skipped (mesh-only mode)
+inline bool is_sdf_compute_skipped() {
+    auto* e = get_engine();
+    if (!e) return false;
+    return e->meshPreviewVisible && e->meshRenderSolid && e->meshPipelineInitialized && e->meshIndexCount > 0;
+}
+
 inline void set_mesh_preview_visible(bool visible) {
     auto* e = get_engine();
     if (!e) return;
@@ -5864,6 +5871,11 @@ inline void set_mesh_preview_visible(bool visible) {
 inline bool get_mesh_render_solid() {
     auto* e = get_engine();
     return e ? e->meshRenderSolid : true;
+}
+
+inline bool get_mesh_pipeline_initialized() {
+    auto* e = get_engine();
+    return e ? e->meshPipelineInitialized : false;
 }
 
 inline void set_mesh_render_solid(bool solid) {
