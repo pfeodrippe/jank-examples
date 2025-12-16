@@ -35,6 +35,10 @@
   []
   (imgui/Render))
 
+#_ (u/enable-metrics!)
+#_ (u/print-metrics)
+#_ (u/reset-metrics!)
+
 (defn draw-debug-ui!
   "Draw debug UI panel using direct ImGui header require."
   []
@@ -142,7 +146,7 @@
           inc-uvs (u/p->v *export-uvs)]
       (when (imgui/Button "Export GLB")
         (let [result (sdfx/export_scene_mesh_gpu "exported_scene.glb" (cpp/int. res)
-                                                  inc-colors inc-uvs)]
+                                                 inc-colors inc-uvs)]
           (if (cpp/.-success result)
             (do
               (println "Exported GLB at" res "res:" (cpp/.-vertices result) "verts,"
@@ -152,7 +156,7 @@
       (imgui/SameLine)
       (when (imgui/Button "Export OBJ")
         (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. res)
-                                                  inc-colors inc-uvs)]
+                                                 inc-colors inc-uvs)]
           (if (cpp/.-success result)
             (do
               (println "Exported OBJ at" res "res:" (cpp/.-vertices result) "verts,"
@@ -166,7 +170,7 @@
     ;; Auto-regenerate mesh if needed (e.g., colors toggled)
     (when (and (sdfx/get_mesh_preview_visible)
                (sdfx/mesh_preview_needs_regenerate))
-      (println "REGENERATING MESH!")  ;; Debug: should NOT print continuously!
+      (println "REGENERATING MESH!") ;; Debug: should NOT print continuously!
       (sdfx/generate_mesh_preview (cpp/int. -1))
       (sdfx/clear_mesh_regenerate_flag))
     (imgui/End)

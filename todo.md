@@ -14,6 +14,9 @@
   - [x] make hand-exploding animation
 - [x] `make sdf` initialization really slow!
   - just by removing cache-clean
+- [x] perf
+  - [x]  unbox/box that's the issue?
+    - unbox
 - [ ] print atom
 - [ ] linux
   - [ ] tests
@@ -34,6 +37,9 @@
 
 - [x] void as nil
   - 97fed5973
+- [ ] unbox perf
+  -
+  - from 360 us to
 
 ## Others
 
