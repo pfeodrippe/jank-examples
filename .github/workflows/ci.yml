@@ -208,17 +208,24 @@ jobs:
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.o
+            ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v8
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v9
+          restore-keys: |
+            jank-build-linux-x64-
 
-      # Cache 3: PCH separately (takes 1h30 to build, rarely changes)
+      # Cache 3: PCH separately (takes 1h30 to build)
+      # Use commit-based key with branch fallback to avoid full rebuilds
       - name: Cache PCH
         id: cache-pch
         uses: actions/cache@v4
         with:
           path: ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-pch-linux-x64-${{ env.JANK_REF }}-v1
+          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v1
+          restore-keys: |
+            jank-pch-linux-x64-
 
       - name: Create swap space
         if: steps.cache-jank.outputs.cache-hit != 'true' || steps.cache-pch.outputs.cache-hit != 'true'
@@ -314,15 +321,21 @@ jobs:
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.o
+            ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v8
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v9
+          restore-keys: |
+            jank-build-linux-x64-
 
       - name: Restore PCH cache
         uses: actions/cache/restore@v4
         with:
           path: ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-pch-linux-x64-${{ env.JANK_REF }}-v1
+          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v1
+          restore-keys: |
+            jank-pch-linux-x64-
 
       - name: Verify jank
         run: |
