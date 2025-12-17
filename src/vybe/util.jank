@@ -219,39 +219,85 @@
   [key-fn coll]
   (reduce #(insert-sorted %1 %2 key-fn) [] coll))
 
+(defn- format-metric-row
+  "Format a single metric row with vector key at the end."
+  [k v ref-total]
+  (let [{:keys [count total-us min-us max-us]} v
+        avg-us (if (> count 0) (/ total-us count) 0)
+        total-ms (/ total-us 1000.0)
+        pct (if (> ref-total 0) (/ (* 100.0 total-us) ref-total) 0.0)]
+    (str (pad-left count 10)
+         (pad-left total-ms 14)
+         (pad-left (str (int pct) "%") 6)
+         (pad-left avg-us 10)
+         (pad-left min-us 8)
+         (pad-left max-us 8)
+         "  " (pr-str k))))
+
+(defn- build-hierarchy
+  "Build a tree of metrics based on vector key prefix relationships.
+   [:A B] is child of [:A], [:A B C] is child of [:A B], etc."
+  [metrics]
+  (let [all-keys (keys metrics)
+        ;; Get total-us for a key, defaulting to 0 if not found
+        get-total (fn [k] (or (:total-us (get metrics k)) 0))
+        ;; Find parent for each key (parent is key without last element)
+        find-parent (fn [k]
+                      (when (and (vector? k) (> (clojure.core/count k) 1))
+                        (let [parent (vec (butlast k))]
+                          (when (contains? metrics parent)
+                            parent))))
+        ;; Group by parent
+        grouped (group-by find-parent all-keys)
+        roots (get grouped nil [])
+        ;; Build tree recursively
+        build-tree (fn build-tree [parent-key]
+                     (let [children (get grouped parent-key [])
+                           sorted-children (sort-by-desc get-total children)]
+                       (mapcat (fn [child]
+                                 (cons child (build-tree child)))
+                               sorted-children)))]
+    ;; Start with roots sorted by total, then their children
+    (let [sorted-roots (sort-by-desc get-total roots)]
+      (mapcat (fn [root]
+                (cons root (build-tree root)))
+              sorted-roots))))
+
+(defn- is-timed-overhead?
+  "Check if key is a :timed/* overhead key."
+  [k]
+  (and (keyword? k) (= "timed" (namespace k))))
+
 (defn print-metrics
   "Print collected metrics sorted by total time (descending).
-   Shows: key, count, total-ms, %, avg-us, min-us, max-us
+   Shows: count, total-ms, %, avg-us, min, max, key (vector with indentation)
 
-   By default, excludes :timed/* overhead and main wrapper, showing real work percentages.
-   Pass true to include all metrics (overhead + main wrapper) in full report."
+   By default, excludes :timed/* overhead, showing real work percentages.
+   Pass true to include all metrics (overhead) in full report."
   ([] (print-metrics false))
   ([show-overhead?]
    (let [metrics @*metrics*
-         ;; Filter out :timed/* keys
-         non-overhead (into {} (filter (fn [[k _]] (not (= "timed" (namespace k)))) metrics))
-         ;; Find the main wrapper (key with largest total time that's not :timed/*)
+         ;; Filter out :timed/* keys unless showing overhead
+         non-overhead (into {} (filter (fn [[k _]] (not (is-timed-overhead? k))) metrics))
+         ;; Find the main wrapper (shortest vector or largest total)
          main-entry (first (sort-by-desc (fn [[_ v]] (:total-us v)) non-overhead))
          main-key (if main-entry (first main-entry) nil)
          main-total (if main-entry (:total-us (second main-entry)) 0)
-         ;; For default: exclude main wrapper too, show only child operations
-         ;; For full: show everything including overhead
-         filtered (if show-overhead?
-                    metrics
-                    (into {} (filter (fn [[k _]] (and (not (= "timed" (namespace k)))
-                                                      (not (= k main-key)))) metrics)))
-         sorted (sort-by-desc (fn [[_ v]] (:total-us v)) filtered)
-         ;; Sum of child operations (real work)
+         ;; For display, include all non-overhead
+         filtered (if show-overhead? metrics non-overhead)
+         ;; Sum of non-root operations (real work)
          work-total (reduce + 0 (map (fn [[_ v]] (:total-us v))
-                                     (filter (fn [[k _]] (and (not (= "timed" (namespace k)))
+                                     (filter (fn [[k _]] (and (not (is-timed-overhead? k))
                                                               (not (= k main-key)))) non-overhead)))
          ;; Sum of overhead
          overhead-total (reduce + 0 (map (fn [[_ v]] (:total-us v))
-                                         (filter (fn [[k _]] (= "timed" (namespace k))) metrics)))
+                                         (filter (fn [[k _]] (is-timed-overhead? k)) metrics)))
          ;; Reference for percentages
          ref-total (if show-overhead?
                      (reduce + 0 (map (fn [[_ v]] (:total-us v)) metrics))
-                     work-total)]
+                     work-total)
+         ;; Build hierarchical order
+         ordered-keys (build-hierarchy filtered)]
      (println (if show-overhead?
                 "\n=== METRICS (FULL WITH OVERHEAD) ==="
                 "\n=== METRICS (REAL WORK) ==="))
@@ -261,26 +307,17 @@
                      (int (/ (* 100.0 work-total) main-total)) "%)"))
        (println (str "Overhead: " (/ overhead-total 1000.0) " ms ("
                      (int (/ (* 100.0 overhead-total) main-total)) "%)")))
-     (println (str (pad-right "Key" 40)
-                   (pad-left "Count" 10)
+     (println (str (pad-left "Count" 10)
                    (pad-left "Total(ms)" 14)
-                   (pad-left "%" 8)
-                   (pad-left "Avg(us)" 12)
-                   (pad-left "Min" 10)
-                   (pad-left "Max" 10)))
-     (println (apply str (repeat 104 "-")))
-     (doseq [[k v] sorted]
-       (let [{:keys [count total-us min-us max-us]} v
-             avg-us (if (> count 0) (/ total-us count) 0)
-             total-ms (/ total-us 1000.0)
-             pct (if (> ref-total 0) (/ (* 100.0 total-us) ref-total) 0.0)]
-         (println (str (pad-right (str k) 40)
-                       (pad-left count 10)
-                       (pad-left total-ms 14)
-                       (pad-left (str (int pct) "%") 8)
-                       (pad-left avg-us 12)
-                       (pad-left min-us 10)
-                       (pad-left max-us 10)))))
+                   (pad-left "%" 6)
+                   (pad-left "Avg(us)" 10)
+                   (pad-left "Min" 8)
+                   (pad-left "Max" 8)
+                   "  Key"))
+     (println (apply str (repeat 80 "-")))
+     (doseq [k ordered-keys]
+       (let [v (get filtered k)]
+         (println (format-metric-row k v ref-total))))
      (println "=======\n"))))
 
 (defmacro timed
@@ -323,76 +360,82 @@
 
 (declare wrap-form)
 
+(defn- make-form-name
+  "Convert a form head to a keyword for the path (keywords don't get evaluated).
+   Preserves namespace: imgui/Text -> :imgui/Text, cpp/float. -> :cpp/float."
+  [f]
+  (cond
+    (symbol? f) (keyword (namespace f) (name f))
+    (keyword? f) f
+    :else :anon))
+
 (defn- wrap-bindings
   "Wrap binding expressions in a let/let* vector.
-   [x (foo) y (bar)] -> [x (timed :prefix/foo (foo)) y (timed :prefix/bar (bar))]"
-  [prefix bindings]
+   [x (foo) y (bar)] -> [x (timed [:path foo] (foo)) y (timed [:path bar] (bar))]"
+  [path bindings]
   (loop [result []
          remaining (seq bindings)]
     (if (empty? remaining)
       result
       (let [sym (first remaining)
             expr (second remaining)
-            wrapped-expr (wrap-form prefix expr)]
+            wrapped-expr (wrap-form path expr)]
         (recur (conj result sym wrapped-expr)
                (drop 2 remaining))))))
 
 (defn- wrap-form
-  "Recursively wrap a form with timing. Returns the wrapped form."
-  [prefix form]
+  "Recursively wrap a form with timing. Returns the wrapped form.
+   path is a vector like [:AA] that gets extended as we recurse into nested calls."
+  [path form]
   (if-not (seq? form)
     form
     (let [head (first form)
-          make-key (fn [f]
-                     (keyword (str (clojure.core/name prefix) "/"
-                                   (cond
-                                     (symbol? f) (replace-slash (str f))
-                                     (keyword? f) (replace-slash (name f))
-                                     :else "anon"))))]
+          form-name (make-form-name head)
+          new-path (conj path form-name)]
       (cond
         ;; do block - wrap each child
         (= head 'do)
-        (let [wrapped-children (map #(wrap-form prefix %) (rest form))]
+        (let [wrapped-children (map #(wrap-form path %) (rest form))]
           `(do ~@wrapped-children))
 
         ;; let block - wrap binding expressions AND body forms
         (= head 'let)
         (let [bindings (second form)
               body (drop 2 form)
-              wrapped-bindings (wrap-bindings prefix bindings)
-              wrapped-body (map #(wrap-form prefix %) body)]
+              wrapped-bindings (wrap-bindings path bindings)
+              wrapped-body (map #(wrap-form path %) body)]
           `(let ~wrapped-bindings ~@wrapped-body))
 
         ;; let* block - wrap binding expressions AND body forms
         (= head 'let*)
         (let [bindings (second form)
               body (drop 2 form)
-              wrapped-bindings (wrap-bindings prefix bindings)
-              wrapped-body (map #(wrap-form prefix %) body)]
+              wrapped-bindings (wrap-bindings path bindings)
+              wrapped-body (map #(wrap-form path %) body)]
           `(let* ~wrapped-bindings ~@wrapped-body))
 
         ;; when block - wrap test AND body forms
         (= head 'when)
         (let [test (second form)
               body (drop 2 form)
-              wrapped-test (wrap-form prefix test)
-              wrapped-body (map #(wrap-form prefix %) body)]
+              wrapped-test (wrap-form path test)
+              wrapped-body (map #(wrap-form path %) body)]
           `(when ~wrapped-test ~@wrapped-body))
 
         ;; when-not block - wrap test AND body forms
         (= head 'when-not)
         (let [test (second form)
               body (drop 2 form)
-              wrapped-test (wrap-form prefix test)
-              wrapped-body (map #(wrap-form prefix %) body)]
+              wrapped-test (wrap-form path test)
+              wrapped-body (map #(wrap-form path %) body)]
           `(when-not ~wrapped-test ~@wrapped-body))
 
         ;; when-let - wrap binding expression and body
         (= head 'when-let)
         (let [bindings (second form)
               body (drop 2 form)
-              wrapped-bindings (wrap-bindings prefix bindings)
-              wrapped-body (map #(wrap-form prefix %) body)]
+              wrapped-bindings (wrap-bindings path bindings)
+              wrapped-body (map #(wrap-form path %) body)]
           `(when-let ~wrapped-bindings ~@wrapped-body))
 
         ;; if-let - wrap binding expression and branches
@@ -400,82 +443,83 @@
         (let [bindings (second form)
               then-form (nth form 2)
               else-form (when (> (clojure.core/count form) 3) (nth form 3))
-              wrapped-bindings (wrap-bindings prefix bindings)]
+              wrapped-bindings (wrap-bindings path bindings)]
           (if else-form
             `(if-let ~wrapped-bindings
-               ~(wrap-form prefix then-form)
-               ~(wrap-form prefix else-form))
+               ~(wrap-form path then-form)
+               ~(wrap-form path else-form))
             `(if-let ~wrapped-bindings
-               ~(wrap-form prefix then-form))))
+               ~(wrap-form path then-form))))
 
         ;; if block - wrap test, then and else
         (= head 'if)
         (let [test (second form)
               then-form (nth form 2)
               else-form (when (> (clojure.core/count form) 3) (nth form 3))
-              wrapped-test (wrap-form prefix test)]
+              wrapped-test (wrap-form path test)]
           (if else-form
             `(if ~wrapped-test
-               ~(wrap-form prefix then-form)
-               ~(wrap-form prefix else-form))
+               ~(wrap-form path then-form)
+               ~(wrap-form path else-form))
             `(if ~wrapped-test
-               ~(wrap-form prefix then-form))))
+               ~(wrap-form path then-form))))
 
         ;; doseq - wrap binding expressions and body
         (= head 'doseq)
         (let [bindings (second form)
               body (drop 2 form)
-              wrapped-bindings (wrap-bindings prefix bindings)
-              wrapped-body (map #(wrap-form prefix %) body)]
+              wrapped-bindings (wrap-bindings path bindings)
+              wrapped-body (map #(wrap-form path %) body)]
           `(doseq ~wrapped-bindings ~@wrapped-body))
 
         ;; -> threading macro - wrap the initial value and each step
         (= head '->)
         (let [init (second form)
               steps (drop 2 form)
-              wrapped-init (wrap-form prefix init)]
+              wrapped-init (wrap-form path init)]
           ;; For threading, wrap the whole pipeline as a single operation
-          `(timed ~(make-key '->) (-> ~wrapped-init ~@steps)))
+          `(timed ~new-path (-> ~wrapped-init ~@steps)))
 
         ;; ->> threading macro
         (= head '->>)
         (let [init (second form)
               steps (drop 2 form)
-              wrapped-init (wrap-form prefix init)]
-          `(timed ~(make-key '->>) (->> ~wrapped-init ~@steps)))
+              wrapped-init (wrap-form path init)]
+          `(timed ~new-path (->> ~wrapped-init ~@steps)))
 
         ;; cond - wrap both test AND result forms
         (= head 'cond)
         (let [pairs (partition 2 (rest form))
               wrapped-pairs (mapcat (fn [[test result]]
-                                      [(wrap-form prefix test) (wrap-form prefix result)])
+                                      [(wrap-form path test) (wrap-form path result)])
                                     pairs)]
           `(cond ~@wrapped-pairs))
 
-        ;; Regular function call - wrap the call AND recursively wrap call-form arguments
-        ;; Only skip cpp/value forms (from #cpp "...") - they return C++ string types that can't be stored in let
+        ;; Regular function call - wrap the call AND recursively wrap nested args with extended path
+        ;; Only skip cpp/value forms (from #cpp "...") - they return C++ string types
         :else
         (let [cpp-value-form? (fn [f] (and (seq? f)
                                            (= (first f) 'cpp/value)))
+              ;; Wrap nested args with the NEW path (including this form)
               wrapped-args (map #(if (and (seq? %) (not (cpp-value-form? %)))
-                                   (wrap-form prefix %)
+                                   (wrap-form new-path %)
                                    %)
                                 (rest form))]
-          `(timed ~(make-key head) (~head ~@wrapped-args)))))))
+          `(timed ~new-path (~head ~@wrapped-args)))))))
 
 (defmacro with-metrics
   "Wrap a body of forms, timing each form recursively.
-   Keys are auto-generated from form structure.
+   Keys are vectors showing the call path.
 
    Usage:
      (with-metrics :draw-ui
-       (imgui/Begin \"Window\")      ; timed as :draw-ui/imgui-Begin
-       (do
-         (imgui/Text \"Hello\")      ; timed as :draw-ui/imgui-Text
-         (imgui/End)))              ; timed as :draw-ui/imgui-End"
+       (imgui/Begin \"Window\")      ; timed as [:draw-ui imgui-Begin]
+       (imgui/Text (format x))      ; timed as [:draw-ui imgui-Text] and [:draw-ui imgui-Text format]
+       (imgui/End))                 ; timed as [:draw-ui imgui-End]"
   [name & body]
-  (let [wrapped (map #(wrap-form name %) body)]
-    `(timed ~name (do ~@wrapped))))
+  (let [root-path [name]
+        wrapped (map #(wrap-form root-path %) body)]
+    `(timed ~root-path (do ~@wrapped))))
 
 (defmacro profile
   "Profile a function body, timing each top-level form.
