@@ -817,6 +817,7 @@ inline void load_shader_by_name(const std::string& name) {
     std::cout << "[DEBUG] load_shader_by_name: COMPLETE! Loaded shader: " << name << std::endl;
 }
 
+// Returns UINT32_MAX if no suitable memory type found
 inline uint32_t find_memory_type(Engine* e, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(e->physicalDevice, &memProperties);
@@ -826,7 +827,9 @@ inline uint32_t find_memory_type(Engine* e, uint32_t typeFilter, VkMemoryPropert
             return i;
         }
     }
-    return 0;
+    std::cerr << "ERROR: No suitable memory type found for properties 0x"
+              << std::hex << properties << std::dec << std::endl;
+    return UINT32_MAX;
 }
 
 inline std::vector<char> read_file(const std::string& filename) {
@@ -3413,6 +3416,12 @@ inline bool init_dc_pipeline(int resolution, bool cubesOnly = false) {
         allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
+        if (allocInfo.memoryTypeIndex == UINT32_MAX) {
+            std::cerr << "ERROR: No host-visible memory type available for DC buffer" << std::endl;
+            vkDestroyBuffer(e->device, buffer, nullptr);
+            return false;
+        }
+
         if (vkAllocateMemory(e->device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
             return false;
         }
@@ -3935,18 +3944,42 @@ inline mc::Mesh process_dc_chunk(
 
     // Read back results
     uint32_t vertexCount, indexCount;
-    vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    VkResult mapResult;
+
+    mapResult = vkMapMemory(e->device, dc->vertexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    if (mapResult != VK_SUCCESS) {
+        std::cerr << "ERROR: vkMapMemory failed for vertexCountMemory: " << mapResult << std::endl;
+        return mesh;
+    }
     memcpy(&vertexCount, data, sizeof(uint32_t));
     vkUnmapMemory(e->device, dc->vertexCountMemory);
 
-    vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    mapResult = vkMapMemory(e->device, dc->indexCountMemory, 0, sizeof(uint32_t), 0, &data);
+    if (mapResult != VK_SUCCESS) {
+        std::cerr << "ERROR: vkMapMemory failed for indexCountMemory: " << mapResult << std::endl;
+        return mesh;
+    }
     memcpy(&indexCount, data, sizeof(uint32_t));
     vkUnmapMemory(e->device, dc->indexCountMemory);
 
     if (vertexCount == 0 || indexCount == 0) return mesh;
 
+    // Sanity check: avoid reading too much data (could indicate GPU corruption)
+    const uint32_t MAX_REASONABLE_VERTICES = 10000000;  // 10M vertices
+    const uint32_t MAX_REASONABLE_INDICES = 50000000;   // 50M indices
+    if (vertexCount > MAX_REASONABLE_VERTICES || indexCount > MAX_REASONABLE_INDICES) {
+        std::cerr << "ERROR: Unreasonable vertex/index count from GPU: vertices="
+                  << vertexCount << ", indices=" << indexCount << std::endl;
+        return mesh;
+    }
+
     mesh.vertices.resize(vertexCount);
-    vkMapMemory(e->device, dc->vertexMemory, 0, vertexCount * sizeof(float) * 4, 0, &data);
+    mapResult = vkMapMemory(e->device, dc->vertexMemory, 0, vertexCount * sizeof(float) * 4, 0, &data);
+    if (mapResult != VK_SUCCESS) {
+        std::cerr << "ERROR: vkMapMemory failed for vertexMemory: " << mapResult << std::endl;
+        mesh.vertices.clear();
+        return mesh;
+    }
     float* verts = (float*)data;
     for (uint32_t i = 0; i < vertexCount; i++) {
         mesh.vertices[i] = {verts[i*4], verts[i*4+1], verts[i*4+2]};
@@ -3954,7 +3987,13 @@ inline mc::Mesh process_dc_chunk(
     vkUnmapMemory(e->device, dc->vertexMemory);
 
     mesh.indices.resize(indexCount);
-    vkMapMemory(e->device, dc->indexMemory, 0, indexCount * sizeof(uint32_t), 0, &data);
+    mapResult = vkMapMemory(e->device, dc->indexMemory, 0, indexCount * sizeof(uint32_t), 0, &data);
+    if (mapResult != VK_SUCCESS) {
+        std::cerr << "ERROR: vkMapMemory failed for indexMemory: " << mapResult << std::endl;
+        mesh.vertices.clear();
+        mesh.indices.clear();
+        return mesh;
+    }
     memcpy(mesh.indices.data(), data, indexCount * sizeof(uint32_t));
     vkUnmapMemory(e->device, dc->indexMemory);
 
@@ -4887,6 +4926,12 @@ inline bool init_color_sampler(size_t numPoints) {
         allocInfo.allocationSize = memReq.size;
         allocInfo.memoryTypeIndex = find_memory_type(e, memReq.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        if (allocInfo.memoryTypeIndex == UINT32_MAX) {
+            std::cerr << "ERROR: No host-visible memory type available for color sampler buffer" << std::endl;
+            vkDestroyBuffer(e->device, buffer, nullptr);
+            return false;
+        }
 
         if (vkAllocateMemory(e->device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
             return false;

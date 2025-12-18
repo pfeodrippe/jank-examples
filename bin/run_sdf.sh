@@ -536,7 +536,7 @@ CLANG_WRAPPER
     local SYSTEM_LIBS=(
         libvulkan.so
         libSDL3.so
-        libshaderc.so
+        libshaderc_shared.so
     )
 
     for lib in "${SYSTEM_LIBS[@]}"; do
@@ -729,7 +729,7 @@ case "$(uname -s)" in
         )
         # Find SDL3 and Vulkan libraries on Linux
         DYLIBS=()
-        for lib in libvulkan.so libSDL3.so libshaderc.so; do
+        for lib in libvulkan.so libSDL3.so libshaderc_shared.so; do
             lib_path=$(ldconfig -p 2>/dev/null | grep "$lib" | head -1 | awk '{print $NF}')
             if [ -n "$lib_path" ] && [ -f "$lib_path" ]; then
                 DYLIBS+=("$lib_path")

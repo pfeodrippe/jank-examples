@@ -140,10 +140,35 @@ vendor/vybe/vybe_flecs_jank.o: vendor/vybe/vybe_flecs_jank.cpp vendor/vybe/vybe_
 # Shader compilation
 # ============================================================================
 
-SHADERS_SPV = vulkan_kim/blit.vert.spv vulkan_kim/blit.frag.spv \
-              vulkan_kim/mesh.vert.spv vulkan_kim/mesh.frag.spv
+# Basic rendering shaders
+SHADERS_BASIC = vulkan_kim/blit.vert.spv vulkan_kim/blit.frag.spv \
+                vulkan_kim/mesh.vert.spv vulkan_kim/mesh.frag.spv
 
-vulkan_kim/%.spv: vulkan_kim/%
+# Compute shaders for SDF and mesh generation
+SHADERS_COMPUTE = vulkan_kim/sdf_sampler.spv vulkan_kim/sdf_scene.spv \
+                  vulkan_kim/dc_mark_active.spv vulkan_kim/dc_vertices.spv \
+                  vulkan_kim/dc_quads.spv vulkan_kim/dc_cubes.spv
+
+# All shaders
+SHADERS_SPV = $(SHADERS_BASIC) $(SHADERS_COMPUTE)
+
+# Compile vertex/fragment shaders (blit.vert -> blit.vert.spv)
+vulkan_kim/%.vert.spv: vulkan_kim/%.vert
+ifdef GLSLC
+	$(GLSLC) $(GLSLC_FLAGS) $< -o $@
+else
+	@echo "Warning: No GLSL compiler found, skipping $@"
+endif
+
+vulkan_kim/%.frag.spv: vulkan_kim/%.frag
+ifdef GLSLC
+	$(GLSLC) $(GLSLC_FLAGS) $< -o $@
+else
+	@echo "Warning: No GLSL compiler found, skipping $@"
+endif
+
+# Compile compute shaders (dc_mark_active.comp -> dc_mark_active.spv)
+vulkan_kim/%.spv: vulkan_kim/%.comp
 ifdef GLSLC
 	$(GLSLC) $(GLSLC_FLAGS) $< -o $@
 else

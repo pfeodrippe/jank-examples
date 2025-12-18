@@ -39,6 +39,8 @@
 #_ (u/print-metrics)
 #_ (u/reset-metrics!)
 
+#_ (require '[jank.compiler :as jc])
+
 (defn draw-debug-ui!
   "Draw debug UI panel using direct ImGui header require."
   []
