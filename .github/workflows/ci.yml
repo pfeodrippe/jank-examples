@@ -254,8 +254,24 @@ jobs:
     name: Build and Test - Linux
     needs: [get-jank-commit, build-jank-linux]
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
+      - name: Free disk space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h
+          # Remove large pre-installed tools we don't need
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          # Clean apt cache
+          sudo apt-get clean
+          echo "=== Disk space after cleanup ==="
+          df -h
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -263,11 +279,13 @@ jobs:
 
       - name: Create swap space
         run: |
+          # 8GB swap for jank AOT compilation (reduced to save disk space)
           sudo fallocate -l 8G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
           free -h
+          df -h
 
       - name: Clone jank (for source files)
         run: |
@@ -334,8 +352,8 @@ jobs:
         with:
           path: ~/jank/compiler+runtime/build/incremental.pch
           key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v1
-          restore-keys: |
-            jank-pch-linux-x64-
+          # NO restore-keys fallback! PCH must match exact commit or it will fail with
+          # "file has been modified since the precompiled header was built"
 
       - name: Verify jank
         run: |
@@ -353,7 +371,12 @@ jobs:
       - name: Build standalone app
         run: |
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make sdf-standalone
+          echo "=== Starting build at $(date) ==="
+          echo "=== Memory status ==="
+          free -h
+          echo "=== Running full standalone build ==="
+          time make sdf-standalone
+          echo "=== Build complete at $(date) ==="
 
       - name: Upload Linux tarball artifact
         uses: actions/upload-artifact@v4

@@ -182,8 +182,12 @@ build-shaders: $(SHADERS_SPV)
 # SDF dependencies shared library
 # ============================================================================
 
+# Miniaudio object (impl file lives outside submodule so it's tracked by git)
+vendor/vybe/miniaudio.o: vendor/vybe/miniaudio_impl.c vendor/miniaudio/miniaudio.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Object files needed for JIT mode
-SDF_JIT_OBJS = $(IMGUI_VULKAN_OBJS) vulkan/stb_impl.o vendor/flecs/distr/flecs.o vendor/vybe/vybe_flecs_jank.o
+SDF_JIT_OBJS = $(IMGUI_VULKAN_OBJS) vulkan/stb_impl.o vendor/flecs/distr/flecs.o vendor/vybe/vybe_flecs_jank.o vendor/vybe/miniaudio.o
 
 # Additional objects only needed for standalone (AOT) builds
 SDF_STANDALONE_OBJS = vulkan/tinygltf_impl.o
@@ -221,6 +225,7 @@ clean: clean-cache
 	rm -rf vendor/imgui/build/*.o
 	rm -rf vendor/vybe/vybe_flecs_jank.o
 	rm -rf vendor/flecs/distr/flecs.o
+	rm -rf vendor/vybe/miniaudio.o
 	rm -rf vendor/jolt_wrapper.o
 	rm -rf vendor/JoltPhysics/build
 	rm -rf vendor/JoltPhysics/distr/objs

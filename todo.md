@@ -17,22 +17,22 @@
 - [x] perf
   - [x]  unbox/box that's the issue?
     - unbox
-- [ ] draw-debug-ui! form is really slow to compile/eval
-- [ ] print atom
-- [ ] linux
-  - [ ] tests
-  - [ ] standalone
-- [ ] audio
-  - [ ] most simple audio lib to use
-    - [ ] miniaudio ?
+- [x] audio
+  - [x] most simple audio lib to use
+    - [x] miniaudio ?
       - https://github.com/mackron/miniaudio
       - https://miniaud.io/docs/manual
+- [x] draw-debug-ui! form is really slow to compile/eval
 - [-] when we evaluate `should-close?` via the nREPL .app (after evaluating`(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")`), we have the app closing
   - better to just move things to jank as much as possible
 - [ ] ios sample
   - townscaper-like
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
+- [ ] print atom
+- [ ] linux
+  - [ ] tests
+  - [ ] standalone
 
 ## Jank
 

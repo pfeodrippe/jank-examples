@@ -140,6 +140,15 @@ The Linux build script was looking for `libshaderc.so` but Ubuntu names it `libs
 - Line 539: `libshaderc.so` -> `libshaderc_shared.so`
 - Line 732: `libshaderc.so` -> `libshaderc_shared.so`
 
+## CI Timeout Fix
+
+The Linux build was timing out after ~51 minutes during `jank compile` (AOT compilation is memory-intensive).
+
+**Fixed in**: `.github/workflows/ci.yml`
+- Increased swap from 8GB to 16GB
+- Increased timeout from 60 to 90 minutes
+- Added timing output for debugging
+
 ## Next Steps
 
 1. Push these fixes and verify CI build includes all shaders

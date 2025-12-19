@@ -676,6 +676,7 @@ OBJ_FILES=(
     vulkan/stb_impl.o
     vendor/flecs/distr/flecs.o
     vendor/vybe/vybe_flecs_jank.o
+    vendor/vybe/miniaudio.o
 )
 
 # Additional object files only needed for standalone (AOT) builds
@@ -696,6 +697,7 @@ case "$(uname -s)" in
             -Ivendor/imgui
             -Ivendor/imgui/backends
             -Ivendor/flecs/distr
+            -Ivendor/miniaudio
             -L/opt/homebrew/lib
             --framework Cocoa
             --framework IOKit
@@ -721,6 +723,7 @@ case "$(uname -s)" in
             -Ivendor/imgui
             -Ivendor/imgui/backends
             -Ivendor/flecs/distr
+            -Ivendor/miniaudio
             -L/usr/lib
             -L/usr/lib/x86_64-linux-gnu
             -L/usr/lib/aarch64-linux-gnu

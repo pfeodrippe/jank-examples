@@ -1,0 +1,301 @@
+(ns vybe.audio
+  (:require
+   ;; Miniaudio C API
+   ["miniaudio/miniaudio.h" :as ma :scope ""]))
+
+;; ============================================================================
+;; Global Engine State
+;; ============================================================================
+;; Using defonce + cpp/new to persist across REPL reloads
+
+;; Pointer-to-pointer so we can set/unset the engine
+(defonce engine-ptr-box
+  (cpp/box (cpp/new (cpp/type "ma_engine*") cpp/nullptr)))
+
+;; Macros for returning native types (inlines at call site)
+(defmacro get-engine-ptr
+  "Get pointer to the global engine pointer (for init/uninit)"
+  []
+  `(cpp/unbox (cpp/type "ma_engine**") engine-ptr-box))
+
+(defmacro get-engine
+  "Get the global engine (or nullptr if not initialized)"
+  []
+  `(cpp/* (get-engine-ptr)))
+
+;; ============================================================================
+;; Engine Lifecycle
+;; ============================================================================
+
+(defn init!
+  "Initialize the global audio engine (or restart if stopped).
+   Returns true on success, false on failure."
+  []
+  (let* [pp (get-engine-ptr)]
+    (if (not (cpp/! (cpp/* pp)))
+      ;; Already initialized - make sure it's running
+      (do
+        (ma/ma_engine_start (cpp/* pp))
+        true)
+      ;; Initialize new engine
+      (let* [engine (cpp/new cpp/ma_engine)
+             result (ma/ma_engine_init cpp/nullptr engine)]
+        (if (cpp/== result ma/MA_SUCCESS)
+          (do
+            (cpp/= (cpp/* pp) engine)
+            true)
+          (do
+            (cpp/delete engine)
+            false))))))
+
+(defn uninit!
+  "Shutdown the global audio engine."
+  []
+  (let* [pp (get-engine-ptr)
+         engine (cpp/* pp)]
+    (when (not (cpp/! engine))
+      (ma/ma_engine_uninit engine)
+      (cpp/delete engine)
+      (cpp/= (cpp/* pp) (cpp/cast (cpp/type "ma_engine*") cpp/nullptr))
+      nil)))
+
+(defn initialized?
+  "Check if audio engine is initialized."
+  []
+  (not (cpp/! (get-engine))))
+
+;; ============================================================================
+;; Simple Fire-and-Forget Playback
+;; ============================================================================
+
+(defn play!
+  "Play a sound file (fire and forget).
+   Returns true on success."
+  [file-path]
+  (let* [engine (get-engine)]
+    (if (cpp/! engine)
+      false
+      (cpp/== (ma/ma_engine_play_sound engine file-path cpp/nullptr)
+              ma/MA_SUCCESS))))
+
+;; ============================================================================
+;; Engine Controls
+;; ============================================================================
+
+(defn set-volume!
+  "Set master volume (0.0 to 1.0+)"
+  [volume]
+  (let* [engine (get-engine)]
+    (when (not (cpp/! engine))
+      (ma/ma_engine_set_volume engine (cpp/float. volume))
+      nil)))
+
+(defn get-volume
+  "Get master volume"
+  []
+  (let* [engine (get-engine)]
+    (if (cpp/! engine)
+      0.0
+      (ma/ma_engine_get_volume engine))))
+
+(defn start!
+  "Start the audio engine (if stopped)"
+  []
+  (let* [engine (get-engine)]
+    (if (cpp/! engine)
+      false
+      (cpp/== (ma/ma_engine_start engine) ma/MA_SUCCESS))))
+
+(defn stop!
+  "Stop the audio engine"
+  []
+  (let* [engine (get-engine)]
+    (if (cpp/! engine)
+      false
+      (cpp/== (ma/ma_engine_stop engine) ma/MA_SUCCESS))))
+
+;; ============================================================================
+;; Managed Sound Objects
+;; ============================================================================
+;; Use these when you need pause/resume, volume control, or positioning
+
+(defn sound
+  "Create a sound from a file path.
+   Returns a boxed ma_sound* or nil on failure.
+   Must be destroyed with sound-destroy! when done."
+  [file-path]
+  (let* [engine (get-engine)]
+    (if (cpp/! engine)
+      nil
+      (let* [snd (cpp/new cpp/ma_sound)
+             result (ma/ma_sound_init_from_file engine file-path
+                                                (cpp/ma_uint32. 0)
+                                                cpp/nullptr cpp/nullptr snd)]
+        (if (cpp/== result ma/MA_SUCCESS)
+          (cpp/box snd)
+          (do
+            (cpp/delete snd)
+            nil))))))
+
+(defn sound-destroy!
+  "Destroy a sound object"
+  [snd-box]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_uninit snd)
+      (cpp/delete snd)))
+  nil)
+
+(defn sound-start!
+  "Start playing a sound"
+  [snd-box]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (cpp/== (ma/ma_sound_start snd) ma/MA_SUCCESS))))
+
+(defn sound-stop!
+  "Stop a sound"
+  [snd-box]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (cpp/== (ma/ma_sound_stop snd) ma/MA_SUCCESS))))
+
+(defn sound-set-volume!
+  "Set sound volume (0.0 to 1.0+)"
+  [snd-box volume]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_set_volume snd (cpp/float. volume))))
+  nil)
+
+(defn sound-get-volume
+  "Get sound volume"
+  [snd-box]
+  (if snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_get_volume snd))
+    0.0))
+
+(defn sound-set-pitch!
+  "Set sound pitch (1.0 = normal)"
+  [snd-box pitch]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_set_pitch snd (cpp/float. pitch))))
+  nil)
+
+(defn sound-set-pan!
+  "Set sound pan (-1 = left, 0 = center, 1 = right)"
+  [snd-box pan]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_set_pan snd (cpp/float. pan))))
+  nil)
+
+(defn sound-set-looping!
+  "Set whether sound should loop"
+  [snd-box looping?]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_set_looping snd (if looping? ma/MA_TRUE ma/MA_FALSE))))
+  nil)
+
+(defn sound-playing?
+  "Check if sound is currently playing"
+  [snd-box]
+  (if snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (cpp/== (ma/ma_sound_is_playing snd) ma/MA_TRUE))
+    false))
+
+(defn sound-at-end?
+  "Check if sound has reached the end"
+  [snd-box]
+  (if snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (cpp/== (ma/ma_sound_at_end snd) ma/MA_TRUE))
+    true))
+
+(defn sound-seek!
+  "Seek to position in PCM frames"
+  [snd-box frame-index]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_seek_to_pcm_frame snd (cpp/ma_uint64. frame-index))))
+  nil)
+
+;; ============================================================================
+;; 3D Spatialization
+;; ============================================================================
+
+(defn sound-set-position!
+  "Set 3D position of a sound"
+  [snd-box x y z]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_set_position snd
+                                (cpp/float. x)
+                                (cpp/float. y)
+                                (cpp/float. z))))
+  nil)
+
+(defn sound-set-spatialization!
+  "Enable/disable 3D spatialization for a sound"
+  [snd-box enabled?]
+  (when snd-box
+    (let [snd (cpp/unbox (cpp/type "ma_sound*") snd-box)]
+      (ma/ma_sound_set_spatialization_enabled snd
+                                              (if enabled? ma/MA_TRUE ma/MA_FALSE))))
+  nil)
+
+(defn set-listener-position!
+  "Set listener position for 3D audio"
+  [x y z]
+  (let* [engine (get-engine)]
+    (when (not (cpp/! engine))
+      (ma/ma_engine_listener_set_position engine
+                                          (cpp/ma_uint32. 0)
+                                          (cpp/float. x)
+                                          (cpp/float. y)
+                                          (cpp/float. z))
+      nil)))
+
+(defn set-listener-direction!
+  "Set listener direction (forward vector) for 3D audio"
+  [x y z]
+  (let* [engine (get-engine)]
+    (when (not (cpp/! engine))
+      (ma/ma_engine_listener_set_direction engine
+                                           (cpp/ma_uint32. 0)
+                                           (cpp/float. x)
+                                           (cpp/float. y)
+                                           (cpp/float. z))
+      nil)))
+
+ (comment
+
+   (let [_ (init!)
+         wf-config (ma/ma_waveform_config_init
+                    ma/ma_format_f32
+                    (cpp/ma_uint32. 2)
+                    (cpp/ma_uint32. 48000)
+                    ma/ma_waveform_type_sine
+                    (cpp/double. 0.2)    ;; amplitude (volume)
+                    (cpp/double. 600.0)) ;; frequency
+         waveform (cpp/new cpp/ma_waveform)
+         _ (ma/ma_waveform_init (cpp/& wf-config) waveform)
+         snd (cpp/new cpp/ma_sound)
+         _ (ma/ma_sound_init_from_data_source
+            (get-engine)
+            (cpp/cast (cpp/type "ma_data_source*") waveform)
+            (cpp/ma_uint32. 0)
+            cpp/nullptr
+            snd)
+         _ (ma/ma_sound_set_looping snd ma/MA_TRUE)
+         _ (ma/ma_sound_start snd)]
+     (cpp/box snd))
+
+   ;; Stop it
+   (ma/ma_engine_stop (get-engine))
+
+   ())
