@@ -148,13 +148,13 @@ jobs:
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make test
+          make test JANK_SRC=$HOME/jank/compiler+runtime
 
       - name: Build standalone app
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make sdf-standalone
+          make sdf-standalone JANK_SRC=$HOME/jank/compiler+runtime
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -184,12 +184,13 @@ jobs:
             doctest-dev libgc-dev
 
       # Cache 1: Clang/LLVM (rarely changes, keyed by branch)
+      # Bump version if jank's LLVM requirements change
       - name: Cache Clang/LLVM
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-linux-x64-${{ env.JANK_REF }}-v1
+          key: clang-linux-x64-${{ env.JANK_REF }}-v2
 
       - name: Build Clang/LLVM
         if: steps.cache-clang.outputs.cache-hit != 'true'
@@ -199,6 +200,8 @@ jobs:
           ~/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++ --version
 
       # Cache 2: jank build (keyed by commit hash)
+      # NO restore-keys fallback! Partial/stale caches cause ABI issues like:
+      # "Symbols not found: [ __emutls_v._ZN4jank7runtime17current_allocatorE ]"
       - name: Cache jank build
         id: cache-jank
         uses: actions/cache@v4
@@ -212,20 +215,16 @@ jobs:
             ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v9
-          restore-keys: |
-            jank-build-linux-x64-
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v11
 
       # Cache 3: PCH separately (takes 1h30 to build)
-      # Use commit-based key with branch fallback to avoid full rebuilds
+      # NO restore-keys fallback! PCH must match exact commit or compilation fails
       - name: Cache PCH
         id: cache-pch
         uses: actions/cache@v4
         with:
           path: ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v1
-          restore-keys: |
-            jank-pch-linux-x64-
+          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v3
 
       - name: Create swap space
         if: steps.cache-jank.outputs.cache-hit != 'true' || steps.cache-pch.outputs.cache-hit != 'true'
@@ -243,9 +242,9 @@ jobs:
           export CC=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
           export CXX=$HOME/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
           cd ~/jank/compiler+runtime
-          # Use same flags as jank's CI
+          # Use same flags as macOS for consistent LLVM configuration
           ./bin/configure -GNinja -DCMAKE_BUILD_TYPE=Release \
-            -Djank_local_clang=on
+            -Dllvm_dir=$HOME/jank/compiler+runtime/build/llvm-install/usr/local
           ./bin/compile
           echo "jank build complete"
           ~/jank/compiler+runtime/build/jank check-health
@@ -329,7 +328,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-linux-x64-${{ env.JANK_REF }}-v1
+          key: clang-linux-x64-${{ env.JANK_REF }}-v2
 
       - name: Restore jank build cache
         uses: actions/cache/restore@v4
@@ -343,15 +342,14 @@ jobs:
             ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v9
-          restore-keys: |
-            jank-build-linux-x64-
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v11
+          # NO restore-keys! Must match exact build from build-jank-linux job
 
       - name: Restore PCH cache
         uses: actions/cache/restore@v4
         with:
           path: ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v1
+          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v3
           # NO restore-keys fallback! PCH must match exact commit or it will fail with
           # "file has been modified since the precompiled header was built"
 
@@ -366,7 +364,7 @@ jobs:
       - name: Run tests
         run: |
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make test
+          make test JANK_SRC=$HOME/jank/compiler+runtime
 
       - name: Build standalone app
         run: |
@@ -375,7 +373,7 @@ jobs:
           echo "=== Memory status ==="
           free -h
           echo "=== Running full standalone build ==="
-          time make sdf-standalone
+          time make sdf-standalone JANK_SRC=$HOME/jank/compiler+runtime
           echo "=== Build complete at $(date) ==="
 
       - name: Upload Linux tarball artifact

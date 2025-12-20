@@ -12,6 +12,11 @@ CXX = clang++
 JANK_SRC ?= /Users/pfeodrippe/dev/jank/compiler+runtime
 JANK_CXX = $(JANK_SRC)/build/llvm-install/usr/local/bin/clang++
 
+# macOS SDK path (needed for system headers when using jank's clang)
+ifeq ($(UNAME_S),Darwin)
+    SDKROOT ?= /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+endif
+
 # Platform-specific settings
 ifeq ($(UNAME_S),Darwin)
     SHARED_LIB_EXT = dylib
@@ -120,6 +125,10 @@ vendor/flecs/distr/flecs.o: vendor/flecs/distr/flecs.c vendor/flecs/distr/flecs.
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Vybe Flecs jank helper (requires jank's clang for header compatibility)
+# Key jank headers that affect ABI - rebuild vybe_flecs_jank.o when these change
+JANK_ABI_HEADERS = $(JANK_SRC)/include/cpp/jank/type.hpp \
+                   $(JANK_SRC)/include/cpp/jank/runtime/core/jank_heap.hpp
+
 VYBE_FLECS_JANK_INCLUDES = \
 	-DIMMER_HAS_LIBGC=1 \
 	-I$(JANK_SRC)/include/cpp \
@@ -133,8 +142,15 @@ VYBE_FLECS_JANK_INCLUDES = \
 	-I$(JANK_SRC)/build/llvm-install/usr/local/include \
 	-Ivendor -Ivendor/flecs/distr
 
-vendor/vybe/vybe_flecs_jank.o: vendor/vybe/vybe_flecs_jank.cpp vendor/vybe/vybe_flecs_jank.h vendor/flecs/distr/flecs.h
-	$(JANK_CXX) -std=c++20 -fPIC $(VYBE_FLECS_JANK_INCLUDES) -c $< -o $@
+# macOS needs --sysroot for system headers when using jank's clang
+ifeq ($(UNAME_S),Darwin)
+    VYBE_FLECS_JANK_SYSROOT = --sysroot=$(SDKROOT)
+else
+    VYBE_FLECS_JANK_SYSROOT =
+endif
+
+vendor/vybe/vybe_flecs_jank.o: vendor/vybe/vybe_flecs_jank.cpp vendor/vybe/vybe_flecs_jank.h vendor/flecs/distr/flecs.h $(JANK_ABI_HEADERS)
+	$(JANK_CXX) -std=c++20 -fPIC $(VYBE_FLECS_JANK_SYSROOT) $(VYBE_FLECS_JANK_INCLUDES) -c $< -o $@
 
 # ============================================================================
 # Shader compilation
