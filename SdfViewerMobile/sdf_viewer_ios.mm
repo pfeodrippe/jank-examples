@@ -1,8 +1,6 @@
 // SDF Viewer iOS - Native C++ implementation using sdf_engine.hpp
 // This uses the same Vulkan/MoltenVK rendering as macOS
-//
-// For jank AOT support, see the build_ios_jank.sh script which will
-// generate the jank-powered version once iOS AOT compilation is ready.
+// Now with jank runtime support for iOS AOT compilation
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -12,10 +10,51 @@
 // Include the SDF engine directly (header-only Vulkan renderer)
 #include "../vulkan/sdf_engine.hpp"
 
+// jank runtime headers
+// iOS defines 'nil' as a macro which conflicts with jank's object_type::nil
+#pragma push_macro("nil")
+#undef nil
+#include <gc.h>
+#include <jank/runtime/context.hpp>
+#include <jank/runtime/core.hpp>
+#pragma pop_macro("nil")
+
+// jank AOT-compiled module entry points
+extern "C" void* jank_load_clojure_core_native();
+extern "C" void* jank_load_core();
+extern "C" void* jank_load_test_aot();
+
 // Get the iOS bundle resource path
 static std::string getBundleResourcePath() {
     NSString* bundlePath = [[NSBundle mainBundle] resourcePath];
     return std::string([bundlePath UTF8String]);
+}
+
+// Initialize jank runtime for iOS AOT
+static bool init_jank_runtime() {
+    try {
+        std::cout << "[jank] Initializing Boehm GC..." << std::endl;
+        GC_init();
+
+        std::cout << "[jank] Creating runtime context..." << std::endl;
+        jank::runtime::__rt_ctx = new (GC_malloc(sizeof(jank::runtime::context)))
+            jank::runtime::context{};
+
+        std::cout << "[jank] Loading clojure.core native functions..." << std::endl;
+        jank_load_clojure_core_native();
+
+        std::cout << "[jank] Loading clojure.core..." << std::endl;
+        jank_load_core();
+
+        std::cout << "[jank] Loading test AOT module..." << std::endl;
+        jank_load_test_aot();
+
+        std::cout << "[jank] Runtime initialized successfully!" << std::endl;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "[jank] Error initializing runtime: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 // C API for main entry point (called from main.mm)
@@ -24,7 +63,16 @@ extern "C" int sdf_viewer_main(int argc, char* argv[]) {
         std::cout << std::endl;
         std::cout << "============================================" << std::endl;
         std::cout << "   SDF Viewer Mobile - iOS Edition" << std::endl;
+        std::cout << "   (with jank AOT runtime)" << std::endl;
         std::cout << "============================================" << std::endl;
+        std::cout << std::endl;
+
+        // Initialize jank runtime
+        if (!init_jank_runtime()) {
+            std::cerr << "Warning: jank runtime initialization failed" << std::endl;
+            std::cerr << "Continuing without jank support..." << std::endl;
+        }
+
         std::cout << std::endl;
         std::cout << "Character: Kim Kitsuragi" << std::endl;
         std::cout << "  - Lieutenant, RCM Precinct 57" << std::endl;

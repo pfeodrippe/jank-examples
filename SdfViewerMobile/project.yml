@@ -7,7 +7,7 @@ name: SdfViewerMobile
 options:
   bundleIdPrefix: com.vybe
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "17.0"  # Required for jank C++20 features (std::format)
   xcodeVersion: "15.0"
   generateEmptyDirectories: true
   groupSortPosition: top
@@ -20,17 +20,20 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
     ENABLE_BITCODE: NO
-    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    CLANG_CXX_LANGUAGE_STANDARD: c++20
     CLANG_CXX_LIBRARY: libc++
     GCC_PREPROCESSOR_DEFINITIONS:
       - VK_USE_PLATFORM_IOS_MVK=1
       - VK_USE_PLATFORM_METAL_EXT=1
+      - JANK_TARGET_IOS=1
+      - IMMER_HAS_LIBGC=1
+      - IMMER_TAGGED_NODE=0
 
 targets:
   SdfViewerMobile:
     type: application
     platform: iOS
-    deploymentTarget: "15.0"
+    deploymentTarget: "17.0"
     sources:
       - path: main.mm
         compilerFlags: ["-x", "objective-c++"]
@@ -45,6 +48,11 @@ targets:
       - path: ../vendor/imgui/backends/imgui_impl_sdl3.cpp
       # STB implementation
       - path: ../vulkan/stb_impl.c
+      # jank AOT-compiled modules
+      - path: generated/clojure_core_generated.cpp
+        compilerFlags: ["-std=c++20"]
+      - path: generated/test_aot.cpp
+        compilerFlags: ["-std=c++20"]
       # Resources (bundled with app)
       - path: LaunchScreen.storyboard
         buildPhase: resources
@@ -67,8 +75,20 @@ targets:
           - $(PROJECT_DIR)/Frameworks/include/SDL3
           - $(PROJECT_DIR)/Frameworks/include/vulkan
           - $(PROJECT_DIR)/Frameworks/include/MoltenVK
+          # jank headers
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/include/cpp
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/src/cpp
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/immer
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bdwgc/include
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bpptree/include
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-preprocessor/include
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/folly
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/stduuid/include
         FRAMEWORK_SEARCH_PATHS:
           - $(PROJECT_DIR)/Frameworks
+        LIBRARY_SEARCH_PATHS:
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/Frameworks"
         # Linker flags
@@ -87,6 +107,10 @@ targets:
           - "-framework IOSurface"
           - "-framework IOKit"
           - "-lc++"
+          # jank runtime libraries
+          - "-ljank"
+          - "-ljankzip"
+          - "-lgc"
         # Code signing for simulator testing
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_REQUIRED: "NO"
