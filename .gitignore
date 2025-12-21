@@ -17,6 +17,7 @@ jank.profile
 .nrepl-port
 *.png
 SDFViewer*
+!SDFViewerMobile
 sdf-viewer*
 .DS_Store
 

@@ -1,0 +1,34 @@
+# Build artifacts
+build/
+temp_build/
+DerivedData/
+
+# Generated Xcode project
+*.xcodeproj/
+*.xcworkspace/
+
+# Frameworks (downloaded at build time)
+Frameworks/
+
+# iOS build products
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode user data
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# CocoaPods (if used)
+Pods/
+
+# Carthage (if used)
+Carthage/Build/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes

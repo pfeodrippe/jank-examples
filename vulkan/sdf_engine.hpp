@@ -23,8 +23,22 @@
 #include <set>
 #include <sys/stat.h>
 #include <csignal>
-#include <shaderc/shaderc.hpp>
 #include <dirent.h>
+
+// iOS doesn't have shaderc - we use pre-compiled SPIR-V files instead
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if !TARGET_OS_IPHONE && !TARGET_IPHONE_SIMULATOR
+#include <shaderc/shaderc.hpp>
+#define HAS_SHADERC 1
+#else
+#define HAS_SHADERC 0
+// Dummy shaderc_shader_kind for iOS (defined early for forward declarations)
+#define shaderc_compute_shader 0
+typedef int shaderc_shader_kind;
+#endif
 #include <algorithm>
 
 // stb_image_write implementation is in stb_impl.o
@@ -680,9 +694,15 @@ inline void select_object(Engine* e, int id) {
 // Forward declarations for shader switching
 inline void scan_shaders();
 inline void load_shader_by_name(const std::string& name);
+#if HAS_SHADERC
 inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
                                                     const std::string& filename,
                                                     shaderc_shader_kind kind);
+#else
+inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
+                                                    const std::string& filename,
+                                                    int kind);
+#endif
 
 // ============================================================================
 // Shader switching functions
@@ -748,16 +768,20 @@ inline void load_shader_by_name(const std::string& name) {
     std::string compPath = e->shaderDir + "/" + name + ".comp";
     std::cout << "[DEBUG] load_shader_by_name: compPath=" << compPath << std::endl;
 
-    // Read GLSL source
+#if HAS_SHADERC
+    // Desktop: read GLSL source and compile with shaderc
     std::string glslSource = read_text_file(compPath);
     if (glslSource.empty()) {
         std::cerr << "[DEBUG] load_shader_by_name: Failed to read shader source: " << compPath << std::endl;
         return;
     }
-
-    // Compile GLSL to SPIR-V using bundled shaderc library (no external glslangValidator needed)
     std::cout << "[DEBUG] load_shader_by_name: compiling with shaderc..." << std::endl;
     auto spirv = compile_glsl_to_spirv(glslSource, name + ".comp", shaderc_compute_shader);
+#else
+    // iOS: load pre-compiled .spv directly (no runtime shader compilation)
+    std::cout << "[DEBUG] load_shader_by_name: loading pre-compiled SPIR-V..." << std::endl;
+    auto spirv = compile_glsl_to_spirv("", compPath, shaderc_compute_shader);
+#endif
     if (spirv.empty()) {
         std::cerr << "[DEBUG] load_shader_by_name: compile FAILED!" << std::endl;
         return;
@@ -857,6 +881,24 @@ inline std::string read_text_file(const std::string& filename) {
     return content;
 }
 
+// Load pre-compiled SPIR-V from file (for iOS or when shaderc is not available)
+inline std::vector<uint32_t> load_spirv_file(const std::string& spv_path) {
+    std::ifstream file(spv_path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open SPIR-V file: " << spv_path << std::endl;
+        return {};
+    }
+
+    size_t fileSize = file.tellg();
+    file.seekg(0);
+
+    std::vector<uint32_t> spirv(fileSize / sizeof(uint32_t));
+    file.read(reinterpret_cast<char*>(spirv.data()), fileSize);
+
+    return spirv;
+}
+
+#if HAS_SHADERC
 // Compile GLSL source to SPIR-V in memory using shaderc
 // Returns empty vector on failure
 inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
@@ -876,6 +918,28 @@ inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
 
     return std::vector<uint32_t>(result.cbegin(), result.cend());
 }
+#else
+// iOS: Use pre-compiled SPIR-V files instead of runtime compilation
+// The shaderc_shader_kind parameter is ignored - we just need it for API compatibility
+inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
+                                                    const std::string& filename,
+                                                    int kind) {
+    (void)source;  // Ignored on iOS - we use pre-compiled files
+    (void)kind;
+
+    // Convert .comp filename to .spv path
+    std::string spv_path = filename;
+    size_t dot_pos = spv_path.rfind('.');
+    if (dot_pos != std::string::npos) {
+        spv_path = spv_path.substr(0, dot_pos) + ".spv";
+    } else {
+        spv_path += ".spv";
+    }
+
+    std::cout << "[iOS] Loading pre-compiled SPIR-V: " << spv_path << std::endl;
+    return load_spirv_file(spv_path);
+}
+#endif
 
 // Main API functions
 inline bool init(const char* shader_dir) {
@@ -931,12 +995,17 @@ inline bool init(const char* shader_dir) {
     for (uint32_t i = 0; i < sdlExtCount; i++) {
         extensions.push_back(sdlExts[i]);
     }
-    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 
     VkInstanceCreateInfo instanceInfo{};
     instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceInfo.pApplicationInfo = &appInfo;
+    instanceInfo.flags = 0;
+
+#if !TARGET_OS_IPHONE && !TARGET_IPHONE_SIMULATOR
+    // VK_KHR_portability_enumeration is only needed on macOS, not iOS
+    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
     instanceInfo.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
     instanceInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     instanceInfo.ppEnabledExtensionNames = extensions.data();
 
@@ -1162,15 +1231,20 @@ inline bool init(const char* shader_dir) {
     // Set default shader name BEFORE loading
     e->currentShaderName = "hand_cigarette";  // Default shader name (without .comp extension)
 
-    // Load and compile compute shader in memory (no .spv file needed!)
+    // Load and compile compute shader
     std::string shaderPath = e->shaderDir + "/" + e->currentShaderName + ".comp";
+#if HAS_SHADERC
+    // Desktop: read .comp source and compile with shaderc
     std::string glslSource = read_text_file(shaderPath);
     if (glslSource.empty()) {
         std::cerr << "Failed to load shader source: " << shaderPath << std::endl;
         return false;
     }
-
     auto spirv = compile_glsl_to_spirv(glslSource, (e->currentShaderName + ".comp").c_str(), shaderc_compute_shader);
+#else
+    // iOS: load pre-compiled .spv directly (no runtime shader compilation)
+    auto spirv = compile_glsl_to_spirv("", shaderPath, shaderc_compute_shader);
+#endif
     if (spirv.empty()) {
         std::cerr << "Shader compilation failed!" << std::endl;
         return false;
@@ -1880,6 +1954,17 @@ inline void draw_frame() {
     vkQueuePresentKHR(e->presentQueue, &presentInfo);
 
     e->currentFrame = (e->currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+}
+
+// ImGui frame management for native rendering (without jank)
+inline void imgui_begin_frame() {
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+}
+
+inline void imgui_end_frame() {
+    ImGui::Render();
 }
 
 inline void cleanup() {

@@ -73,6 +73,12 @@ help:
 	@echo ""
 	@echo "Standalone builds:"
 	@echo "  make sdf-standalone  - Build standalone SDF viewer app"
+	@echo ""
+	@echo "iOS builds:"
+	@echo "  make ios-setup    - Download/build iOS dependencies (MoltenVK, SDL3)"
+	@echo "  make ios-project  - Generate Xcode project (requires xcodegen)"
+	@echo "  make ios-build    - Build iOS app"
+	@echo "  make ios-clean    - Clean iOS build artifacts"
 
 # ============================================================================
 # Object file targets (with proper dependencies)
@@ -321,3 +327,54 @@ jolt:
 
 test tests: build-flecs
 	./bin/run_tests.sh
+
+# ============================================================================
+# iOS targets
+# ============================================================================
+
+.PHONY: ios-setup ios-project ios-build ios-clean
+
+# Setup iOS dependencies (downloads MoltenVK, builds SDL3)
+ios-setup:
+	@echo "Setting up iOS dependencies..."
+	cd SdfViewerMobile && ./setup_ios_deps.sh
+
+# Generate Xcode project using xcodegen
+ios-project: build-shaders
+	@echo "Generating iOS Xcode project..."
+	@if ! command -v xcodegen &> /dev/null; then \
+		echo "Error: xcodegen not found. Install with: brew install xcodegen"; \
+		exit 1; \
+	fi
+	cd SdfViewerMobile && xcodegen generate
+	@echo "Xcode project generated: SdfViewerMobile/SdfViewerMobile.xcodeproj"
+	@echo "Open with: open SdfViewerMobile/SdfViewerMobile.xcodeproj"
+
+# Build iOS app (requires prior setup and project generation)
+ios-build: ios-project
+	@echo "Building iOS app..."
+	cd SdfViewerMobile && xcodebuild \
+		-project SdfViewerMobile.xcodeproj \
+		-scheme SdfViewerMobile \
+		-configuration Release \
+		-sdk iphoneos \
+		-destination 'generic/platform=iOS' \
+		build
+
+# Clean iOS build artifacts
+ios-clean:
+	@echo "Cleaning iOS build artifacts..."
+	rm -rf SdfViewerMobile/SdfViewerMobile.xcodeproj
+	rm -rf SdfViewerMobile/build
+	rm -rf SdfViewerMobile/Frameworks
+	rm -rf SdfViewerMobile/temp_build
+	@echo "iOS artifacts cleaned"
+
+# Build jank for iOS (AOT compilation)
+ios-jank:
+	@echo "Building jank for iOS (AOT compilation)..."
+	./SdfViewerMobile/build_ios_jank.sh
+
+# Full iOS build with jank
+ios: ios-setup ios-jank ios-project ios-build
+	@echo "iOS app with jank built successfully!"
