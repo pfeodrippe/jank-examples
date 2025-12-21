@@ -51,7 +51,7 @@ targets:
       # jank AOT-compiled modules
       - path: generated/clojure_core_generated.cpp
         compilerFlags: ["-std=c++20"]
-      - path: generated/test_aot.cpp
+      - path: generated/vybe_sdf_ios.cpp
         compilerFlags: ["-std=c++20"]
       # Resources (bundled with app)
       - path: LaunchScreen.storyboard

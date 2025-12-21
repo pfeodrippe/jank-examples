@@ -26,3 +26,7 @@ Integrated demo combining Raylib + ImGui + JoltPhysics + Flecs ECS using jank (C
 - `cpp/.method` for method calls
 - `cpp/*` for pointer dereference
 - `ptr->field` = `(cpp/.-field (cpp/* ptr))`
+
+## jank Syntax Gotchas
+- **No docstrings in ns**: `(ns foo "docstring")` is INVALID - ns forms cannot have docstrings (use comments instead)
+- **Docstrings in defn are OK**: `(defn foo "docstring" [] ...)` works fine

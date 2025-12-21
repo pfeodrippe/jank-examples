@@ -17,18 +17,145 @@
 #include <gc.h>
 #include <jank/runtime/context.hpp>
 #include <jank/runtime/core.hpp>
+#include <jank/runtime/behavior/callable.hpp>
 #pragma pop_macro("nil")
 
-// jank AOT-compiled module entry points
-extern "C" void* jank_load_clojure_core_native();
-extern "C" void* jank_load_core();
-extern "C" void* jank_load_test_aot();
+// =============================================================================
+// C++ Bridge Functions for jank
+// These are the real implementations that override the weak stubs in AOT code
+// =============================================================================
+
+static std::string g_resource_path;
+static std::string g_shader_dir;
 
 // Get the iOS bundle resource path
 static std::string getBundleResourcePath() {
     NSString* bundlePath = [[NSBundle mainBundle] resourcePath];
     return std::string([bundlePath UTF8String]);
 }
+
+extern "C" {
+
+// Lifecycle
+bool vybe_ios_init_str(std::string const& shader_dir) {
+    std::cout << "[vybe_ios] init_str: " << shader_dir << std::endl;
+    g_resource_path = getBundleResourcePath();
+    g_shader_dir = g_resource_path + "/" + shader_dir;
+
+    if (!sdfx::init(g_shader_dir.c_str())) {
+        std::cerr << "[vybe_ios] Failed to initialize SDF engine" << std::endl;
+        return false;
+    }
+
+    sdfx::set_continuous_mode(true);
+    return true;
+}
+
+void vybe_ios_cleanup() {
+    std::cout << "[vybe_ios] cleanup" << std::endl;
+    sdfx::cleanup();
+}
+
+bool vybe_ios_should_close() {
+    return sdfx::should_close();
+}
+
+// Rendering
+void vybe_ios_poll_events() {
+    sdfx::poll_events_only();
+}
+
+void vybe_ios_update_uniforms(float dt) {
+    sdfx::update_uniforms(dt);
+}
+
+void vybe_ios_draw_frame() {
+    sdfx::draw_frame();
+}
+
+void vybe_ios_imgui_begin() {
+    sdfx::imgui_begin_frame();
+}
+
+void vybe_ios_imgui_end() {
+    sdfx::imgui_end_frame();
+}
+
+// Camera getters
+float vybe_ios_get_camera_distance() {
+    return sdfx::get_camera_distance();
+}
+
+float vybe_ios_get_camera_angle_x() {
+    return sdfx::get_camera_angle_x();
+}
+
+float vybe_ios_get_camera_angle_y() {
+    return sdfx::get_camera_angle_y();
+}
+
+float vybe_ios_get_camera_target_y() {
+    return sdfx::get_camera_target_y();
+}
+
+// Camera setters
+void vybe_ios_set_camera_distance(float v) {
+    sdfx::set_camera_distance(v);
+}
+
+void vybe_ios_set_camera_angle_x(float v) {
+    sdfx::set_camera_angle_x(v);
+}
+
+void vybe_ios_set_camera_angle_y(float v) {
+    sdfx::set_camera_angle_y(v);
+}
+
+void vybe_ios_set_camera_target_y(float v) {
+    sdfx::set_camera_target_y(v);
+}
+
+// Shader - returns pointer to static buffer
+static std::string g_shader_name_buf;
+const char* vybe_ios_get_shader_name_cstr() {
+    g_shader_name_buf = sdfx::get_current_shader_name();
+    return g_shader_name_buf.c_str();
+}
+
+int vybe_ios_get_shader_count() {
+    return sdfx::get_shader_count();
+}
+
+void vybe_ios_next_shader() {
+    int count = sdfx::get_shader_count();
+    if (count <= 0) return;
+    int current = sdfx::get_current_shader_index();
+    int next = (current + 1) % count;
+    sdfx::load_shader_at_index(next);
+}
+
+void vybe_ios_prev_shader() {
+    int count = sdfx::get_shader_count();
+    if (count <= 0) return;
+    int current = sdfx::get_current_shader_index();
+    int prev = (current - 1 + count) % count;
+    sdfx::load_shader_at_index(prev);
+}
+
+// Time
+double vybe_ios_get_time() {
+    return sdfx::get_time();
+}
+
+} // extern "C"
+
+// =============================================================================
+// jank AOT Module Entry Points
+// =============================================================================
+
+extern "C" void* jank_load_clojure_core_native();
+extern "C" void* jank_load_core();
+extern "C" void* jank_load_vybe_sdf_ios();
 
 // Initialize jank runtime for iOS AOT
 static bool init_jank_runtime() {
@@ -46,8 +173,8 @@ static bool init_jank_runtime() {
         std::cout << "[jank] Loading clojure.core..." << std::endl;
         jank_load_core();
 
-        std::cout << "[jank] Loading test AOT module..." << std::endl;
-        jank_load_test_aot();
+        std::cout << "[jank] Loading vybe.sdf-ios module..." << std::endl;
+        jank_load_vybe_sdf_ios();
 
         std::cout << "[jank] Runtime initialized successfully!" << std::endl;
         return true;
@@ -57,7 +184,28 @@ static bool init_jank_runtime() {
     }
 }
 
-// C API for main entry point (called from main.mm)
+// Call the jank-exported ios-main function
+static void call_jank_ios_main() {
+    try {
+        // Look up the ios-main var using intern (since find_var returns oref now)
+        auto var = jank::runtime::__rt_ctx->intern_var("vybe.sdf-ios", "ios-main");
+        if (!var.is_ok()) {
+            std::cerr << "[jank] Could not find vybe.sdf-ios/ios-main" << std::endl;
+            return;
+        }
+
+        // Call it using dynamic_call (no args)
+        std::cout << "[jank] Calling vybe.sdf-ios/ios-main..." << std::endl;
+        jank::runtime::dynamic_call(var.expect_ok()->deref());
+    } catch (const std::exception& e) {
+        std::cerr << "[jank] Error calling ios-main: " << e.what() << std::endl;
+    }
+}
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
 extern "C" int sdf_viewer_main(int argc, char* argv[]) {
     @autoreleasepool {
         std::cout << std::endl;
@@ -71,64 +219,12 @@ extern "C" int sdf_viewer_main(int argc, char* argv[]) {
         if (!init_jank_runtime()) {
             std::cerr << "Warning: jank runtime initialization failed" << std::endl;
             std::cerr << "Continuing without jank support..." << std::endl;
-        }
-
-        std::cout << std::endl;
-        std::cout << "Character: Kim Kitsuragi" << std::endl;
-        std::cout << "  - Lieutenant, RCM Precinct 57" << std::endl;
-        std::cout << "  - Age: 43" << std::endl;
-        std::cout << "  - Known for: Orange bomber jacket" << std::endl;
-        std::cout << std::endl;
-        std::cout << "Controls:" << std::endl;
-        std::cout << "  Touch drag   = Orbit camera" << std::endl;
-        std::cout << "  Pinch        = Zoom in/out" << std::endl;
-        std::cout << "  Two-finger   = Pan camera" << std::endl;
-        std::cout << std::endl;
-
-        // Get resource paths
-        std::string resourcePath = getBundleResourcePath();
-        std::string shaderDir = resourcePath + "/vulkan_kim";
-
-        std::cout << "Resource path: " << resourcePath << std::endl;
-        std::cout << "Shader dir: " << shaderDir << std::endl;
-
-        // Initialize the SDF engine
-        if (!sdfx::init(shaderDir.c_str())) {
-            std::cerr << "Failed to initialize SDF engine" << std::endl;
             return 1;
         }
 
-        // Enable continuous rendering for smooth animations
-        sdfx::set_continuous_mode(true);
+        // Call the jank main function
+        call_jank_ios_main();
 
-        // Main render loop
-        std::cout << "Starting viewer..." << std::endl;
-        while (!sdfx::should_close()) {
-            // Poll events (touch, gestures via SDL3)
-            sdfx::poll_events_only();
-
-            // Update uniforms (time, camera, etc.)
-            sdfx::update_uniforms(1.0f / 60.0f);
-
-            // Begin ImGui frame (required before draw_frame)
-            sdfx::imgui_begin_frame();
-
-            // Any ImGui UI code would go here
-            // For now, just an empty frame
-
-            // End ImGui frame (prepares draw data)
-            sdfx::imgui_end_frame();
-
-            // Draw frame (includes ImGui rendering)
-            sdfx::draw_frame();
-        }
-
-        // Cleanup
-        sdfx::cleanup();
-
-        std::cout << std::endl;
-        std::cout << "Viewer closed." << std::endl;
-        std::cout << "\"I appreciate your discretion, detective.\"" << std::endl;
         return 0;
     }
 }
