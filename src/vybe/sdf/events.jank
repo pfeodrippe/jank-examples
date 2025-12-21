@@ -181,6 +181,8 @@
 (defn poll-and-process-events!
   "Poll SDL events and process them in jank."
   []
-  (let [count (sdfx/poll_events_only)]
-    (dotimes [i count]
-      (process-event! (get-event i)))))
+  (let [event-count (sdfx/poll_events_only)]
+    (loop [idx 0]
+      (when (< idx event-count)
+        (process-event! (get-event idx))
+        (recur (inc idx))))))

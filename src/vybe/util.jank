@@ -207,12 +207,12 @@
   "Insert item into sorted-vec maintaining descending order by key-fn."
   [sorted-vec item key-fn]
   (let [k (key-fn item)]
-    (loop [i 0]
-      (if (>= i (count sorted-vec))
+    (loop [idx 0]
+      (if (>= idx (count sorted-vec))
         (conj sorted-vec item)
-        (if (> k (key-fn (nth sorted-vec i)))
-          (into (conj (subvec sorted-vec 0 i) item) (subvec sorted-vec i))
-          (recur (inc i)))))))
+        (if (> k (key-fn (nth sorted-vec idx)))
+          (into (conj (subvec sorted-vec 0 idx) item) (subvec sorted-vec idx))
+          (recur (inc idx)))))))
 
 (defn- sort-by-desc
   "Sort collection by key-fn in descending order."

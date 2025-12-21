@@ -28,7 +28,10 @@
 #include <chrono>
 
 // tinygltf for GLB export with vertex colors
+// Only define TINYGLTF_IMPLEMENTATION in ONE translation unit (via SDF_ENGINE_IMPLEMENTATION)
+#ifdef SDF_ENGINE_IMPLEMENTATION
 #define TINYGLTF_IMPLEMENTATION
+#endif
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE
 #include "tinygltf/tiny_gltf.h"

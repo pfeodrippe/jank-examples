@@ -7,7 +7,9 @@
 #include <iostream>
 #include <string>
 
-// Include the SDF engine directly (header-only Vulkan renderer)
+// Include the SDF engine header (inline functions)
+// Note: SDF_ENGINE_IMPLEMENTATION is only defined in sdf_engine_impl.cpp
+// to avoid duplicate tinygltf symbols
 #include "../vulkan/sdf_engine.hpp"
 
 // jank runtime headers
@@ -153,8 +155,21 @@ double vybe_ios_get_time() {
 // jank AOT Module Entry Points
 // =============================================================================
 
+// Core jank modules (from clojure_core_generated.o)
 extern "C" void* jank_load_clojure_core_native();
 extern "C" void* jank_load_core();
+
+// Additional clojure.* modules (from their respective .o files)
+extern "C" void* jank_load_string();  // clojure.string
+extern "C" void* jank_load_set();     // clojure.set
+extern "C" void* jank_load_walk();    // clojure.walk
+
+// vybe.sdf modules (must be loaded in dependency order)
+extern "C" void* jank_load_vybe_util();
+extern "C" void* jank_load_vybe_sdf_math();
+extern "C" void* jank_load_vybe_sdf_state();
+extern "C" void* jank_load_vybe_sdf_shader();
+extern "C" void* jank_load_vybe_sdf_ui();
 extern "C" void* jank_load_vybe_sdf_ios();
 
 // Initialize jank runtime for iOS AOT
@@ -173,7 +188,33 @@ static bool init_jank_runtime() {
         std::cout << "[jank] Loading clojure.core..." << std::endl;
         jank_load_core();
 
-        std::cout << "[jank] Loading vybe.sdf-ios module..." << std::endl;
+        // Load additional clojure.* modules (required by vybe.util)
+        std::cout << "[jank] Loading clojure.string..." << std::endl;
+        jank_load_string();
+
+        std::cout << "[jank] Loading clojure.set..." << std::endl;
+        jank_load_set();
+
+        std::cout << "[jank] Loading clojure.walk..." << std::endl;
+        jank_load_walk();
+
+        // Load vybe.sdf modules in dependency order
+        std::cout << "[jank] Loading vybe.util..." << std::endl;
+        jank_load_vybe_util();
+
+        std::cout << "[jank] Loading vybe.sdf.math..." << std::endl;
+        jank_load_vybe_sdf_math();
+
+        std::cout << "[jank] Loading vybe.sdf.state..." << std::endl;
+        jank_load_vybe_sdf_state();
+
+        std::cout << "[jank] Loading vybe.sdf.shader..." << std::endl;
+        jank_load_vybe_sdf_shader();
+
+        std::cout << "[jank] Loading vybe.sdf.ui..." << std::endl;
+        jank_load_vybe_sdf_ui();
+
+        std::cout << "[jank] Loading vybe.sdf.ios..." << std::endl;
         jank_load_vybe_sdf_ios();
 
         std::cout << "[jank] Runtime initialized successfully!" << std::endl;
@@ -184,21 +225,21 @@ static bool init_jank_runtime() {
     }
 }
 
-// Call the jank-exported ios-main function
-static void call_jank_ios_main() {
+// Call the jank-exported -main function
+static void call_jank_main() {
     try {
-        // Look up the ios-main var using intern (since find_var returns oref now)
-        auto var = jank::runtime::__rt_ctx->intern_var("vybe.sdf-ios", "ios-main");
+        // Look up the -main var in vybe.sdf.ios
+        auto var = jank::runtime::__rt_ctx->intern_var("vybe.sdf.ios", "-main");
         if (!var.is_ok()) {
-            std::cerr << "[jank] Could not find vybe.sdf-ios/ios-main" << std::endl;
+            std::cerr << "[jank] Could not find vybe.sdf.ios/-main" << std::endl;
             return;
         }
 
         // Call it using dynamic_call (no args)
-        std::cout << "[jank] Calling vybe.sdf-ios/ios-main..." << std::endl;
+        std::cout << "[jank] Calling vybe.sdf.ios/-main..." << std::endl;
         jank::runtime::dynamic_call(var.expect_ok()->deref());
     } catch (const std::exception& e) {
-        std::cerr << "[jank] Error calling ios-main: " << e.what() << std::endl;
+        std::cerr << "[jank] Error calling -main: " << e.what() << std::endl;
     }
 }
 
@@ -223,7 +264,7 @@ extern "C" int sdf_viewer_main(int argc, char* argv[]) {
         }
 
         // Call the jank main function
-        call_jank_ios_main();
+        call_jank_main();
 
         return 0;
     }

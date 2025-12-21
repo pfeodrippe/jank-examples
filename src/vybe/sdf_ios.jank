@@ -1,0 +1,96 @@
+(ns vybe.sdf-ios
+  "iOS-specific entry point for SDF viewer.
+   This avoids nREPL and provides direct initialization for AOT mode."
+  (:refer-clojure :exclude [run!])
+  (:require
+   [vybe.sdf.math :as m]
+   [vybe.sdf.state :as state]
+   [vybe.sdf.shader :as shader]
+   [vybe.sdf.render :as render]
+   [vybe.sdf.ui :as ui]))
+
+;; Re-export from vybe.sdf.render for C++ bridge
+(defn init! [shader-dir] (render/init! shader-dir))
+(defn cleanup! [] (render/cleanup!))
+(defn should-close? [] (render/should-close?))
+(defn poll-events! [] (render/poll-events-jank!))
+(defn draw-frame! [] (render/draw-frame!))
+(defn update-uniforms! [dt] (render/update-uniforms! dt))
+
+;; Shader switching with presets
+(defn switch-shader-with-preset!
+  [direction]
+  (render/sync-camera-from-cpp!)
+  (let [current-shader (shader/get-current-shader-name)]
+    (state/save-camera-preset! current-shader))
+  (shader/switch-shader! direction)
+  (let [shader-name (shader/get-current-shader-name)]
+    (println "Shader:" shader-name)
+    (state/load-camera-preset! shader-name)
+    (render/sync-camera-to-cpp!)))
+
+(defn process-pending-shader-switch!
+  []
+  (let [direction (shader/get-pending-shader-switch)]
+    (when (not= direction 0)
+      (shader/clear-pending-shader-switch!)
+      (switch-shader-with-preset! direction))))
+
+;; Initialization (no nREPL)
+(defn init-kim!
+  []
+  (println "")
+  (println "============================================")
+  (println "   SDF Viewer - iOS Edition")
+  (println "============================================")
+  (println "")
+
+  ;; Initialize Vulkan
+  (render/init! "vulkan_kim")
+
+  ;; Enable continuous rendering
+  (render/set-continuous-mode! true)
+  (state/set-continuous-mode! true)
+
+  ;; Sync camera and objects state
+  (let [shader-name (shader/get-current-shader-name)]
+    (println "Default shader:" shader-name)
+    (state/load-camera-preset! shader-name)
+    (render/sync-camera-to-cpp!))
+  (render/sync-objects-from-cpp!)
+  (println "Objects loaded:" (state/object-count))
+  true)
+
+;; Single frame draw
+(defn draw
+  [frame-count]
+  (render/poll-events-jank!)
+  (render/sync-edit-mode-from-cpp!)
+  (render/sync-camera-from-cpp!)
+  ;; Auto-rotate when enabled
+  (when (ui/auto-rotate?)
+    (state/update-camera! update :angle-y + 0.01)
+    (render/sync-camera-to-cpp!)
+    (render/set-dirty!))
+  (process-pending-shader-switch!)
+  (shader/check-shader-reload!)
+  (ui/new-frame!)
+  (ui/draw-debug-ui!)
+  (render/update-uniforms! 0.016)
+  (ui/render!)
+  (render/draw-frame!))
+
+;; iOS run loop (called from sdf_viewer_main)
+(defn run!
+  []
+  (when (init-kim!)
+    (println "Starting iOS viewer...")
+    (loop [frame-count 0]
+      (when-not (render/should-close?)
+        (draw frame-count)
+        (recur (inc frame-count))))
+    (render/cleanup!)
+    (println "Viewer closed.")))
+
+(defn -main []
+  (run!))

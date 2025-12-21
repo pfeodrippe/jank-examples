@@ -60,6 +60,7 @@ CXXFLAGS = -fPIC -O2 -std=c++17
 help:
 	@echo "Available targets:"
 	@echo "  make sdf         - Run SDF Vulkan viewer (dev mode)"
+	@echo "  make sdf-clean   - Run SDF viewer with fresh cache (like sdf but clean)"
 	@echo "  make integrated  - Run integrated demo (Raylib+ImGui+Jolt+Flecs)"
 	@echo "  make imgui       - Run ImGui demo"
 	@echo "  make jolt        - Run Jolt physics demo"
@@ -75,6 +76,8 @@ help:
 	@echo "  make sdf-standalone  - Build standalone SDF viewer app"
 	@echo ""
 	@echo "iOS builds:"
+	@echo "  make sdf-ios      - Build jank for iOS (AOT C++, like sdf-clean for iOS)"
+	@echo "  make sdf-ios-run  - Build and run iOS app in iPad simulator"
 	@echo "  make ios-setup    - Download/build iOS dependencies (MoltenVK, SDL3)"
 	@echo "  make ios-project  - Generate Xcode project (requires xcodegen)"
 	@echo "  make ios-build    - Build iOS app"
@@ -332,15 +335,100 @@ test tests: build-flecs
 # iOS targets
 # ============================================================================
 
-.PHONY: ios-setup ios-project ios-build ios-clean
+.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run
+
+# jank iOS build paths (device)
+JANK_IOS_BUILD = $(JANK_SRC)/build-ios
+JANK_IOS_LIBS = $(JANK_IOS_BUILD)/libjank.a $(JANK_IOS_BUILD)/libjankzip.a $(JANK_IOS_BUILD)/third-party/bdwgc/libgc.a
+JANK_IOS_CORE_OBJS = $(JANK_IOS_BUILD)/clojure_core_generated.o \
+                     $(JANK_IOS_BUILD)/clojure_set_generated.o \
+                     $(JANK_IOS_BUILD)/clojure_string_generated.o \
+                     $(JANK_IOS_BUILD)/clojure_walk_generated.o \
+                     $(JANK_IOS_BUILD)/clojure_template_generated.o \
+                     $(JANK_IOS_BUILD)/clojure_test_generated.o
+
+# jank iOS Simulator build paths
+JANK_IOS_SIM_BUILD = $(JANK_SRC)/build-ios-simulator
+JANK_IOS_SIM_LIBS = $(JANK_IOS_SIM_BUILD)/libjank.a $(JANK_IOS_SIM_BUILD)/libjankzip.a $(JANK_IOS_SIM_BUILD)/third-party/bdwgc/libgc.a
+JANK_IOS_SIM_CORE_OBJS = $(JANK_IOS_SIM_BUILD)/clojure_core_generated.o \
+                         $(JANK_IOS_SIM_BUILD)/clojure_set_generated.o \
+                         $(JANK_IOS_SIM_BUILD)/clojure_string_generated.o \
+                         $(JANK_IOS_SIM_BUILD)/clojure_walk_generated.o \
+                         $(JANK_IOS_SIM_BUILD)/clojure_template_generated.o \
+                         $(JANK_IOS_SIM_BUILD)/clojure_test_generated.o
+
+# iOS app generated files
+IOS_GENERATED_CPP = SdfViewerMobile/generated/vybe_sdf_generated.cpp
+IOS_GENERATED_OBJ = SdfViewerMobile/build/obj/vybe_sdf_generated.o
+IOS_LOCAL_LIBS = SdfViewerMobile/build/libjank.a SdfViewerMobile/build/libjankzip.a SdfViewerMobile/build/libgc.a
 
 # Setup iOS dependencies (downloads MoltenVK, builds SDL3)
 ios-setup:
 	@echo "Setting up iOS dependencies..."
 	cd SdfViewerMobile && ./setup_ios_deps.sh
 
+# Build jank runtime for iOS (device)
+$(JANK_IOS_BUILD)/libjank.a:
+	@echo "Building jank runtime for iOS device..."
+	cd $(JANK_SRC) && ./bin/build-ios $(JANK_IOS_BUILD) Release device
+
+# Build jank runtime for iOS Simulator
+$(JANK_IOS_SIM_BUILD)/libjank.a:
+	@echo "Building jank runtime for iOS Simulator..."
+	cd $(JANK_SRC) && ./bin/build-ios $(JANK_IOS_SIM_BUILD) Release simulator
+
+ios-runtime: $(JANK_IOS_BUILD)/libjank.a
+	@echo "jank iOS device runtime built."
+
+ios-sim-runtime: $(JANK_IOS_SIM_BUILD)/libjank.a
+	@echo "jank iOS Simulator runtime built."
+
+# Generate and compile clojure.core and other core libraries for iOS (device)
+$(JANK_IOS_BUILD)/clojure_core_generated.o: $(JANK_SRC)/src/jank/clojure/core.jank $(JANK_SRC)/build/jank
+	@echo "Generating clojure.core for iOS device..."
+	cd $(JANK_SRC) && ./bin/ios-bundle --skip-build
+
+# Generate and compile clojure.core and other core libraries for iOS Simulator
+$(JANK_IOS_SIM_BUILD)/clojure_core_generated.o: $(JANK_SRC)/src/jank/clojure/core.jank $(JANK_SRC)/build/jank
+	@echo "Generating clojure.core for iOS Simulator..."
+	cd $(JANK_SRC) && ./bin/ios-bundle --skip-build --simulator --output-dir $(JANK_IOS_SIM_BUILD)
+
+ios-core-libs: $(JANK_IOS_CORE_OBJS)
+	@echo "jank core libraries built for iOS device."
+
+ios-sim-core-libs: $(JANK_IOS_SIM_CORE_OBJS)
+	@echo "jank core libraries built for iOS Simulator."
+
+# Generate vybe.sdf C++ for iOS
+$(IOS_GENERATED_CPP): src/vybe/sdf.jank build-sdf-deps $(JANK_SRC)/build/jank
+	@echo "Generating vybe.sdf C++ for iOS..."
+	./SdfViewerMobile/build_ios_jank_aot.sh
+
+# Cross-compile vybe.sdf for iOS
+$(IOS_GENERATED_OBJ): $(IOS_GENERATED_CPP)
+	@echo "vybe.sdf already compiled by build script"
+
+# Copy jank iOS device libraries to local build directory
+$(IOS_LOCAL_LIBS): $(JANK_IOS_LIBS) $(JANK_IOS_CORE_OBJS)
+	@echo "Copying jank iOS device libraries to local build..."
+	@mkdir -p SdfViewerMobile/build/obj
+	cp $(JANK_IOS_BUILD)/libjank.a SdfViewerMobile/build/
+	cp $(JANK_IOS_BUILD)/libjankzip.a SdfViewerMobile/build/
+	cp $(JANK_IOS_BUILD)/third-party/bdwgc/libgc.a SdfViewerMobile/build/
+	cp $(JANK_IOS_CORE_OBJS) SdfViewerMobile/build/obj/
+
+# Copy jank iOS Simulator libraries to local build directory
+.PHONY: ios-sim-copy-libs
+ios-sim-copy-libs: $(JANK_IOS_SIM_LIBS) $(JANK_IOS_SIM_CORE_OBJS)
+	@echo "Copying jank iOS Simulator libraries to local build..."
+	@mkdir -p SdfViewerMobile/build/obj
+	cp $(JANK_IOS_SIM_BUILD)/libjank.a SdfViewerMobile/build/
+	cp $(JANK_IOS_SIM_BUILD)/libjankzip.a SdfViewerMobile/build/
+	cp $(JANK_IOS_SIM_BUILD)/third-party/bdwgc/libgc.a SdfViewerMobile/build/
+	cp $(JANK_IOS_SIM_CORE_OBJS) SdfViewerMobile/build/obj/
+
 # Generate Xcode project using xcodegen
-ios-project: build-shaders
+ios-project: build-shaders $(IOS_LOCAL_LIBS)
 	@echo "Generating iOS Xcode project..."
 	@if ! command -v xcodegen &> /dev/null; then \
 		echo "Error: xcodegen not found. Install with: brew install xcodegen"; \
@@ -348,7 +436,6 @@ ios-project: build-shaders
 	fi
 	cd SdfViewerMobile && xcodegen generate
 	@echo "Xcode project generated: SdfViewerMobile/SdfViewerMobile.xcodeproj"
-	@echo "Open with: open SdfViewerMobile/SdfViewerMobile.xcodeproj"
 
 # Build iOS app (requires prior setup and project generation)
 ios-build: ios-project
@@ -366,15 +453,62 @@ ios-clean:
 	@echo "Cleaning iOS build artifacts..."
 	rm -rf SdfViewerMobile/SdfViewerMobile.xcodeproj
 	rm -rf SdfViewerMobile/build
+	rm -rf SdfViewerMobile/generated
 	rm -rf SdfViewerMobile/Frameworks
 	rm -rf SdfViewerMobile/temp_build
 	@echo "iOS artifacts cleaned"
 
-# Build jank for iOS (AOT compilation)
-ios-jank:
-	@echo "Building jank for iOS (AOT compilation)..."
+# Build jank for iOS (AOT compilation) - generates C++ and cross-compiles
+ios-jank: ios-runtime ios-core-libs $(IOS_GENERATED_OBJ)
+	@echo "jank iOS build complete!"
+
+# Legacy iOS jank build (old approach with weak stubs)
+ios-jank-legacy:
+	@echo "Building jank for iOS (legacy weak stubs)..."
 	./SdfViewerMobile/build_ios_jank.sh
 
 # Full iOS build with jank
 ios: ios-setup ios-jank ios-project ios-build
 	@echo "iOS app with jank built successfully!"
+
+# Quick iOS jank C++ generation and cross-compilation (like sdf-clean for iOS)
+sdf-ios: clean-cache build-sdf-deps ios-jank ios-project
+	@echo ""
+	@echo "============================================"
+	@echo "  iOS Build Complete!"
+	@echo "============================================"
+	@echo ""
+	@echo "Libraries: SdfViewerMobile/build/"
+	@echo "Objects:   SdfViewerMobile/build/obj/"
+	@echo "Project:   SdfViewerMobile/SdfViewerMobile.xcodeproj"
+	@echo ""
+	@echo "To run in simulator: make sdf-ios-run"
+
+# Build iOS for simulator (sdf-ios builds for device, this builds for simulator)
+.PHONY: sdf-ios-sim
+sdf-ios-sim: clean-cache build-sdf-deps ios-sim-runtime ios-sim-core-libs
+	@echo "Building vybe.sdf for iOS Simulator..."
+	IOS_SIMULATOR=true ./SdfViewerMobile/build_ios_jank_aot.sh
+	$(MAKE) ios-sim-copy-libs
+	$(MAKE) ios-project
+	@echo ""
+	@echo "============================================"
+	@echo "  iOS Simulator Build Complete!"
+	@echo "============================================"
+
+# Run iOS app in iPad simulator
+sdf-ios-run: sdf-ios-sim
+	@echo "Building iOS app for simulator..."
+	cd SdfViewerMobile && xcodebuild \
+		-project SdfViewerMobile.xcodeproj \
+		-scheme SdfViewerMobile \
+		-configuration Debug \
+		-sdk iphonesimulator \
+		-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+		build
+	@echo ""
+	@echo "Launching simulator..."
+	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find SdfViewerMobile -name "SdfViewerMobile.app" -path "*/Debug-iphonesimulator/*" | head -1)
+	xcrun simctl launch 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile

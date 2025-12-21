@@ -1,0 +1,125 @@
+;; iOS entry point - using dots instead of hyphens in name.
+(ns vybe.sdf.ios
+  (:refer-clojure :exclude [run!])
+  (:require
+   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
+   [vybe.sdf.math :as m]
+   [vybe.sdf.state :as state]
+   [vybe.sdf.shader :as shader]
+   [vybe.sdf.ui :as ui]))
+
+;; Direct C++ bridge functions
+(defn init! [shader-dir] (sdfx/init shader-dir))
+(defn cleanup! [] (sdfx/cleanup))
+(defn should-close? [] (sdfx/should_close))
+(defn poll-events! [] (sdfx/poll_events_only))
+(defn draw-frame! [] (sdfx/draw_frame))
+(defn update-uniforms! [dt] (sdfx/update_uniforms (+ 0.0 dt)))
+(defn set-continuous-mode! [enabled] (sdfx/set_continuous_mode enabled))
+(defn set-dirty! [] (sdfx/set_dirty))
+
+;; Camera sync
+(defn sync-camera-to-cpp! []
+  (let [cam (state/get-camera)]
+    (sdfx/set_camera_distance (cpp/float. (:distance cam)))
+    (sdfx/set_camera_angle_x (cpp/float. (:angle-x cam)))
+    (sdfx/set_camera_angle_y (cpp/float. (:angle-y cam)))
+    (sdfx/set_camera_target_y (cpp/float. (:target-y cam)))
+    nil))
+
+(defn sync-camera-from-cpp! []
+  (state/set-camera!
+   {:distance (sdfx/get_camera_distance)
+    :angle-x (sdfx/get_camera_angle_x)
+    :angle-y (sdfx/get_camera_angle_y)
+    :target-y (sdfx/get_camera_target_y)}))
+
+;; Edit mode sync
+(defn sync-edit-mode-from-cpp! []
+  (state/set-edit-mode!
+   {:enabled (sdfx/get_edit_mode)
+    :selected-object (sdfx/get_selected_object)
+    :hovered-axis (sdfx/get_hovered_axis)
+    :dragging-axis (sdfx/get_dragging_axis)}))
+
+;; Objects sync
+(defn read-object-from-cpp [idx]
+  {:position [(sdfx/get_object_pos_x idx)
+              (sdfx/get_object_pos_y idx)
+              (sdfx/get_object_pos_z idx)]
+   :rotation [(sdfx/get_object_rot_x idx)
+              (sdfx/get_object_rot_y idx)
+              (sdfx/get_object_rot_z idx)]
+   :type (sdfx/get_object_type_id idx)
+   :selectable (sdfx/get_object_selectable idx)})
+
+(defn sync-objects-from-cpp! []
+  (let [cnt (sdfx/get_object_count)]
+    (state/set-objects!
+     (vec (map read-object-from-cpp (range cnt))))))
+
+;; Shader switching
+(defn switch-shader-with-preset! [direction]
+  (sync-camera-from-cpp!)
+  (let [current-shader (shader/get-current-shader-name)]
+    (state/save-camera-preset! current-shader))
+  (shader/switch-shader! direction)
+  (let [shader-name (shader/get-current-shader-name)]
+    (println "Shader:" shader-name)
+    (state/load-camera-preset! shader-name)
+    (sync-camera-to-cpp!)))
+
+(defn process-pending-shader-switch! []
+  (let [direction (shader/get-pending-shader-switch)]
+    (when (not= direction 0)
+      (shader/clear-pending-shader-switch!)
+      (switch-shader-with-preset! direction))))
+
+;; Initialization
+(defn init-kim! []
+  (println "")
+  (println "============================================")
+  (println "   SDF Viewer - iOS Edition")
+  (println "============================================")
+  (println "")
+  (init! "vulkan_kim")
+  (set-continuous-mode! true)
+  (state/set-continuous-mode! true)
+  (let [shader-name (shader/get-current-shader-name)]
+    (println "Default shader:" shader-name)
+    (state/load-camera-preset! shader-name)
+    (sync-camera-to-cpp!))
+  (sync-objects-from-cpp!)
+  (println "Objects loaded:" (state/object-count))
+  true)
+
+;; Single frame draw
+(defn draw [frame-count]
+  (poll-events!)
+  (sync-edit-mode-from-cpp!)
+  (sync-camera-from-cpp!)
+  (when (ui/auto-rotate?)
+    (state/update-camera! update :angle-y + 0.01)
+    (sync-camera-to-cpp!)
+    (set-dirty!))
+  (process-pending-shader-switch!)
+  (shader/check-shader-reload!)
+  (ui/new-frame!)
+  (ui/draw-debug-ui!)
+  (update-uniforms! 0.016)
+  (ui/render!)
+  (draw-frame!))
+
+;; iOS run loop
+(defn run! []
+  (when (init-kim!)
+    (println "Starting iOS viewer...")
+    (loop [frame-count 0]
+      (when-not (should-close?)
+        (draw frame-count)
+        (recur (inc frame-count))))
+    (cleanup!)
+    (println "Viewer closed.")))
+
+(defn -main []
+  (run!))

@@ -216,7 +216,7 @@ jobs:
             ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v11
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v12
 
       # Cache 3: PCH separately (takes 1h30 to build)
       # NO restore-keys fallback! PCH must match exact commit or compilation fails
@@ -225,7 +225,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v3
+          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v4
 
       - name: Create swap space
         if: steps.cache-jank.outputs.cache-hit != 'true' || steps.cache-pch.outputs.cache-hit != 'true'
@@ -343,14 +343,14 @@ jobs:
             ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v11
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v12
           # NO restore-keys! Must match exact build from build-jank-linux job
 
       - name: Restore PCH cache
         uses: actions/cache/restore@v4
         with:
           path: ~/jank/compiler+runtime/build/incremental.pch
-          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v3
+          key: jank-pch-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v4
           # NO restore-keys fallback! PCH must match exact commit or it will fail with
           # "file has been modified since the precompiled header was built"
 
