@@ -27,6 +27,8 @@
   - better to just move things to jank as much as possible
 - [ ] ios
   - [x] running
+  - [ ] make sdf-clean
+  - [ ] device
   - [ ] touch event
   - [ ] drag event
   - [ ] show mesh

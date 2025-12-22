@@ -149,6 +149,15 @@ struct Engine {
     bool rightMousePressed = false;  // For panning
     float lastMouseX = 0, lastMouseY = 0;
 
+    // Touch/pinch tracking for iOS
+    bool finger1Active = false;
+    bool finger2Active = false;
+    SDL_FingerID finger1ID = 0;
+    SDL_FingerID finger2ID = 0;
+    float finger1X = 0, finger1Y = 0;
+    float finger2X = 0, finger2Y = 0;
+    float lastPinchDist = 0;
+
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -1617,6 +1626,88 @@ inline bool should_close() {
 }
 
 // =============================================================================
+// Touch/Pinch Handler for iOS - manual two-finger tracking
+// =============================================================================
+
+inline void handle_touch_finger_down(Engine* e, SDL_FingerID fid, float fx, float fy) {
+    // Track up to 2 fingers for pinch zoom
+    if (!e->finger1Active) {
+        e->finger1Active = true;
+        e->finger1ID = fid;
+        e->finger1X = fx;
+        e->finger1Y = fy;
+    } else if (!e->finger2Active && fid != e->finger1ID) {
+        e->finger2Active = true;
+        e->finger2ID = fid;
+        e->finger2X = fx;
+        e->finger2Y = fy;
+        // Calculate initial pinch distance
+        float dx = e->finger2X - e->finger1X;
+        float dy = e->finger2Y - e->finger1Y;
+        e->lastPinchDist = std::sqrt(dx * dx + dy * dy);
+    }
+    e->mousePressed = true;
+    e->lastMouseX = fx;
+    e->lastMouseY = fy;
+}
+
+inline void handle_touch_finger_up(Engine* e, SDL_FingerID fid) {
+    // Release tracked finger
+    if (e->finger1Active && e->finger1ID == fid) {
+        e->finger1Active = false;
+        e->lastPinchDist = 0;  // Reset pinch state
+    } else if (e->finger2Active && e->finger2ID == fid) {
+        e->finger2Active = false;
+        e->lastPinchDist = 0;  // Reset pinch state
+    }
+    // Only set mousePressed false when all fingers are up
+    if (!e->finger1Active && !e->finger2Active) {
+        e->mousePressed = false;
+    }
+}
+
+// Returns true if pinch zoom was applied, false if single-finger rotation should be used
+inline bool handle_touch_finger_motion(Engine* e, SDL_FingerID fid, float fx, float fy, float fdx, float fdy) {
+    // Update tracked finger position
+    if (e->finger1Active && e->finger1ID == fid) {
+        e->finger1X = fx;
+        e->finger1Y = fy;
+    } else if (e->finger2Active && e->finger2ID == fid) {
+        e->finger2X = fx;
+        e->finger2Y = fy;
+    }
+
+    // Check if we have two fingers for pinch zoom
+    if (e->finger1Active && e->finger2Active) {
+        // Calculate current distance between fingers
+        float dx = e->finger2X - e->finger1X;
+        float dy = e->finger2Y - e->finger1Y;
+        float currentDist = std::sqrt(dx * dx + dy * dy);
+
+        if (e->lastPinchDist > 0.0f) {
+            // Calculate zoom based on distance change
+            float distDelta = currentDist - e->lastPinchDist;
+            // distDelta > 0 means fingers spreading = zoom in
+            // distDelta < 0 means fingers closing = zoom out
+            float zoomDelta = distDelta * 30.0f;  // Scale factor
+            e->camera.update(0, 0, zoomDelta);
+            e->dirty = true;
+        }
+        e->lastPinchDist = currentDist;
+        return true;  // Pinch zoom applied
+    }
+
+    // Single finger - rotate camera
+    float dx = fdx * 500.0f;
+    float dy = fdy * 500.0f;
+    e->camera.update(dx, dy, 0);
+    e->dirty = true;
+    e->lastMouseX = fx;
+    e->lastMouseY = fy;
+    return false;  // Single finger rotation
+}
+
+// =============================================================================
 // Event Buffer System - allows jank to handle event dispatch
 // =============================================================================
 
@@ -1715,42 +1806,31 @@ inline int poll_events_only() {
                 ed.scroll_y = event.wheel.y;
                 break;
 
-            // Touch/finger events for iOS - treat as mouse drag for camera rotation
-            // SDL provides dx/dy in normalized coordinates (-1 to 1)
+            // Touch/finger events for iOS - camera rotation and pinch zoom
             case SDL_EVENT_FINGER_DOWN:
-                // Treat finger down as left mouse button press
-                e->mousePressed = true;
-                e->lastMouseX = event.tfinger.x;
-                e->lastMouseY = event.tfinger.y;
+                handle_touch_finger_down(e, event.tfinger.fingerID,
+                                         event.tfinger.x, event.tfinger.y);
                 ed.mouse_button = SDL_BUTTON_LEFT;
                 ed.mouse_x = event.tfinger.x * g_framebufferWidth;
                 ed.mouse_y = event.tfinger.y * g_framebufferHeight;
                 break;
 
             case SDL_EVENT_FINGER_UP:
-                // Treat finger up as left mouse button release
-                e->mousePressed = false;
+                handle_touch_finger_up(e, event.tfinger.fingerID);
                 ed.mouse_button = SDL_BUTTON_LEFT;
                 ed.mouse_x = event.tfinger.x * g_framebufferWidth;
                 ed.mouse_y = event.tfinger.y * g_framebufferHeight;
                 break;
 
             case SDL_EVENT_FINGER_MOTION:
-                // Use SDL's provided dx/dy (normalized movement delta)
-                // Scale by a factor that gives natural rotation speed
-                {
-                    // dx/dy from SDL are normalized deltas
-                    float dx = event.tfinger.dx * 500.0f;  // Horizontal rotation
-                    float dy = event.tfinger.dy * 500.0f;  // Vertical tilt
-                    // Update camera rotation directly
-                    e->camera.update(dx, dy, 0);
-                    e->dirty = true;
-                    e->lastMouseX = event.tfinger.x;
-                    e->lastMouseY = event.tfinger.y;
+                if (!handle_touch_finger_motion(e, event.tfinger.fingerID,
+                                                event.tfinger.x, event.tfinger.y,
+                                                event.tfinger.dx, event.tfinger.dy)) {
+                    // Single finger rotation - update event data for jank
                     ed.mouse_x = event.tfinger.x * g_framebufferWidth;
                     ed.mouse_y = event.tfinger.y * g_framebufferHeight;
-                    ed.mouse_xrel = dx;
-                    ed.mouse_yrel = dy;
+                    ed.mouse_xrel = event.tfinger.dx * 500.0f;
+                    ed.mouse_yrel = event.tfinger.dy * 500.0f;
                 }
                 break;
         }
