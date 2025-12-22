@@ -335,7 +335,7 @@ test tests: build-flecs
 # iOS targets
 # ============================================================================
 
-.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run sdf-ios-sim-run sdf-ios-simulator-run sdf-ios-device sdf-ios-device-run
+.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run sdf-ios-sim-run sdf-ios-simulator-run sdf-ios-sim-clean sdf-ios-device sdf-ios-device-run sdf-ios-device-clean
 
 # jank iOS build paths (device)
 JANK_IOS_BUILD = $(JANK_SRC)/build-ios
@@ -494,9 +494,9 @@ sdf-ios: clean-cache build-sdf-deps ios-jank ios-project
 	@echo ""
 	@echo "To run in simulator: make sdf-ios-run"
 
-# Build iOS for simulator (sdf-ios builds for device, this builds for simulator)
+# Build iOS for simulator (incremental - reuses existing builds)
 .PHONY: sdf-ios-sim
-sdf-ios-sim: clean-cache build-sdf-deps ios-sim-runtime ios-sim-core-libs
+sdf-ios-sim: build-sdf-deps ios-sim-runtime ios-sim-core-libs
 	@echo "Building vybe.sdf for iOS Simulator..."
 	./SdfViewerMobile/build_ios_jank_aot.sh simulator
 	$(MAKE) ios-sim-copy-libs
@@ -505,6 +505,10 @@ sdf-ios-sim: clean-cache build-sdf-deps ios-sim-runtime ios-sim-core-libs
 	@echo "============================================"
 	@echo "  iOS Simulator Build Complete!"
 	@echo "============================================"
+
+# Build iOS for simulator (clean rebuild)
+.PHONY: sdf-ios-sim-clean
+sdf-ios-sim-clean: clean-cache sdf-ios-sim
 
 # Run iOS app in iPad simulator
 # Build and run for iOS Simulator
@@ -521,16 +525,17 @@ sdf-ios-sim-run: sdf-ios-sim
 	@echo "Launching simulator..."
 	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
 	open -a Simulator
-	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find SdfViewerMobile -name "SdfViewerMobile.app" -path "*/Debug-iphonesimulator/*" | head -1)
+	xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile 2>/dev/null || true
+	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile.app" -path "*/Build/Products/Debug-iphonesimulator/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
 	xcrun simctl launch 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile
 
 # Aliases for backwards compatibility
 sdf-ios-run: sdf-ios-sim-run
 sdf-ios-simulator-run: sdf-ios-sim-run
 
-# Build iOS for device
+# Build iOS for device (incremental - reuses existing builds)
 .PHONY: sdf-ios-device
-sdf-ios-device: clean-cache build-sdf-deps ios-runtime ios-core-libs
+sdf-ios-device: build-sdf-deps ios-runtime ios-core-libs
 	@echo "Building vybe.sdf for iOS Device..."
 	./SdfViewerMobile/build_ios_jank_aot.sh device
 	$(MAKE) ios-copy-libs
@@ -539,6 +544,10 @@ sdf-ios-device: clean-cache build-sdf-deps ios-runtime ios-core-libs
 	@echo "============================================"
 	@echo "  iOS Device Build Complete!"
 	@echo "============================================"
+
+# Build iOS for device (clean rebuild)
+.PHONY: sdf-ios-device-clean
+sdf-ios-device-clean: clean-cache sdf-ios-device
 
 # Build and run for iOS Device (requires device connected)
 # Note: You may need to open Xcode first for signing: open SdfViewerMobile/SdfViewerMobile.xcodeproj
@@ -562,5 +571,7 @@ sdf-ios-device-run: sdf-ios-device
 	APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile.app" -path "*/Debug-iphoneos/*" 2>/dev/null | head -1); \
 	echo "Installing $$APP_PATH to device $$DEVICE_ID..."; \
 	xcrun devicectl device install app --device "$$DEVICE_ID" "$$APP_PATH"; \
+	echo "Terminating existing app (if running)..."; \
+	xcrun devicectl device process terminate --device "$$DEVICE_ID" com.vybe.SdfViewerMobile 2>/dev/null || true; \
 	echo "Launching app..."; \
 	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile

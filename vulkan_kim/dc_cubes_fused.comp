@@ -138,7 +138,7 @@ void main() {
 
     // Center of cell
     vec3 center = cellMin + vec3(cellSize * 0.5);
-    float half = cubeSize * 0.5;
+    float halfSize = cubeSize * 0.5;
 
     // Compute normal at cell center
     vec3 normal = computeNormal(center);
@@ -152,14 +152,14 @@ void main() {
 
     // 8 cube corners (stored as position + packed normal)
     vec3 corners[8] = vec3[8](
-        center + vec3(-half, -half, -half),
-        center + vec3( half, -half, -half),
-        center + vec3( half,  half, -half),
-        center + vec3(-half,  half, -half),
-        center + vec3(-half, -half,  half),
-        center + vec3( half, -half,  half),
-        center + vec3( half,  half,  half),
-        center + vec3(-half,  half,  half)
+        center + vec3(-halfSize, -halfSize, -halfSize),
+        center + vec3( halfSize, -halfSize, -halfSize),
+        center + vec3( halfSize,  halfSize, -halfSize),
+        center + vec3(-halfSize,  halfSize, -halfSize),
+        center + vec3(-halfSize, -halfSize,  halfSize),
+        center + vec3( halfSize, -halfSize,  halfSize),
+        center + vec3( halfSize,  halfSize,  halfSize),
+        center + vec3(-halfSize,  halfSize,  halfSize)
     );
 
     // Write vertices (position in xyz, normal.x in w, then normal.yz in next entry)

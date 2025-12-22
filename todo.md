@@ -30,8 +30,11 @@
   - [x] touch event
   - [x] drag event
   - [x] make sdf-clean
-  - [ ] device
-  - [ ] show mesh
+  - [x] device
+  - [x] show mesh
+  - [ ] improve
+  - [ ] nREPL would work ?
+  - [ ] release mode
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
 - [ ] print atom

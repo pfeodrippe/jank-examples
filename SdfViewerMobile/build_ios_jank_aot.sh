@@ -164,6 +164,15 @@ for module in "${VYBE_MODULES[@]}"; do
     module_filename=$(echo "$module" | tr '.' '_')
     GENERATED_CPP="$IOS_GENERATED_DIR/${module_filename}_generated.cpp"
 
+    # Convert module name to source path (e.g., vybe.sdf.ios -> src/vybe/sdf/ios.jank)
+    source_path="src/$(echo "$module" | tr '.' '/').jank"
+
+    # Check if we need to recompile (source newer than generated, or generated doesn't exist)
+    if [ -f "$GENERATED_CPP" ] && [ -f "$source_path" ] && [ "$GENERATED_CPP" -nt "$source_path" ]; then
+        echo "  Skipping $module (up-to-date)"
+        continue
+    fi
+
     echo "  Compiling $module..."
     "$JANK_BIN" "${JANK_FLAGS[@]}" \
         --save-cpp-path "$GENERATED_CPP" \
@@ -246,6 +255,12 @@ for module in "${VYBE_MODULES[@]}"; do
     module_filename=$(echo "$module" | tr '.' '_')
     GENERATED_CPP="$IOS_GENERATED_DIR/${module_filename}_generated.cpp"
     GENERATED_OBJ="$IOS_OBJ_DIR/${module_filename}_generated.o"
+
+    # Check if we need to recompile (cpp newer than obj, or obj doesn't exist)
+    if [ -f "$GENERATED_OBJ" ] && [ "$GENERATED_OBJ" -nt "$GENERATED_CPP" ]; then
+        echo "  Skipping $module_filename (up-to-date)"
+        continue
+    fi
 
     echo "  Compiling $module_filename..."
     clang++ $IOS_CXXFLAGS -c "$GENERATED_CPP" -o "$GENERATED_OBJ" 2>&1
