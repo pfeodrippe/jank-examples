@@ -18,6 +18,7 @@ jank.profile
 *.png
 SDFViewer*
 !SDFViewerMobile
+SDFViewerMobile/generated
 sdf-viewer*
 .DS_Store
 

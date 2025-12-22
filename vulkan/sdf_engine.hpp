@@ -1714,6 +1714,45 @@ inline int poll_events_only() {
                 ed.scroll_x = event.wheel.x;
                 ed.scroll_y = event.wheel.y;
                 break;
+
+            // Touch/finger events for iOS - treat as mouse drag for camera rotation
+            // SDL provides dx/dy in normalized coordinates (-1 to 1)
+            case SDL_EVENT_FINGER_DOWN:
+                // Treat finger down as left mouse button press
+                e->mousePressed = true;
+                e->lastMouseX = event.tfinger.x;
+                e->lastMouseY = event.tfinger.y;
+                ed.mouse_button = SDL_BUTTON_LEFT;
+                ed.mouse_x = event.tfinger.x * g_framebufferWidth;
+                ed.mouse_y = event.tfinger.y * g_framebufferHeight;
+                break;
+
+            case SDL_EVENT_FINGER_UP:
+                // Treat finger up as left mouse button release
+                e->mousePressed = false;
+                ed.mouse_button = SDL_BUTTON_LEFT;
+                ed.mouse_x = event.tfinger.x * g_framebufferWidth;
+                ed.mouse_y = event.tfinger.y * g_framebufferHeight;
+                break;
+
+            case SDL_EVENT_FINGER_MOTION:
+                // Use SDL's provided dx/dy (normalized movement delta)
+                // Scale by a factor that gives natural rotation speed
+                {
+                    // dx/dy from SDL are normalized deltas
+                    float dx = event.tfinger.dx * 500.0f;  // Horizontal rotation
+                    float dy = event.tfinger.dy * 500.0f;  // Vertical tilt
+                    // Update camera rotation directly
+                    e->camera.update(dx, dy, 0);
+                    e->dirty = true;
+                    e->lastMouseX = event.tfinger.x;
+                    e->lastMouseY = event.tfinger.y;
+                    ed.mouse_x = event.tfinger.x * g_framebufferWidth;
+                    ed.mouse_y = event.tfinger.y * g_framebufferHeight;
+                    ed.mouse_xrel = dx;
+                    ed.mouse_yrel = dy;
+                }
+                break;
         }
 
         g_event_count++;

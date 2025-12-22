@@ -25,8 +25,11 @@
 - [x] draw-debug-ui! form is really slow to compile/eval
 - [-] when we evaluate `should-close?` via the nREPL .app (after evaluating`(cpp/raw "#include \"vulkan/sdf_engine.hpp\"")`), we have the app closing
   - better to just move things to jank as much as possible
-- [ ] ios sample
-  - townscaper-like
+- [ ] ios
+  - [x] running
+  - [ ] touch event
+  - [ ] drag event
+  - [ ] show mesh
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
 - [ ] print atom

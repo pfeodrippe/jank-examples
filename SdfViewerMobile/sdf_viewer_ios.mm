@@ -44,6 +44,11 @@ bool vybe_ios_init_str(std::string const& shader_dir) {
     g_resource_path = getBundleResourcePath();
     g_shader_dir = g_resource_path + "/" + shader_dir;
 
+    // Enable touch-to-mouse event conversion for iOS
+    // This allows touch events to generate synthetic mouse events
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+    std::cout << "[vybe_ios] Set SDL_HINT_TOUCH_MOUSE_EVENTS=1" << std::endl;
+
     if (!sdfx::init(g_shader_dir.c_str())) {
         std::cerr << "[vybe_ios] Failed to initialize SDF engine" << std::endl;
         return false;
