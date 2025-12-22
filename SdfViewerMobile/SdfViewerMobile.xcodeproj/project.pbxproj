@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -53,11 +53,11 @@
 		93498D9AC2ED4B60251A30E8 /* imgui_tables.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_tables.cpp; sourceTree = "<group>"; };
 		AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MoltenVK.xcframework; path = Frameworks/MoltenVK.xcframework; sourceTree = "<group>"; };
 		B22DD2F6D05F33713D6DDFDC /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
-		B9424EF0C990815E2953B1A7 /* exported_scene.glb */ = {isa = PBXFileReference; path = exported_scene.glb; sourceTree = "<group>"; };
+		B9424EF0C990815E2953B1A7 /* exported_scene.glb */ = {isa = PBXFileReference; lastKnownFileType = file; path = exported_scene.glb; sourceTree = "<group>"; };
 		BE5E8F16F9D0CA223DC43F71 /* imgui_draw.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_draw.cpp; sourceTree = "<group>"; };
 		C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_impl_sdl3.cpp; sourceTree = "<group>"; };
 		CEA0C2F9A2A9BEF9F4563A0D /* imgui_widgets.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_widgets.cpp; sourceTree = "<group>"; };
-		E21EDDA7EF94BBBD99A3A18D /* SdfViewerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SdfViewerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E21EDDA7EF94BBBD99A3A18D /* SdfViewerMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SdfViewerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -172,7 +172,6 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					5D711447D940445672EDAD5E = {
-						DevelopmentTeam = 937QJHK26U;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -187,7 +186,6 @@
 			);
 			mainGroup = 6C8D85ED3BD441838CAEC9DD;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -258,6 +256,7 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
+				DEVELOPMENT_TEAM = GNRTKYX7C4;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Frameworks",
 					"\"Frameworks\"",
@@ -284,9 +283,7 @@
 				);
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"@executable_path/Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)",
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator",
@@ -295,19 +292,32 @@
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc",
 				);
 				OTHER_LDFLAGS = (
-					"-framework Metal",
-					"-framework MetalKit",
-					"-framework QuartzCore",
-					"-framework UIKit",
-					"-framework Foundation",
-					"-framework CoreGraphics",
-					"-framework CoreVideo",
-					"-framework AVFoundation",
-					"-framework GameController",
-					"-framework CoreHaptics",
-					"-framework CoreMotion",
-					"-framework IOSurface",
-					"-framework IOKit",
+					"-framework",
+					Metal,
+					"-framework",
+					MetalKit,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					UIKit,
+					"-framework",
+					Foundation,
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					GameController,
+					"-framework",
+					CoreHaptics,
+					"-framework",
+					CoreMotion,
+					"-framework",
+					IOSurface,
+					"-framework",
+					IOKit,
 					"-lc++",
 					"-ljank",
 					"-ljankzip",
@@ -401,6 +411,7 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
+				DEVELOPMENT_TEAM = GNRTKYX7C4;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Frameworks",
 					"\"Frameworks\"",
@@ -427,9 +438,7 @@
 				);
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"@executable_path/Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)",
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator",
@@ -438,19 +447,32 @@
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc",
 				);
 				OTHER_LDFLAGS = (
-					"-framework Metal",
-					"-framework MetalKit",
-					"-framework QuartzCore",
-					"-framework UIKit",
-					"-framework Foundation",
-					"-framework CoreGraphics",
-					"-framework CoreVideo",
-					"-framework AVFoundation",
-					"-framework GameController",
-					"-framework CoreHaptics",
-					"-framework CoreMotion",
-					"-framework IOSurface",
-					"-framework IOKit",
+					"-framework",
+					Metal,
+					"-framework",
+					MetalKit,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					UIKit,
+					"-framework",
+					Foundation,
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					GameController,
+					"-framework",
+					CoreHaptics,
+					"-framework",
+					CoreMotion,
+					"-framework",
+					IOSurface,
+					"-framework",
+					IOKit,
 					"-lc++",
 					"-ljank",
 					"-ljankzip",

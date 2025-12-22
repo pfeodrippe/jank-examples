@@ -82,6 +82,12 @@ help:
 	@echo "  make ios-project  - Generate Xcode project (requires xcodegen)"
 	@echo "  make ios-build    - Build iOS app"
 	@echo "  make ios-clean    - Clean iOS build artifacts"
+	@echo ""
+	@echo "iOS JIT builds (development only - requires Xcode):"
+	@echo "  make ios-jit-llvm-sim   - Build LLVM for iOS Simulator (~2 hours, one-time)"
+	@echo "  make ios-jit-llvm-device - Build LLVM for iOS Device (~2 hours, one-time)"
+	@echo "  make ios-jit-sim        - Build jank with JIT for iOS Simulator"
+	@echo "  make ios-jit-device     - Build jank with JIT for iOS Device"
 
 # ============================================================================
 # Object file targets (with proper dependencies)
@@ -335,7 +341,8 @@ test tests: build-flecs
 # iOS targets
 # ============================================================================
 
-.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run sdf-ios-sim-run sdf-ios-simulator-run sdf-ios-sim-clean sdf-ios-device sdf-ios-device-run sdf-ios-device-clean
+.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run sdf-ios-sim-run sdf-ios-simulator-run sdf-ios-sim-clean sdf-ios-device sdf-ios-device-run sdf-ios-device-clean \
+        ios-jit-llvm-sim ios-jit-llvm-device ios-jit-sim ios-jit-device
 
 # jank iOS build paths (device)
 JANK_IOS_BUILD = $(JANK_SRC)/build-ios
@@ -575,3 +582,65 @@ sdf-ios-device-run: sdf-ios-device
 	xcrun devicectl device process terminate --device "$$DEVICE_ID" com.vybe.SdfViewerMobile 2>/dev/null || true; \
 	echo "Launching app..."; \
 	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile
+
+# ============================================================================
+# iOS JIT targets (LLVM-based JIT for development)
+# ============================================================================
+# NOTE: JIT only works when launched from Xcode (requires entitlements)
+# Build LLVM first: make ios-jit-llvm-sim (takes ~2 hours)
+
+# Build LLVM for iOS Simulator (one-time, ~2 hours)
+ios-jit-llvm-sim:
+	@echo "Building LLVM for iOS Simulator (this takes ~2 hours)..."
+	cd $(JANK_SRC) && ./bin/build-ios-llvm simulator
+
+# Build LLVM for iOS Device (one-time, ~2 hours)
+ios-jit-llvm-device:
+	@echo "Building LLVM for iOS Device (this takes ~2 hours)..."
+	cd $(JANK_SRC) && ./bin/build-ios-llvm device
+
+# Build jank with JIT for iOS Simulator
+ios-jit-sim:
+	@echo "Building jank with JIT for iOS Simulator..."
+	cd $(JANK_SRC) && ./bin/build-ios build-ios-sim-jit Debug simulator jit
+	@echo ""
+	@echo "============================================"
+	@echo "  iOS Simulator JIT Build Complete!"
+	@echo "============================================"
+	@echo ""
+	@echo "Libraries at: $(JANK_SRC)/build-ios-sim-jit/"
+	@echo ""
+	@echo "NOTE: JIT only works when app is launched from Xcode."
+	@echo "Sign with ios/jank-jit.entitlements for development."
+
+# Build jank with JIT for iOS Device
+ios-jit-device:
+	@echo "Building jank with JIT for iOS Device..."
+	cd $(JANK_SRC) && ./bin/build-ios build-ios-device-jit Debug device jit
+	@echo ""
+	@echo "============================================"
+	@echo "  iOS Device JIT Build Complete!"
+	@echo "============================================"
+	@echo ""
+	@echo "Libraries at: $(JANK_SRC)/build-ios-device-jit/"
+	@echo ""
+	@echo "NOTE: JIT only works when app is launched from Xcode."
+	@echo "Sign with ios/jank-jit.entitlements for development."
+
+# Build, install and run iOS JIT app in simulator
+.PHONY: ios-jit-sim-run
+ios-jit-sim-run:
+	@echo "Building iOS JIT app for simulator..."
+	cd SdfViewerMobile && xcodebuild \
+		-project SdfViewerMobile-JIT.xcodeproj \
+		-scheme SdfViewerMobile-JIT \
+		-configuration Debug \
+		-sdk iphonesimulator \
+		-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+		build
+	@echo "Launching simulator..."
+	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT 2>/dev/null || true
+	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT.app" -path "*/Build/Products/Debug-iphonesimulator/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
+	xcrun simctl launch --console-pty 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT
