@@ -5619,10 +5619,18 @@ inline bool init_mesh_pipeline() {
     if (e->meshPipelineInitialized) return true;
 
     std::cout << "Initializing mesh preview pipeline..." << std::endl;
+    std::cout << "  Shader dir: " << e->shaderDir << std::endl;
 
     // Load mesh shaders
-    auto vertCode = read_file(e->shaderDir + "/mesh.vert.spv");
-    auto fragCode = read_file(e->shaderDir + "/mesh.frag.spv");
+    std::string vertPath = e->shaderDir + "/mesh.vert.spv";
+    std::string fragPath = e->shaderDir + "/mesh.frag.spv";
+    std::cout << "  Loading vert: " << vertPath << std::endl;
+    std::cout << "  Loading frag: " << fragPath << std::endl;
+
+    auto vertCode = read_file(vertPath);
+    auto fragCode = read_file(fragPath);
+
+    std::cout << "  Vert size: " << vertCode.size() << ", Frag size: " << fragCode.size() << std::endl;
 
     if (vertCode.empty() || fragCode.empty()) {
         std::cerr << "Failed to load mesh shaders" << std::endl;
@@ -5960,21 +5968,47 @@ inline bool upload_mesh_preview(const mc::Mesh& mesh, const std::vector<mc::Colo
 
 // Load GLB file and display in viewer
 inline bool load_glb_and_display(const char* filepath) {
+    std::cout << "[load_glb_and_display] Called with: " << filepath << std::endl;
     auto* e = get_engine();
     if (!e || !e->initialized) {
-        std::cerr << "Engine not initialized" << std::endl;
+        std::cerr << "[load_glb_and_display] Engine not initialized" << std::endl;
         return false;
     }
 
+    // Resolve path: if relative, prepend shader dir's parent (resource path on iOS)
+    std::string resolvedPath = filepath;
+    if (filepath[0] != '/') {
+        // Relative path - prepend shader directory's parent
+        std::string parentDir = e->shaderDir;
+        size_t lastSlash = parentDir.rfind('/');
+        if (lastSlash != std::string::npos) {
+            parentDir = parentDir.substr(0, lastSlash);
+            resolvedPath = parentDir + "/" + filepath;
+        }
+        // If no slash found, shaderDir is already at root level, use filepath as-is
+        std::cout << "[load_glb_and_display] Resolved relative path to: " << resolvedPath << std::endl;
+    }
+
     mc::Mesh loadedMesh;
-    if (!mc::loadGLB(filepath, loadedMesh)) {
-        std::cerr << "Failed to load GLB: " << filepath << std::endl;
+    std::cout << "[load_glb_and_display] Calling mc::loadGLB with: " << resolvedPath << std::endl;
+    if (!mc::loadGLB(resolvedPath, loadedMesh)) {
+        std::cerr << "[load_glb_and_display] Failed to load GLB: " << resolvedPath << std::endl;
         return false;
     }
+    std::cout << "[load_glb_and_display] GLB loaded: " << loadedMesh.vertices.size() << " verts, "
+              << loadedMesh.indices.size() << " indices" << std::endl;
 
     // Store the loaded mesh as current mesh
     e->currentMesh = loadedMesh;
     e->currentMeshResolution = 0;  // Unknown resolution for loaded mesh
+
+    // Initialize mesh pipeline if needed (required for rendering)
+    if (!e->meshPipelineInitialized) {
+        if (!init_mesh_pipeline()) {
+            std::cerr << "Failed to init mesh pipeline for GLB" << std::endl;
+            return false;
+        }
+    }
 
     // Upload to GPU for display
     bool success = upload_mesh_preview(loadedMesh, loadedMesh.colors);

@@ -83,6 +83,12 @@
   (println "============================================")
   (println "")
   (init! "vulkan_kim")
+  ;; Load pre-exported GLB mesh (runtime mesh gen needs shaderc which iOS lacks)
+  ;; The load_glb_and_display function now resolves relative paths using shader dir's parent
+  (println "Loading pre-exported GLB mesh...")
+  (if (sdfx/load_glb_and_display "exported_scene.glb")
+    (println "Mesh loaded successfully!")
+    (println "Warning: Failed to load mesh"))
   (set-continuous-mode! true)
   (state/set-continuous-mode! true)
   (let [shader-name (shader/get-current-shader-name)]

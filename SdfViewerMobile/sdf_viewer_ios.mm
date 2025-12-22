@@ -154,6 +154,10 @@ double vybe_ios_get_time() {
     return sdfx::get_time();
 }
 
+const char* vybe_ios_get_resource_path() {
+    return g_resource_path.c_str();
+}
+
 } // extern "C"
 
 // =============================================================================

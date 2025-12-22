@@ -1,4 +1,6 @@
-(ns vybe.sdf-ios)
+(ns vybe.sdf-ios
+  (:require
+   ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]))
 ;; iOS-specific SDF viewer entry point.
 ;; Uses cpp/raw with weak stubs for AOT compilation.
 ;; Real implementations are in sdf_viewer_ios.mm
@@ -80,6 +82,10 @@ extern \"C\" {
   // Time
   __attribute__((weak))
   double vybe_ios_get_time() { return 0.0; }
+
+  // Resource path for loading bundled files
+  __attribute__((weak))
+  const char* vybe_ios_get_resource_path() { return "."; }
 }
 ")
 
@@ -178,6 +184,11 @@ extern \"C\" {
   []
   (cpp/vybe_ios_get_shader_name_cstr))
 
+(defn get-resource-path
+  "Get iOS bundle resource path."
+  []
+  (cpp/vybe_ios_get_resource_path))
+
 ;; =============================================================================
 ;; Main Loop
 ;; =============================================================================
@@ -206,6 +217,13 @@ extern \"C\" {
   (when (init! "vulkan_kim")
     (println "SDF Engine initialized!")
     (println "Current shader:" (get-shader-name))
+
+    ;; Load pre-exported GLB mesh (since runtime mesh generation requires shaderc)
+    (let [glb-path (str (get-resource-path) "/exported_scene.glb")]
+      (println "Loading mesh from:" glb-path)
+      (if (sdfx/load_glb_and_display glb-path)
+        (println "Mesh loaded successfully!")
+        (println "Failed to load mesh")))
 
     ;; Sync initial camera state
     (sync-camera-to-cpp!)

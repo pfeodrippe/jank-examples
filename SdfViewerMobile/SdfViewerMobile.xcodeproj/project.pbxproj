@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -22,6 +22,7 @@
 		8143C6C95EFBDB1B9FBCDB1C /* SDL3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 02D49A287E9EA2C7590F4709 /* SDL3.xcframework */; };
 		895ECBFAB373958D1B09EF1C /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = B22DD2F6D05F33713D6DDFDC /* main.mm */; settings = {COMPILER_FLAGS = "-x objective-c++"; }; };
 		8E1D79C24AF569BC829DA788 /* MoltenVK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */; };
+		AB57A01747D467CB2436A95D /* exported_scene.glb in Resources */ = {isa = PBXBuildFile; fileRef = B9424EF0C990815E2953B1A7 /* exported_scene.glb */; };
 		B0B0D8C4FC2F65DA4375D48B /* imgui_impl_sdl3.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */; };
 /* End PBXBuildFile section */
 
@@ -52,10 +53,11 @@
 		93498D9AC2ED4B60251A30E8 /* imgui_tables.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_tables.cpp; sourceTree = "<group>"; };
 		AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MoltenVK.xcframework; path = Frameworks/MoltenVK.xcframework; sourceTree = "<group>"; };
 		B22DD2F6D05F33713D6DDFDC /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		B9424EF0C990815E2953B1A7 /* exported_scene.glb */ = {isa = PBXFileReference; lastKnownFileType = file; path = exported_scene.glb; sourceTree = "<group>"; };
 		BE5E8F16F9D0CA223DC43F71 /* imgui_draw.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_draw.cpp; sourceTree = "<group>"; };
 		C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_impl_sdl3.cpp; sourceTree = "<group>"; };
 		CEA0C2F9A2A9BEF9F4563A0D /* imgui_widgets.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_widgets.cpp; sourceTree = "<group>"; };
-		E21EDDA7EF94BBBD99A3A18D /* SdfViewerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SdfViewerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E21EDDA7EF94BBBD99A3A18D /* SdfViewerMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SdfViewerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,6 +91,7 @@
 				B528B0017BF10ECBCB88AAF6 /* backends */,
 				0D1CB5910010CF787E1D33B6 /* imgui */,
 				96D8AB83CB8B3A9EFB144465 /* vulkan */,
+				B9424EF0C990815E2953B1A7 /* exported_scene.glb */,
 				4334768E4099E7D1C2468FE0 /* LaunchScreen.storyboard */,
 				B22DD2F6D05F33713D6DDFDC /* main.mm */,
 				3DDA8BF0C9ED1EA0265E45FF /* sdf_engine_impl.cpp */,
@@ -169,7 +172,6 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					5D711447D940445672EDAD5E = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -184,7 +186,6 @@
 			);
 			mainGroup = 6C8D85ED3BD441838CAEC9DD;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -199,6 +200,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				24414756541BB63C3D6EB6AC /* LaunchScreen.storyboard in Resources */,
+				AB57A01747D467CB2436A95D /* exported_scene.glb in Resources */,
 				2EEBAA05B6D87046989A07E2 /* vulkan_kim in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -251,9 +253,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				DEVELOPMENT_TEAM = GNRTKYX7C4;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Frameworks",
 					"\"Frameworks\"",
@@ -280,9 +283,7 @@
 				);
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"@executable_path/Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)",
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator",
@@ -291,19 +292,32 @@
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc",
 				);
 				OTHER_LDFLAGS = (
-					"-framework Metal",
-					"-framework MetalKit",
-					"-framework QuartzCore",
-					"-framework UIKit",
-					"-framework Foundation",
-					"-framework CoreGraphics",
-					"-framework CoreVideo",
-					"-framework AVFoundation",
-					"-framework GameController",
-					"-framework CoreHaptics",
-					"-framework CoreMotion",
-					"-framework IOSurface",
-					"-framework IOKit",
+					"-framework",
+					Metal,
+					"-framework",
+					MetalKit,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					UIKit,
+					"-framework",
+					Foundation,
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					GameController,
+					"-framework",
+					CoreHaptics,
+					"-framework",
+					CoreMotion,
+					"-framework",
+					IOSurface,
+					"-framework",
+					IOKit,
 					"-lc++",
 					"-ljank",
 					"-ljankzip",
@@ -364,7 +378,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 937QJHK26U;
 				ENABLE_BITCODE = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -405,9 +419,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				DEVELOPMENT_TEAM = GNRTKYX7C4;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/Frameworks",
 					"\"Frameworks\"",
@@ -434,9 +449,7 @@
 				);
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"@executable_path/Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				LIBRARY_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)",
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator",
@@ -445,19 +458,32 @@
 					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc",
 				);
 				OTHER_LDFLAGS = (
-					"-framework Metal",
-					"-framework MetalKit",
-					"-framework QuartzCore",
-					"-framework UIKit",
-					"-framework Foundation",
-					"-framework CoreGraphics",
-					"-framework CoreVideo",
-					"-framework AVFoundation",
-					"-framework GameController",
-					"-framework CoreHaptics",
-					"-framework CoreMotion",
-					"-framework IOSurface",
-					"-framework IOKit",
+					"-framework",
+					Metal,
+					"-framework",
+					MetalKit,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					UIKit,
+					"-framework",
+					Foundation,
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreVideo,
+					"-framework",
+					AVFoundation,
+					"-framework",
+					GameController,
+					"-framework",
+					CoreHaptics,
+					"-framework",
+					CoreMotion,
+					"-framework",
+					IOSurface,
+					"-framework",
+					IOKit,
 					"-lc++",
 					"-ljank",
 					"-ljankzip",
@@ -518,7 +544,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 937QJHK26U;
 				ENABLE_BITCODE = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

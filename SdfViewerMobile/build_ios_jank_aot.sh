@@ -1,12 +1,34 @@
 #!/bin/bash
 # Build jank code (vybe.sdf) for iOS via AOT compilation
 # Uses the WASM AOT approach: generate C++ on macOS, cross-compile for iOS
+#
+# Usage: ./build_ios_jank_aot.sh <target>
+#   target: 'simulator' or 'device'
 
 set -e
 cd "$(dirname "$0")/.."
 
+# Require explicit target argument
+if [[ "$1" != "simulator" && "$1" != "device" ]]; then
+    echo "Error: You must specify a target: 'simulator' or 'device'"
+    echo ""
+    echo "Usage: $0 <target>"
+    echo "  simulator  - Build for iOS Simulator (arm64-apple-ios-simulator)"
+    echo "  device     - Build for iOS Device (arm64-apple-ios)"
+    echo ""
+    exit 1
+fi
+
+# Set IOS_SIMULATOR based on argument
+if [[ "$1" == "simulator" ]]; then
+    IOS_SIMULATOR=true
+else
+    IOS_SIMULATOR=false
+fi
+
 echo "============================================"
 echo "  Building jank for iOS (C++ AOT approach)"
+echo "  Target: $1"
 echo "============================================"
 echo ""
 
@@ -30,9 +52,6 @@ if [ ! -x "$JANK_BIN" ]; then
     echo "Please build jank first: cd $JANK_SRC && ./bin/compile"
     exit 1
 fi
-
-# Check if building for simulator
-IOS_SIMULATOR="${IOS_SIMULATOR:-false}"
 
 # iOS cross-compilation settings (iOS 17.0+ required for std::format)
 if [[ "${IOS_SIMULATOR}" == "true" ]]; then

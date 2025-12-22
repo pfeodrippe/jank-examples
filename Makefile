@@ -76,8 +76,8 @@ help:
 	@echo "  make sdf-standalone  - Build standalone SDF viewer app"
 	@echo ""
 	@echo "iOS builds:"
-	@echo "  make sdf-ios-sim-run    - Build and run iOS app in iPad simulator"
-	@echo "  make sdf-ios-device-run - Build and run iOS app on connected device"
+	@echo "  make sdf-ios-simulator-run - Build and run iOS app in iPad simulator"
+	@echo "  make sdf-ios-device-run    - Build and run iOS app on connected device"
 	@echo "  make ios-setup    - Download/build iOS dependencies (MoltenVK, SDL3)"
 	@echo "  make ios-project  - Generate Xcode project (requires xcodegen)"
 	@echo "  make ios-build    - Build iOS app"
@@ -335,7 +335,7 @@ test tests: build-flecs
 # iOS targets
 # ============================================================================
 
-.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run sdf-ios-sim-run sdf-ios-device sdf-ios-device-run
+.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run sdf-ios-sim-run sdf-ios-simulator-run sdf-ios-device sdf-ios-device-run
 
 # jank iOS build paths (device)
 JANK_IOS_BUILD = $(JANK_SRC)/build-ios
@@ -498,7 +498,7 @@ sdf-ios: clean-cache build-sdf-deps ios-jank ios-project
 .PHONY: sdf-ios-sim
 sdf-ios-sim: clean-cache build-sdf-deps ios-sim-runtime ios-sim-core-libs
 	@echo "Building vybe.sdf for iOS Simulator..."
-	IOS_SIMULATOR=true ./SdfViewerMobile/build_ios_jank_aot.sh
+	./SdfViewerMobile/build_ios_jank_aot.sh simulator
 	$(MAKE) ios-sim-copy-libs
 	$(MAKE) ios-project
 	@echo ""
@@ -524,14 +524,15 @@ sdf-ios-sim-run: sdf-ios-sim
 	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find SdfViewerMobile -name "SdfViewerMobile.app" -path "*/Debug-iphonesimulator/*" | head -1)
 	xcrun simctl launch 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile
 
-# Alias for backwards compatibility
+# Aliases for backwards compatibility
 sdf-ios-run: sdf-ios-sim-run
+sdf-ios-simulator-run: sdf-ios-sim-run
 
 # Build iOS for device
 .PHONY: sdf-ios-device
 sdf-ios-device: clean-cache build-sdf-deps ios-runtime ios-core-libs
 	@echo "Building vybe.sdf for iOS Device..."
-	./SdfViewerMobile/build_ios_jank_aot.sh
+	./SdfViewerMobile/build_ios_jank_aot.sh device
 	$(MAKE) ios-copy-libs
 	$(MAKE) ios-project
 	@echo ""
@@ -540,8 +541,10 @@ sdf-ios-device: clean-cache build-sdf-deps ios-runtime ios-core-libs
 	@echo "============================================"
 
 # Build and run for iOS Device (requires device connected)
+# Note: You may need to open Xcode first for signing: open SdfViewerMobile/SdfViewerMobile.xcodeproj
 sdf-ios-device-run: sdf-ios-device
 	@echo "Building iOS app for device..."
+	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile.xcodeproj)"
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile.xcodeproj \
 		-scheme SdfViewerMobile \
@@ -551,12 +554,13 @@ sdf-ios-device-run: sdf-ios-device
 		build
 	@echo ""
 	@echo "Installing to connected device..."
-	@if command -v ios-deploy >/dev/null 2>&1; then \
-		APP_PATH=$$(find SdfViewerMobile -name "SdfViewerMobile.app" -path "*/Debug-iphoneos/*" | head -1); \
-		echo "Using ios-deploy to install $$APP_PATH"; \
-		ios-deploy --bundle "$$APP_PATH" --debug; \
-	else \
-		echo "ios-deploy not found. Install with: brew install ios-deploy"; \
-		echo "Or open Xcode and run from there:"; \
-		echo "  open SdfViewerMobile/SdfViewerMobile.xcodeproj"; \
-	fi
+	@DEVICE_ID=$$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*iPad|connected.*iPhone" | awk '{print $$3}' | head -1); \
+	if [ -z "$$DEVICE_ID" ]; then \
+		echo "No iOS device found. Connect your device and try again."; \
+		exit 1; \
+	fi; \
+	APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile.app" -path "*/Debug-iphoneos/*" 2>/dev/null | head -1); \
+	echo "Installing $$APP_PATH to device $$DEVICE_ID..."; \
+	xcrun devicectl device install app --device "$$DEVICE_ID" "$$APP_PATH"; \
+	echo "Launching app..."; \
+	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile
