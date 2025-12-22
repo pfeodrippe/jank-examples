@@ -76,8 +76,8 @@ help:
 	@echo "  make sdf-standalone  - Build standalone SDF viewer app"
 	@echo ""
 	@echo "iOS builds:"
-	@echo "  make sdf-ios      - Build jank for iOS (AOT C++, like sdf-clean for iOS)"
-	@echo "  make sdf-ios-run  - Build and run iOS app in iPad simulator"
+	@echo "  make sdf-ios-sim-run    - Build and run iOS app in iPad simulator"
+	@echo "  make sdf-ios-device-run - Build and run iOS app on connected device"
 	@echo "  make ios-setup    - Download/build iOS dependencies (MoltenVK, SDL3)"
 	@echo "  make ios-project  - Generate Xcode project (requires xcodegen)"
 	@echo "  make ios-build    - Build iOS app"
@@ -335,7 +335,7 @@ test tests: build-flecs
 # iOS targets
 # ============================================================================
 
-.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run
+.PHONY: ios-setup ios-project ios-build ios-clean ios-runtime ios-core-libs sdf-ios sdf-ios-run sdf-ios-sim-run sdf-ios-device sdf-ios-device-run
 
 # jank iOS build paths (device)
 JANK_IOS_BUILD = $(JANK_SRC)/build-ios
@@ -421,11 +421,21 @@ $(IOS_LOCAL_LIBS): $(JANK_IOS_LIBS) $(JANK_IOS_CORE_OBJS)
 .PHONY: ios-sim-copy-libs
 ios-sim-copy-libs: $(JANK_IOS_SIM_LIBS) $(JANK_IOS_SIM_CORE_OBJS)
 	@echo "Copying jank iOS Simulator libraries to local build..."
-	@mkdir -p SdfViewerMobile/build/obj
-	cp $(JANK_IOS_SIM_BUILD)/libjank.a SdfViewerMobile/build/
-	cp $(JANK_IOS_SIM_BUILD)/libjankzip.a SdfViewerMobile/build/
-	cp $(JANK_IOS_SIM_BUILD)/third-party/bdwgc/libgc.a SdfViewerMobile/build/
-	cp $(JANK_IOS_SIM_CORE_OBJS) SdfViewerMobile/build/obj/
+	@mkdir -p SdfViewerMobile/build-iphonesimulator/obj
+	cp $(JANK_IOS_SIM_BUILD)/libjank.a SdfViewerMobile/build-iphonesimulator/
+	cp $(JANK_IOS_SIM_BUILD)/libjankzip.a SdfViewerMobile/build-iphonesimulator/
+	cp $(JANK_IOS_SIM_BUILD)/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphonesimulator/
+	cp $(JANK_IOS_SIM_CORE_OBJS) SdfViewerMobile/build-iphonesimulator/obj/
+
+# Copy jank iOS Device libraries to local build directory
+.PHONY: ios-copy-libs
+ios-copy-libs: $(JANK_IOS_LIBS) $(JANK_IOS_CORE_OBJS)
+	@echo "Copying jank iOS Device libraries to local build..."
+	@mkdir -p SdfViewerMobile/build-iphoneos/obj
+	cp $(JANK_IOS_BUILD)/libjank.a SdfViewerMobile/build-iphoneos/
+	cp $(JANK_IOS_BUILD)/libjankzip.a SdfViewerMobile/build-iphoneos/
+	cp $(JANK_IOS_BUILD)/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphoneos/
+	cp $(JANK_IOS_CORE_OBJS) SdfViewerMobile/build-iphoneos/obj/
 
 # Generate Xcode project using xcodegen
 ios-project: build-shaders $(IOS_LOCAL_LIBS)
@@ -497,7 +507,8 @@ sdf-ios-sim: clean-cache build-sdf-deps ios-sim-runtime ios-sim-core-libs
 	@echo "============================================"
 
 # Run iOS app in iPad simulator
-sdf-ios-run: sdf-ios-sim
+# Build and run for iOS Simulator
+sdf-ios-sim-run: sdf-ios-sim
 	@echo "Building iOS app for simulator..."
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile.xcodeproj \
@@ -512,3 +523,40 @@ sdf-ios-run: sdf-ios-sim
 	open -a Simulator
 	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find SdfViewerMobile -name "SdfViewerMobile.app" -path "*/Debug-iphonesimulator/*" | head -1)
 	xcrun simctl launch 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile
+
+# Alias for backwards compatibility
+sdf-ios-run: sdf-ios-sim-run
+
+# Build iOS for device
+.PHONY: sdf-ios-device
+sdf-ios-device: clean-cache build-sdf-deps ios-runtime ios-core-libs
+	@echo "Building vybe.sdf for iOS Device..."
+	./SdfViewerMobile/build_ios_jank_aot.sh
+	$(MAKE) ios-copy-libs
+	$(MAKE) ios-project
+	@echo ""
+	@echo "============================================"
+	@echo "  iOS Device Build Complete!"
+	@echo "============================================"
+
+# Build and run for iOS Device (requires device connected)
+sdf-ios-device-run: sdf-ios-device
+	@echo "Building iOS app for device..."
+	cd SdfViewerMobile && xcodebuild \
+		-project SdfViewerMobile.xcodeproj \
+		-scheme SdfViewerMobile \
+		-configuration Debug \
+		-sdk iphoneos \
+		-allowProvisioningUpdates \
+		build
+	@echo ""
+	@echo "Installing to connected device..."
+	@if command -v ios-deploy >/dev/null 2>&1; then \
+		APP_PATH=$$(find SdfViewerMobile -name "SdfViewerMobile.app" -path "*/Debug-iphoneos/*" | head -1); \
+		echo "Using ios-deploy to install $$APP_PATH"; \
+		ios-deploy --bundle "$$APP_PATH" --debug; \
+	else \
+		echo "ios-deploy not found. Install with: brew install ios-deploy"; \
+		echo "Or open Xcode and run from there:"; \
+		echo "  open SdfViewerMobile/SdfViewerMobile.xcodeproj"; \
+	fi

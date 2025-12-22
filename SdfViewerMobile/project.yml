@@ -30,6 +30,7 @@ settings:
       - JANK_TARGET_EMSCRIPTEN=1
       - IMMER_HAS_LIBGC=1
       - IMMER_TAGGED_NODE=0
+      - SDF_AOT_BUILD=1
 
 targets:
   SdfViewerMobile:
@@ -90,9 +91,11 @@ targets:
         FRAMEWORK_SEARCH_PATHS:
           - $(PROJECT_DIR)/Frameworks
         LIBRARY_SEARCH_PATHS:
-          - $(PROJECT_DIR)/build
+          - $(PROJECT_DIR)/build-$(PLATFORM_NAME)
           - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator
           - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator/third-party/bdwgc
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios
+          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/Frameworks"
         # Linker flags
@@ -116,20 +119,20 @@ targets:
           - "-ljankzip"
           - "-lgc"
           # jank core library object files (pre-compiled)
-          - "$(PROJECT_DIR)/build/obj/clojure_core_generated.o"
-          - "$(PROJECT_DIR)/build/obj/clojure_set_generated.o"
-          - "$(PROJECT_DIR)/build/obj/clojure_string_generated.o"
-          - "$(PROJECT_DIR)/build/obj/clojure_walk_generated.o"
-          - "$(PROJECT_DIR)/build/obj/clojure_template_generated.o"
-          - "$(PROJECT_DIR)/build/obj/clojure_test_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_core_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_set_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_string_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_walk_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_template_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_test_generated.o"
           # vybe.sdf modules (in dependency order)
           # Dependencies must be loaded in order: util -> math -> state -> shader -> ui -> ios
-          - "$(PROJECT_DIR)/build/obj/vybe_util_generated.o"
-          - "$(PROJECT_DIR)/build/obj/vybe_sdf_math_generated.o"
-          - "$(PROJECT_DIR)/build/obj/vybe_sdf_state_generated.o"
-          - "$(PROJECT_DIR)/build/obj/vybe_sdf_shader_generated.o"
-          - "$(PROJECT_DIR)/build/obj/vybe_sdf_ui_generated.o"
-          - "$(PROJECT_DIR)/build/obj/vybe_sdf_ios_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_util_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_math_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_state_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_shader_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ui_generated.o"
+          - "$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ios_generated.o"
         # Code signing for simulator testing
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_REQUIRED: "NO"

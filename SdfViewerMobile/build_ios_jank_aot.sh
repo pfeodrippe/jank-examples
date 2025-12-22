@@ -58,8 +58,13 @@ echo "iOS SDK: $IOS_SDK"
 echo "Target: $IOS_TRIPLE"
 echo ""
 
-# Output directory for iOS build
-IOS_BUILD_DIR="SdfViewerMobile/build"
+# Output directory for iOS build (separate dirs for simulator vs device)
+# Uses PLATFORM_NAME-compatible names so Xcode can reference them with $(PLATFORM_NAME)
+if [[ "${IOS_SIMULATOR}" == "true" ]]; then
+  IOS_BUILD_DIR="SdfViewerMobile/build-iphonesimulator"
+else
+  IOS_BUILD_DIR="SdfViewerMobile/build-iphoneos"
+fi
 IOS_GENERATED_DIR="SdfViewerMobile/generated"
 mkdir -p "$IOS_BUILD_DIR"
 mkdir -p "$IOS_GENERATED_DIR"
@@ -234,9 +239,9 @@ for module in "${VYBE_MODULES[@]}"; do
     fi
 done
 
-if [ -f "$IOS_OBJ_DIR/vybe_sdf_generated.o" ]; then
-    echo "  Compiled to: $IOS_OBJ_DIR/vybe_sdf_generated.o"
-    echo "  Size: $(ls -lh "$IOS_OBJ_DIR/vybe_sdf_generated.o" | awk '{print $5}')"
+if [ -f "$IOS_OBJ_DIR/vybe_sdf_ios_generated.o" ]; then
+    echo "  Compiled to: $IOS_OBJ_DIR/vybe_sdf_ios_generated.o"
+    echo "  Size: $(ls -lh "$IOS_OBJ_DIR/vybe_sdf_ios_generated.o" | awk '{print $5}')"
 else
     echo "ERROR: Cross-compilation failed"
     exit 1

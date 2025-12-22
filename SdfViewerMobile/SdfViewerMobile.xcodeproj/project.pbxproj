@@ -1,0 +1,579 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0528F9E597E8EE24EEB8F1FD /* stb_impl.c in Sources */ = {isa = PBXBuildFile; fileRef = 53B71B9A337663AAA2BE8F90 /* stb_impl.c */; };
+		1ECE9664FB884E5A9E40D96F /* imgui_impl_vulkan.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0847191FF6535242DB9F1C3E /* imgui_impl_vulkan.cpp */; };
+		24414756541BB63C3D6EB6AC /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 4334768E4099E7D1C2468FE0 /* LaunchScreen.storyboard */; };
+		2EEBAA05B6D87046989A07E2 /* vulkan_kim in Resources */ = {isa = PBXBuildFile; fileRef = 41B947D3FF32F5A63ADD3735 /* vulkan_kim */; };
+		3DBA7FBB93FAAADA18F3ADE6 /* MoltenVK.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		48E3EE59651DCFCB8D4A5DC1 /* sdf_engine_impl.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3DDA8BF0C9ED1EA0265E45FF /* sdf_engine_impl.cpp */; settings = {COMPILER_FLAGS = "-x c++"; }; };
+		63D9DBA7B34B5F6010A2990C /* imgui_widgets.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CEA0C2F9A2A9BEF9F4563A0D /* imgui_widgets.cpp */; };
+		668CB8DE1AFBCADB69B784AA /* imgui.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 332CD61A6749C2BD1A01366B /* imgui.cpp */; };
+		68FAB6FAF882EF432FC88416 /* imgui_draw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BE5E8F16F9D0CA223DC43F71 /* imgui_draw.cpp */; };
+		6AD161A1809DC6BE8339F469 /* sdf_viewer_ios.mm in Sources */ = {isa = PBXBuildFile; fileRef = 857E42D7C8915767C904761A /* sdf_viewer_ios.mm */; settings = {COMPILER_FLAGS = "-x objective-c++"; }; };
+		6C71AFC1205FB7907620DEB1 /* SDL3.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 02D49A287E9EA2C7590F4709 /* SDL3.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		6F524412F4EC72EFE823EF60 /* imgui_tables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 93498D9AC2ED4B60251A30E8 /* imgui_tables.cpp */; };
+		8143C6C95EFBDB1B9FBCDB1C /* SDL3.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 02D49A287E9EA2C7590F4709 /* SDL3.xcframework */; };
+		895ECBFAB373958D1B09EF1C /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = B22DD2F6D05F33713D6DDFDC /* main.mm */; settings = {COMPILER_FLAGS = "-x objective-c++"; }; };
+		8E1D79C24AF569BC829DA788 /* MoltenVK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */; };
+		B0B0D8C4FC2F65DA4375D48B /* imgui_impl_sdl3.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		145F8478B9A7C4066134E64B /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				3DBA7FBB93FAAADA18F3ADE6 /* MoltenVK.xcframework in Embed Frameworks */,
+				6C71AFC1205FB7907620DEB1 /* SDL3.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		02D49A287E9EA2C7590F4709 /* SDL3.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SDL3.xcframework; path = Frameworks/SDL3.xcframework; sourceTree = "<group>"; };
+		0847191FF6535242DB9F1C3E /* imgui_impl_vulkan.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_impl_vulkan.cpp; sourceTree = "<group>"; };
+		332CD61A6749C2BD1A01366B /* imgui.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui.cpp; sourceTree = "<group>"; };
+		3DDA8BF0C9ED1EA0265E45FF /* sdf_engine_impl.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = sdf_engine_impl.cpp; sourceTree = "<group>"; };
+		41B947D3FF32F5A63ADD3735 /* vulkan_kim */ = {isa = PBXFileReference; lastKnownFileType = folder; path = vulkan_kim; sourceTree = SOURCE_ROOT; };
+		4334768E4099E7D1C2468FE0 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		53B71B9A337663AAA2BE8F90 /* stb_impl.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = stb_impl.c; sourceTree = "<group>"; };
+		857E42D7C8915767C904761A /* sdf_viewer_ios.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = sdf_viewer_ios.mm; sourceTree = "<group>"; };
+		93498D9AC2ED4B60251A30E8 /* imgui_tables.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_tables.cpp; sourceTree = "<group>"; };
+		AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MoltenVK.xcframework; path = Frameworks/MoltenVK.xcframework; sourceTree = "<group>"; };
+		B22DD2F6D05F33713D6DDFDC /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		BE5E8F16F9D0CA223DC43F71 /* imgui_draw.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_draw.cpp; sourceTree = "<group>"; };
+		C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_impl_sdl3.cpp; sourceTree = "<group>"; };
+		CEA0C2F9A2A9BEF9F4563A0D /* imgui_widgets.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_widgets.cpp; sourceTree = "<group>"; };
+		E21EDDA7EF94BBBD99A3A18D /* SdfViewerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SdfViewerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BF9FD080F5A3907812858100 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8E1D79C24AF569BC829DA788 /* MoltenVK.xcframework in Frameworks */,
+				8143C6C95EFBDB1B9FBCDB1C /* SDL3.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0D1CB5910010CF787E1D33B6 /* imgui */ = {
+			isa = PBXGroup;
+			children = (
+				BE5E8F16F9D0CA223DC43F71 /* imgui_draw.cpp */,
+				93498D9AC2ED4B60251A30E8 /* imgui_tables.cpp */,
+				CEA0C2F9A2A9BEF9F4563A0D /* imgui_widgets.cpp */,
+				332CD61A6749C2BD1A01366B /* imgui.cpp */,
+			);
+			name = imgui;
+			path = ../vendor/imgui;
+			sourceTree = "<group>";
+		};
+		6C8D85ED3BD441838CAEC9DD = {
+			isa = PBXGroup;
+			children = (
+				B528B0017BF10ECBCB88AAF6 /* backends */,
+				0D1CB5910010CF787E1D33B6 /* imgui */,
+				96D8AB83CB8B3A9EFB144465 /* vulkan */,
+				4334768E4099E7D1C2468FE0 /* LaunchScreen.storyboard */,
+				B22DD2F6D05F33713D6DDFDC /* main.mm */,
+				3DDA8BF0C9ED1EA0265E45FF /* sdf_engine_impl.cpp */,
+				857E42D7C8915767C904761A /* sdf_viewer_ios.mm */,
+				41B947D3FF32F5A63ADD3735 /* vulkan_kim */,
+				D8090746A8CD26A9D667B182 /* Frameworks */,
+				A7DED8193497A68BDFD051E9 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		96D8AB83CB8B3A9EFB144465 /* vulkan */ = {
+			isa = PBXGroup;
+			children = (
+				53B71B9A337663AAA2BE8F90 /* stb_impl.c */,
+			);
+			name = vulkan;
+			path = ../vulkan;
+			sourceTree = "<group>";
+		};
+		A7DED8193497A68BDFD051E9 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E21EDDA7EF94BBBD99A3A18D /* SdfViewerMobile.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B528B0017BF10ECBCB88AAF6 /* backends */ = {
+			isa = PBXGroup;
+			children = (
+				C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */,
+				0847191FF6535242DB9F1C3E /* imgui_impl_vulkan.cpp */,
+			);
+			name = backends;
+			path = ../vendor/imgui/backends;
+			sourceTree = "<group>";
+		};
+		D8090746A8CD26A9D667B182 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */,
+				02D49A287E9EA2C7590F4709 /* SDL3.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5D711447D940445672EDAD5E /* SdfViewerMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2F46A8C35E9230A28936601B /* Build configuration list for PBXNativeTarget "SdfViewerMobile" */;
+			buildPhases = (
+				80DC83B45E1103EFC7B3E0FC /* Compile Shaders */,
+				4096B82CEDBB693D9A91642E /* Sources */,
+				E226E369172433AB0F9190EA /* Resources */,
+				BF9FD080F5A3907812858100 /* Frameworks */,
+				145F8478B9A7C4066134E64B /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SdfViewerMobile;
+			packageProductDependencies = (
+			);
+			productName = SdfViewerMobile;
+			productReference = E21EDDA7EF94BBBD99A3A18D /* SdfViewerMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		CF9FEF75C633C5F81F9975DC /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					5D711447D940445672EDAD5E = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 937B6B0A323AB58336247CE0 /* Build configuration list for PBXProject "SdfViewerMobile" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 6C8D85ED3BD441838CAEC9DD;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5D711447D940445672EDAD5E /* SdfViewerMobile */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E226E369172433AB0F9190EA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				24414756541BB63C3D6EB6AC /* LaunchScreen.storyboard in Resources */,
+				2EEBAA05B6D87046989A07E2 /* vulkan_kim in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		80DC83B45E1103EFC7B3E0FC /* Compile Shaders */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Compile Shaders";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "echo \"Checking shaders...\"\nSHADER_DIR=\"${PROJECT_DIR}/../vulkan_kim\"\nif command -v glslangValidator &> /dev/null; then\n  for shader in \"$SHADER_DIR\"/*.comp; do\n    if [ -f \"$shader\" ]; then\n      spv=\"${shader%.comp}.spv\"\n      if [ ! -f \"$spv\" ] || [ \"$shader\" -nt \"$spv\" ]; then\n        echo \"Compiling $(basename \"$shader\")...\"\n        glslangValidator -V \"$shader\" -o \"$spv\"\n      fi\n    fi\n  done\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4096B82CEDBB693D9A91642E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				668CB8DE1AFBCADB69B784AA /* imgui.cpp in Sources */,
+				68FAB6FAF882EF432FC88416 /* imgui_draw.cpp in Sources */,
+				B0B0D8C4FC2F65DA4375D48B /* imgui_impl_sdl3.cpp in Sources */,
+				1ECE9664FB884E5A9E40D96F /* imgui_impl_vulkan.cpp in Sources */,
+				6F524412F4EC72EFE823EF60 /* imgui_tables.cpp in Sources */,
+				63D9DBA7B34B5F6010A2990C /* imgui_widgets.cpp in Sources */,
+				895ECBFAB373958D1B09EF1C /* main.mm in Sources */,
+				48E3EE59651DCFCB8D4A5DC1 /* sdf_engine_impl.cpp in Sources */,
+				6AD161A1809DC6BE8339F469 /* sdf_viewer_ios.mm in Sources */,
+				0528F9E597E8EE24EEB8F1FD /* stb_impl.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		14C8D1258F2E9E9BC139437E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Frameworks",
+					"\"Frameworks\"",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/../vendor/imgui",
+					"$(PROJECT_DIR)/../vendor/imgui/backends",
+					"$(PROJECT_DIR)/../vendor/flecs/distr",
+					"$(PROJECT_DIR)/../vendor",
+					"$(PROJECT_DIR)/../vulkan",
+					"$(PROJECT_DIR)/Frameworks/include",
+					"$(PROJECT_DIR)/Frameworks/include/SDL3",
+					"$(PROJECT_DIR)/Frameworks/include/vulkan",
+					"$(PROJECT_DIR)/Frameworks/include/MoltenVK",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/include/cpp",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/src/cpp",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/immer",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bdwgc/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bpptree/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-preprocessor/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-multiprecision/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/folly",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/stduuid/include",
+				);
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator/third-party/bdwgc",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc",
+				);
+				OTHER_LDFLAGS = (
+					"-framework Metal",
+					"-framework MetalKit",
+					"-framework QuartzCore",
+					"-framework UIKit",
+					"-framework Foundation",
+					"-framework CoreGraphics",
+					"-framework CoreVideo",
+					"-framework AVFoundation",
+					"-framework GameController",
+					"-framework CoreHaptics",
+					"-framework CoreMotion",
+					"-framework IOSurface",
+					"-framework IOKit",
+					"-lc++",
+					"-ljank",
+					"-ljankzip",
+					"-lgc",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_core_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_set_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_string_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_walk_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_template_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_test_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_util_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_math_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_state_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_shader_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ui_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ios_generated.o",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vybe.SdfViewerMobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+		6E0122AAF2FAE42E691A4183 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_BITCODE = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"VK_USE_PLATFORM_IOS_MVK=1",
+					"VK_USE_PLATFORM_METAL_EXT=1",
+					"JANK_TARGET_IOS=1",
+					"JANK_TARGET_WASM=1",
+					"JANK_TARGET_EMSCRIPTEN=1",
+					"IMMER_HAS_LIBGC=1",
+					"IMMER_TAGGED_NODE=0",
+					"SDF_AOT_BUILD=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = SdfViewerMobile;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		7D0FDAFE030688929F6A34EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Frameworks",
+					"\"Frameworks\"",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/../vendor/imgui",
+					"$(PROJECT_DIR)/../vendor/imgui/backends",
+					"$(PROJECT_DIR)/../vendor/flecs/distr",
+					"$(PROJECT_DIR)/../vendor",
+					"$(PROJECT_DIR)/../vulkan",
+					"$(PROJECT_DIR)/Frameworks/include",
+					"$(PROJECT_DIR)/Frameworks/include/SDL3",
+					"$(PROJECT_DIR)/Frameworks/include/vulkan",
+					"$(PROJECT_DIR)/Frameworks/include/MoltenVK",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/include/cpp",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/src/cpp",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/immer",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bdwgc/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bpptree/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-preprocessor/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-multiprecision/include",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/folly",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/third-party/stduuid/include",
+				);
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator/third-party/bdwgc",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios",
+					"/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc",
+				);
+				OTHER_LDFLAGS = (
+					"-framework Metal",
+					"-framework MetalKit",
+					"-framework QuartzCore",
+					"-framework UIKit",
+					"-framework Foundation",
+					"-framework CoreGraphics",
+					"-framework CoreVideo",
+					"-framework AVFoundation",
+					"-framework GameController",
+					"-framework CoreHaptics",
+					"-framework CoreMotion",
+					"-framework IOSurface",
+					"-framework IOKit",
+					"-lc++",
+					"-ljank",
+					"-ljankzip",
+					"-lgc",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_core_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_set_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_string_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_walk_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_template_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_test_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_util_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_math_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_state_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_shader_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ui_generated.o",
+					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ios_generated.o",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.vybe.SdfViewerMobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		F091A381C6D0305CE32E1927 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_BITCODE = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"VK_USE_PLATFORM_IOS_MVK=1",
+					"VK_USE_PLATFORM_METAL_EXT=1",
+					"JANK_TARGET_IOS=1",
+					"JANK_TARGET_WASM=1",
+					"JANK_TARGET_EMSCRIPTEN=1",
+					"IMMER_HAS_LIBGC=1",
+					"IMMER_TAGGED_NODE=0",
+					"SDF_AOT_BUILD=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = SdfViewerMobile;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2F46A8C35E9230A28936601B /* Build configuration list for PBXNativeTarget "SdfViewerMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7D0FDAFE030688929F6A34EC /* Debug */,
+				14C8D1258F2E9E9BC139437E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		937B6B0A323AB58336247CE0 /* Build configuration list for PBXProject "SdfViewerMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6E0122AAF2FAE42E691A4183 /* Debug */,
+				F091A381C6D0305CE32E1927 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = CF9FEF75C633C5F81F9975DC /* Project object */;
+}

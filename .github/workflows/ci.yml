@@ -165,9 +165,12 @@ jobs:
 
   # ============================================================================
   # Linux Pipeline (runs in parallel with macOS)
+  # DISABLED: jank has a TLS symbol export issue on Linux with emulated TLS
+  # See: https://github.com/pfeodrippe/jank-examples/issues/XXX
   # ============================================================================
   build-jank-linux:
     name: Build jank - Linux
+    if: false  # DISABLED - jank TLS issue on Linux
     needs: get-jank-commit
     runs-on: ubuntu-24.04
     timeout-minutes: 200
@@ -252,6 +255,7 @@ jobs:
 
   build-linux:
     name: Build and Test - Linux
+    if: false  # DISABLED - jank TLS issue on Linux
     needs: [get-jank-commit, build-jank-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 90

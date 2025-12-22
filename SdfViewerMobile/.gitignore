@@ -3,8 +3,7 @@ build/
 temp_build/
 DerivedData/
 
-# Generated Xcode project
-*.xcodeproj/
+# Xcode workspaces (but NOT xcodeproj which we want to track)
 *.xcworkspace/
 
 # Frameworks (downloaded at build time)
