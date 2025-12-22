@@ -6,6 +6,7 @@
    ["imgui_impl_sdl3.h" :as imgui-sdl :scope ""]
    ["vulkan/sdf_engine.hpp" :as sdfx :scope "sdfx"]
    [vybe.sdf.state :as state]
+   [vybe.sdf.greeting :as greeting]
    [vybe.util :as u]))
 
 ;; ImGui wrapper for SDF viewer
@@ -56,6 +57,8 @@
                              imgui-h/ImGuiCond_FirstUseEver)
      (imgui/Begin "SDF Debug")
      (imgui/Text #cpp "FPS: %.1f" fps)
+     (imgui/Text (str "Greeting: " (greeting/get-greeting)))
+     (imgui/Text (str "Version: " (greeting/get-version)))
      ;; SDF compute status with detailed breakdown
      (let [mesh-visible (sdfx/get_mesh_preview_visible)
            mesh-solid (sdfx/get_mesh_render_solid)
@@ -74,7 +77,7 @@
            (when-not mesh-initialized (imgui/Text "  - pipeline not init"))
            (when-not mesh-has-indices (imgui/Text "  - no triangles")))))
      (imgui/Separator)
-     (imgui/Text #cpp "Camera _2:")
+     (imgui/Text #cpp "Camera _4:")
      (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (:distance cam)))
      (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (:angle-x cam)))
      (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (:angle-y cam)))

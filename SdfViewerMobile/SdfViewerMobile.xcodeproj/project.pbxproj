@@ -312,18 +312,7 @@
 					"-ljank",
 					"-ljankzip",
 					"-lgc",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_core_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_set_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_string_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_walk_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_template_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_test_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_util_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_math_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_state_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_shader_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ui_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ios_generated.o",
+					"-lvybe_aot",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.vybe.SdfViewerMobile;
 				SDKROOT = iphoneos;
@@ -466,18 +455,7 @@
 					"-ljank",
 					"-ljankzip",
 					"-lgc",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_core_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_set_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_string_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_walk_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_template_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/clojure_test_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_util_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_math_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_state_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_shader_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ui_generated.o",
-					"$(PROJECT_DIR)/build-$(PLATFORM_NAME)/obj/vybe_sdf_ios_generated.o",
+					"-lvybe_aot",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.vybe.SdfViewerMobile;
 				SDKROOT = iphoneos;
