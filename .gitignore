@@ -19,6 +19,7 @@ jank.profile
 SDFViewer*
 !SDFViewerMobile
 SDFViewerMobile/generated
+SDFViewerMobile/build-*
 sdf-viewer*
 .DS_Store
 

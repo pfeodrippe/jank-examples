@@ -6,7 +6,7 @@
 (defn get-greeting
   "Returns a greeting message to verify the module was loaded."
   []
-  "Hello from vybe.sdf.greeting!")
+  "Hello from vybe.sdf.greeting!!")
 
 (defn get-version
   "Returns a version string."

@@ -495,11 +495,11 @@ sdf-ios: clean-cache build-sdf-deps ios-jank ios-project
 	@echo "To run in simulator: make sdf-ios-run"
 
 # Build iOS for simulator (incremental - reuses existing builds)
+# The build script now handles: jank runtime build, module compilation, library bundling
 .PHONY: sdf-ios-sim
-sdf-ios-sim: build-sdf-deps ios-sim-runtime ios-sim-core-libs
+sdf-ios-sim: build-sdf-deps
 	@echo "Building vybe.sdf for iOS Simulator..."
 	./SdfViewerMobile/build_ios_jank_aot.sh simulator
-	$(MAKE) ios-sim-copy-libs
 	$(MAKE) ios-project
 	@echo ""
 	@echo "============================================"
@@ -534,11 +534,11 @@ sdf-ios-run: sdf-ios-sim-run
 sdf-ios-simulator-run: sdf-ios-sim-run
 
 # Build iOS for device (incremental - reuses existing builds)
+# The build script now handles: jank runtime build, module compilation, library bundling
 .PHONY: sdf-ios-device
-sdf-ios-device: build-sdf-deps ios-runtime ios-core-libs
+sdf-ios-device: build-sdf-deps
 	@echo "Building vybe.sdf for iOS Device..."
 	./SdfViewerMobile/build_ios_jank_aot.sh device
-	$(MAKE) ios-copy-libs
 	$(MAKE) ios-project
 	@echo ""
 	@echo "============================================"
