@@ -28,8 +28,11 @@
 #include <chrono>
 
 // tinygltf for GLB export with vertex colors
-// Only define TINYGLTF_IMPLEMENTATION in ONE translation unit (via SDF_ENGINE_IMPLEMENTATION)
-#ifdef SDF_ENGINE_IMPLEMENTATION
+// TINYGLTF_IMPLEMENTATION is defined when:
+// - SDF_ENGINE_IMPLEMENTATION is set (AOT impl files like tinygltf_impl.cpp, sdf_engine_impl.cpp)
+// - We're in JIT mode (default - no SDF_AOT_BUILD flag)
+// For AOT builds, compile with -DSDF_AOT_BUILD to prevent duplicate symbols
+#if defined(SDF_ENGINE_IMPLEMENTATION) || !defined(SDF_AOT_BUILD)
 #define TINYGLTF_IMPLEMENTATION
 #endif
 #define TINYGLTF_NO_STB_IMAGE

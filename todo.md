@@ -27,10 +27,10 @@
   - better to just move things to jank as much as possible
 - [ ] ios
   - [x] running
-  - [ ] make sdf-clean
+  - [x] touch event
+  - [x] drag event
+  - [x] make sdf-clean
   - [ ] device
-  - [ ] touch event
-  - [ ] drag event
   - [ ] show mesh
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
