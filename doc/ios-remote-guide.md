@@ -7,6 +7,26 @@ jank on iOS uses a ClojureScript-style architecture to avoid stack overflow from
 - **iOS device**: Runs a minimal eval server (BSD sockets, JSON protocol)
 - **macOS**: Runs full nREPL server, forwards eval requests to iOS via TCP
 
+## TL;DR - Quick Start
+
+```bash
+# Terminal 1: USB port forwarding
+iproxy 5559 5558
+
+# Terminal 2: jank nREPL server
+cd /Users/pfeodrippe/dev/jank/compiler+runtime
+./build/jank nrepl-server --port 5557
+```
+
+```elisp
+;; Emacs: Load helper, connect CIDER, then connect to iOS
+M-x load-file RET /Users/pfeodrippe/dev/jank/compiler+runtime/tools/ios-eval.el RET
+M-x cider-connect RET localhost RET 5557 RET
+M-x ios-eval-cider-connect RET localhost RET 5559 RET
+
+;; Now C-c C-e, C-c C-c, etc. all eval on iPad!
+```
+
 ## Prerequisites
 
 1. **iproxy** for USB port forwarding:
@@ -37,9 +57,9 @@ This forwards iPad's port 5558 to localhost:5559.
 # Returns: {"op":"result","id":1,"value":"3"}
 ```
 
-### 3. Connect from Emacs via nREPL
+### 3. Connect from Emacs via CIDER (Recommended)
 
-**Option A: Using jank's nREPL with iOS forwarding**
+This integrates with CIDER so all eval commands (`C-c C-e`, `C-c C-c`, etc.) go to iPad!
 
 1. Start jank nREPL server on macOS:
    ```bash
@@ -47,43 +67,52 @@ This forwards iPad's port 5558 to localhost:5559.
    ./build/jank nrepl-server --port 5557
    ```
 
-2. Connect Emacs to jank nREPL:
+2. Load the iOS eval helper:
+   ```
+   M-x load-file RET /Users/pfeodrippe/dev/jank/compiler+runtime/tools/ios-eval.el RET
+   ```
+
+3. Connect CIDER to jank nREPL:
    ```
    M-x cider-connect RET localhost RET 5557 RET
    ```
 
-3. Connect to iOS device (in REPL buffer):
-   ```clojure
-   (nrepl/ios-connect "localhost" 5559)
+4. Connect to iOS device:
    ```
-
-4. Now all evals go to iPad:
-   ```clojure
-   (+ 1 2)  ; Evaluated on iPad!
-   (println "Hello from iPad")
+   M-x ios-eval-cider-connect RET localhost RET 5559 RET
    ```
+   You'll see **[iOS]** in your mode-line when connected.
 
-5. Disconnect when done:
-   ```clojure
-   (nrepl/ios-disconnect)
-   ```
+5. Now all CIDER evals go to iPad:
+   - `C-c C-e` - eval last sexp
+   - `C-c C-c` - eval defun
+   - `C-x C-e` - eval last sexp
+   - All evaluated on iPad!
 
-**Option B: Direct iOS eval from Emacs**
+6. Other commands:
+   - `M-x ios-eval-cider-disconnect` - stop forwarding, eval back to macOS
+   - `M-x ios-eval-cider-status` - check connection status
+   - `M-x ios-eval-cider-toggle` - toggle iOS connection
+
+### 4. Direct iOS Eval (Standalone, without CIDER)
+
+For simple eval without full CIDER integration:
 
 1. Load the iOS eval helper:
    ```
    M-x load-file RET /Users/pfeodrippe/dev/jank/compiler+runtime/tools/ios-eval.el RET
    ```
 
-2. Connect:
+2. Connect directly to iOS:
    ```
    M-x ios-eval-connect RET localhost RET 5559 RET
    ```
 
-3. Evaluate:
-   ```
-   M-x ios-eval RET (+ 1 2) RET
-   ```
+3. Use standalone keybindings:
+   - `C-c C-i` - eval last sexp on iOS
+   - `C-c C-d` - eval defun on iOS
+   - `C-c C-r` - eval region on iOS
+   - `C-c C-b` - eval buffer on iOS
 
 ## Protocol
 

@@ -40,6 +40,10 @@
   - [x] ios-eval
     - cljs-like
   - [ ] emacs nrepl
+    - [ ] fix flaky
+    - [ ] fix `new-frame!` evaluation
+    - [ ] fix load-file
+  - [ ] build in ci
 - [ ]
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
