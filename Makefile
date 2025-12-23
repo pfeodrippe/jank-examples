@@ -88,6 +88,8 @@ help:
 	@echo "  make ios-jit-llvm-device - Build LLVM for iOS Device (~2 hours, one-time)"
 	@echo "  make ios-jit-sim        - Build jank with JIT for iOS Simulator"
 	@echo "  make ios-jit-device     - Build jank with JIT for iOS Device"
+	@echo "  make ios-jit-sim-run    - Build, install, run JIT app in simulator"
+	@echo "  make ios-jit-device-run - Build, install, run JIT app on device"
 
 # ============================================================================
 # Object file targets (with proper dependencies)
@@ -634,9 +636,33 @@ ios-jit-sync-sources:
 	@rsync -av --delete --include='*.jank' --include='*/' --exclude='*' src/vybe/ SdfViewerMobile/jank-resources/src/jank/vybe/
 	@echo "Sources synced!"
 
+# Sync jank include headers to iOS JIT bundle (all third-party headers needed for JIT)
+.PHONY: ios-jit-sync-includes
+ios-jit-sync-includes:
+	@echo "Syncing jank include headers to iOS bundle..."
+	@# GC headers from bdwgc (gc/gc_cpp.h, etc.)
+	@rsync -av --delete $(JANK_SRC)/third-party/bdwgc/include/gc/ SdfViewerMobile/jank-resources/include/gc/
+	@cp -f $(JANK_SRC)/third-party/bdwgc/include/gc.h SdfViewerMobile/jank-resources/include/
+	@cp -f $(JANK_SRC)/third-party/bdwgc/include/gc_cpp.h SdfViewerMobile/jank-resources/include/
+	@# immer headers (immer/heap/heap_policy.hpp, etc.) - NOTE: source is immer/immer/, target is immer/
+	@rsync -av --delete $(JANK_SRC)/third-party/immer/immer/ SdfViewerMobile/jank-resources/include/immer/
+	@# bpptree headers
+	@rsync -av --delete $(JANK_SRC)/third-party/bpptree/include/bpptree/ SdfViewerMobile/jank-resources/include/bpptree/
+	@# folly headers (folly/SharedMutex.h, etc.) - NOTE: source is folly/folly/, target is folly/
+	@rsync -av --delete $(JANK_SRC)/third-party/folly/folly/ SdfViewerMobile/jank-resources/include/folly/
+	@# boost headers (merge boost-preprocessor and boost-multiprecision into boost/)
+	@rsync -av $(JANK_SRC)/third-party/boost-preprocessor/include/boost/ SdfViewerMobile/jank-resources/include/boost/
+	@rsync -av $(JANK_SRC)/third-party/boost-multiprecision/include/boost/ SdfViewerMobile/jank-resources/include/boost/
+	@# jank headers (jank/runtime/object.hpp, etc.)
+	@rsync -av --delete $(JANK_SRC)/include/cpp/jank/ SdfViewerMobile/jank-resources/include/jank/
+	@rsync -av --delete $(JANK_SRC)/include/cpp/jtl/ SdfViewerMobile/jank-resources/include/jtl/
+	@# clojure native headers (from include/cpp/clojure/, NOT src/cpp/clojure/)
+	@rsync -av --delete $(JANK_SRC)/include/cpp/clojure/ SdfViewerMobile/jank-resources/include/clojure/
+	@echo "Includes synced!"
+
 # Build, install and run iOS JIT app in simulator
 .PHONY: ios-jit-sim-run
-ios-jit-sim-run: ios-jit-sync-sources
+ios-jit-sim-run: ios-jit-sync-sources ios-jit-sync-includes
 	@echo "Building iOS JIT app for simulator..."
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile-JIT.xcodeproj \
@@ -651,3 +677,103 @@ ios-jit-sim-run: ios-jit-sync-sources
 	xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT 2>/dev/null || true
 	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT.app" -path "*/Build/Products/Debug-iphonesimulator/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
 	xcrun simctl launch --console-pty 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT
+
+# Build AOT-compiled core libs for device JIT (clojure.core, clojure.string, etc.)
+# This enables hybrid mode: AOT core libs + JIT user code
+# The AOT .o files will be detected by weak symbols in sdf_viewer_ios.mm
+.PHONY: ios-jit-device-core-aot
+ios-jit-device-core-aot:
+	@echo "Building AOT core libs for iOS device JIT..."
+	@echo "This compiles clojure.core, clojure.string, etc. for fast startup."
+	@echo ""
+	@echo "Step 1: Generate and cross-compile core libraries..."
+	@mkdir -p SdfViewerMobile/build-iphoneos-jit/core-aot
+	@# Run ios-bundle in device mode without entry-module to get just core libs
+	@# This uses the native jank compiler to generate C++ and cross-compiles for iOS
+	cd $(JANK_SRC) && ./bin/ios-bundle \
+		--build-dir $(PWD)/SdfViewerMobile/build-iphoneos-jit/ios-bundle-build \
+		--output-dir $(PWD)/SdfViewerMobile/build-iphoneos-jit/core-aot \
+		--skip-build \
+		device
+	@echo ""
+	@echo "Step 2: Copy .o files to build directory..."
+	@cp SdfViewerMobile/build-iphoneos-jit/core-aot/*.o SdfViewerMobile/build-iphoneos-jit/ 2>/dev/null || true
+	@echo ""
+	@echo "AOT core libs built!"
+	@echo "Files in SdfViewerMobile/build-iphoneos-jit/core-aot/:"
+	@ls -la SdfViewerMobile/build-iphoneos-jit/core-aot/*.o 2>/dev/null || echo "  (no .o files yet)"
+	@echo ""
+	@echo "To enable hybrid mode:"
+	@echo "  1. Add the .o files to your Xcode project"
+	@echo "  2. Or update project-jit-device.yml to include them"
+	@echo "  3. Rebuild: make ios-jit-device-run"
+
+# Copy device JIT libraries from jank build to local directory
+.PHONY: ios-jit-device-libs
+ios-jit-device-libs:
+	@echo "Copying device JIT libraries..."
+	@if [ ! -f "$(JANK_SRC)/build-ios-device-jit/libjank.a" ]; then \
+		echo "ERROR: Device JIT libraries not found!"; \
+		echo "Run 'make ios-jit-device' first to build them."; \
+		exit 1; \
+	fi
+	@mkdir -p SdfViewerMobile/build-iphoneos-jit/generated
+	@cp $(JANK_SRC)/build-ios-device-jit/libjank.a SdfViewerMobile/build-iphoneos-jit/
+	@cp $(JANK_SRC)/build-ios-device-jit/libjankzip.a SdfViewerMobile/build-iphoneos-jit/
+	@cp $(JANK_SRC)/build-ios-device-jit/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphoneos-jit/
+	@cp $(JANK_SRC)/build-ios-device-jit/libfolly.a SdfViewerMobile/build-iphoneos-jit/
+	@# Create merged LLVM library if it doesn't exist (takes ~30s)
+	@if [ ! -f "SdfViewerMobile/build-iphoneos-jit/libllvm_merged.a" ]; then \
+		echo "Creating merged LLVM library (this may take a minute)..."; \
+		libtool -static -o SdfViewerMobile/build-iphoneos-jit/libllvm_merged.a \
+			$$HOME/dev/ios-llvm-build/ios-llvm-device/lib/*.a 2>/dev/null; \
+	fi
+	@# Generate stub jank_aot_init for pure JIT mode
+	@# (Hybrid mode uses weak symbols in sdf_viewer_ios.mm to detect AOT core libs)
+	@echo "Generating JIT stub init..."
+	@echo '// Stub jank_aot_init for JIT builds' > SdfViewerMobile/build-iphoneos-jit/generated/jank_aot_init.cpp
+	@echo '// JIT builds don'"'"'t use AOT modules - everything is compiled at runtime' >> SdfViewerMobile/build-iphoneos-jit/generated/jank_aot_init.cpp
+	@echo '#include <iostream>' >> SdfViewerMobile/build-iphoneos-jit/generated/jank_aot_init.cpp
+	@echo '' >> SdfViewerMobile/build-iphoneos-jit/generated/jank_aot_init.cpp
+	@echo 'extern "C" void jank_aot_init() {' >> SdfViewerMobile/build-iphoneos-jit/generated/jank_aot_init.cpp
+	@echo '    std::cout << "[jank] JIT mode - skipping AOT module loading" << std::endl;' >> SdfViewerMobile/build-iphoneos-jit/generated/jank_aot_init.cpp
+	@echo '}' >> SdfViewerMobile/build-iphoneos-jit/generated/jank_aot_init.cpp
+	@echo "Device JIT libraries copied!"
+
+# Generate device JIT Xcode project
+.PHONY: ios-jit-device-project
+ios-jit-device-project: ios-jit-device-libs
+	@echo "Generating device JIT Xcode project..."
+	cd SdfViewerMobile && xcodegen generate --spec project-jit-device.yml
+	@echo "Project generated!"
+
+# Build, install and run iOS JIT app on device
+.PHONY: ios-jit-device-run
+ios-jit-device-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-project
+	@echo "Building iOS JIT app for device..."
+	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
+	cd SdfViewerMobile && xcodebuild \
+		-project SdfViewerMobile-JIT-Device.xcodeproj \
+		-scheme SdfViewerMobile-JIT-Device \
+		-configuration Debug \
+		-sdk iphoneos \
+		-allowProvisioningUpdates \
+		build
+	@echo ""
+	@echo "Installing to connected device..."
+	@DEVICE_ID=$$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*iPad|connected.*iPhone" | awk '{print $$3}' | head -1); \
+	if [ -z "$$DEVICE_ID" ]; then \
+		echo "ERROR: No iOS device found. Connect your device and try again."; \
+		exit 1; \
+	fi; \
+	APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT-Device.app" -path "*/Debug-iphoneos/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1); \
+	if [ -z "$$APP_PATH" ]; then \
+		echo "ERROR: Built app not found!"; \
+		exit 1; \
+	fi; \
+	echo "Installing $$APP_PATH to device $$DEVICE_ID..."; \
+	xcrun devicectl device install app --device "$$DEVICE_ID" "$$APP_PATH"; \
+	echo "Terminating existing app (if running)..."; \
+	xcrun devicectl device process terminate --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Device 2>/dev/null || true; \
+	echo "Launching app..."; \
+	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Device

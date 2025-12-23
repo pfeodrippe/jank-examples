@@ -6,6 +6,10 @@
 #import <UIKit/UIKit.h>
 #include <iostream>
 #include <string>
+#include <pthread.h>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
 // Include the SDF engine header (inline functions)
 // Note: SDF_ENGINE_IMPLEMENTATION is only defined in sdf_engine_impl.cpp
@@ -177,59 +181,157 @@ extern "C" void* jank_load_jank_nrepl_server_asio();
 extern "C" void jank_module_set_loaded(const char* module);
 
 #if defined(JANK_IOS_JIT)
-// JIT mode: Load modules from source files at runtime
+// AOT-compiled core library load functions
+// These are provided by linking the clojure_*_generated.o files
+extern "C" void* jank_load_core();           // clojure.core
+extern "C" void* jank_load_string();         // clojure.string
+extern "C" void* jank_load_set();            // clojure.set
+extern "C" void* jank_load_walk();           // clojure.walk
+extern "C" void* jank_load_template__();     // clojure.template (__ because 'template' is reserved)
+extern "C" void* jank_load_test();           // clojure.test
+
+// Hybrid mode: AOT core libs + JIT user code
+// Core libs are pre-compiled for fast startup, user code is JIT-compiled
 static bool load_jank_modules_jit() {
+    std::cout << "[jank-hybrid] Loading AOT-compiled core libraries..." << std::endl;
+
     // CRITICAL: Load native functions FIRST - clojure.core depends on these!
-    std::cout << "[jank-jit] Loading clojure.core-native (C++ implementations)..." << std::endl;
+    std::cout << "[jank-hybrid] Loading clojure.core-native (C++ implementations)..." << std::endl;
     jank_load_clojure_core_native();
-    std::cout << "[jank-jit] clojure.core-native loaded!" << std::endl;
+    std::cout << "[jank-hybrid] clojure.core-native loaded!" << std::endl;
 
-    std::cout << "[jank-jit] Loading clojure.core from source..." << std::endl;
+    // Load AOT-compiled core libraries
+    std::cout << "[jank-hybrid] Loading clojure.core (AOT)..." << std::endl;
+    jank_load_core();
+    std::cout << "[jank-hybrid] clojure.core loaded!" << std::endl;
 
-    // Load clojure.core - this is required for everything else
-    auto result = jank::runtime::__rt_ctx->load_module(
-        "/clojure.core",
-        jank::runtime::module::origin::source
-    );
+    std::cout << "[jank-hybrid] Loading clojure.string (AOT)..." << std::endl;
+    jank_load_string();
+    std::cout << "[jank-hybrid] clojure.string loaded!" << std::endl;
 
-    if (result.is_err()) {
-        std::cerr << "[jank-jit] Failed to load clojure.core: "
-                  << result.expect_err()->message << std::endl;
-        return false;
-    }
+    std::cout << "[jank-hybrid] Loading clojure.set (AOT)..." << std::endl;
+    jank_load_set();
+    std::cout << "[jank-hybrid] clojure.set loaded!" << std::endl;
 
-    std::cout << "[jank-jit] clojure.core loaded successfully!" << std::endl;
+    std::cout << "[jank-hybrid] Loading clojure.walk (AOT)..." << std::endl;
+    jank_load_walk();
+    std::cout << "[jank-hybrid] clojure.walk loaded!" << std::endl;
 
-    // Register nREPL native module as loaded - MUST be done AFTER clojure.core loads
-    // because clojure.core redefines *loaded-libs* and would wipe our entry
-    std::cout << "[jank-jit] Registering nREPL server native module..." << std::endl;
+    std::cout << "[jank-hybrid] Loading clojure.template (AOT)..." << std::endl;
+    jank_load_template__();
+    std::cout << "[jank-hybrid] clojure.template loaded!" << std::endl;
+
+    std::cout << "[jank-hybrid] Loading clojure.test (AOT)..." << std::endl;
+    jank_load_test();
+    std::cout << "[jank-hybrid] clojure.test loaded!" << std::endl;
+
+    // Register nREPL native module as loaded
+    std::cout << "[jank-hybrid] Registering nREPL server native module..." << std::endl;
     jank_load_jank_nrepl_server_asio();
     jank_module_set_loaded("jank.nrepl-server.asio");
-    std::cout << "[jank-jit] nREPL native module registered!" << std::endl;
+    std::cout << "[jank-hybrid] nREPL native module registered!" << std::endl;
 
-    // Now load the application module - JIT will compile the native header!
-    std::cout << "[jank-jit] Loading vybe.sdf.ios from source..." << std::endl;
+    // Now load the application module via JIT
+    std::cout << "[jank-hybrid] Loading vybe.sdf.ios from source (JIT)..." << std::endl;
     auto app_result = jank::runtime::__rt_ctx->load_module(
         "/vybe.sdf.ios",
         jank::runtime::module::origin::source
     );
 
     if (app_result.is_err()) {
-        std::cerr << "[jank-jit] Failed to load vybe.sdf.ios: "
+        std::cerr << "[jank-hybrid] Failed to load vybe.sdf.ios: "
                   << app_result.expect_err()->message << std::endl;
         return false;
     }
 
-    std::cout << "[jank-jit] vybe.sdf.ios loaded successfully!" << std::endl;
+    std::cout << "[jank-hybrid] vybe.sdf.ios loaded successfully!" << std::endl;
     return true;
 }
 #endif
 
-// Initialize jank runtime for iOS
-static bool init_jank_runtime() {
+// Forward declaration for large-stack wrapper
+static bool init_jank_runtime_impl();
+
+// Large stack wrapper for running jank on iOS
+// iOS main thread has only ~1MB stack, but jank's recursive codegen needs more.
+// We create a pthread with 8MB stack to run jank initialization.
+// NOTE: These helpers are NOT in an anonymous namespace to avoid symbol mangling issues.
+// The anonymous namespace was causing init_jank_runtime_impl() calls to be mangled
+// as (anonymous namespace)::init_jank_runtime_impl() which didn't match the definition.
+
+struct jank_init_result {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool done = false;
+    bool success = false;
+};
+
+static void* jank_init_thread_func(void* arg) {
+    auto* result = static_cast<jank_init_result*>(arg);
+
+    bool success = init_jank_runtime_impl();
+
+    {
+        std::lock_guard<std::mutex> lock(result->mtx);
+        result->success = success;
+        result->done = true;
+    }
+    result->cv.notify_one();
+    return nullptr;
+}
+
+static bool init_jank_runtime_on_large_stack() {
+    constexpr size_t STACK_SIZE = 8 * 1024 * 1024; // 8MB stack
+
+    // Initialize GC on main thread FIRST - before creating worker thread
+    std::cout << "[jank] Initializing Boehm GC on main thread..." << std::endl;
+    GC_init();
+
+    // CRITICAL: Disable GC during worker thread execution to avoid
+    // "Collecting from unknown thread" errors. The worker thread
+    // won't be registered with GC, so any collection attempt would fail.
+    // GC will be re-enabled after init completes.
+    std::cout << "[jank] Disabling GC during initialization..." << std::endl;
+    GC_disable();
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, STACK_SIZE);
+
+    jank_init_result result;
+    pthread_t thread;
+
+    std::cout << "[jank] Starting initialization on thread with " << (STACK_SIZE / 1024 / 1024) << "MB stack..." << std::endl;
+
+    int err = pthread_create(&thread, &attr, jank_init_thread_func, &result);
+    pthread_attr_destroy(&attr);
+
+    if (err != 0) {
+        std::cerr << "[jank] Failed to create large-stack thread: " << err << std::endl;
+        // Fall back to running on current thread (re-enable GC first)
+        GC_enable();
+        return init_jank_runtime_impl();
+    }
+
+    // Wait for the thread to complete
+    {
+        std::unique_lock<std::mutex> lock(result.mtx);
+        result.cv.wait(lock, [&result] { return result.done; });
+    }
+
+    pthread_join(thread, nullptr);
+
+    // Re-enable GC now that initialization is complete
+    std::cout << "[jank] Re-enabling GC after initialization..." << std::endl;
+    GC_enable();
+
+    return result.success;
+}
+
+// Initialize jank runtime for iOS (actual implementation)
+// NOTE: GC_init() is called by init_jank_runtime_on_large_stack() before this
+static bool init_jank_runtime_impl() {
     try {
-        std::cout << "[jank] Initializing Boehm GC..." << std::endl;
-        GC_init();
 
         std::cout << "[jank] Creating runtime context..." << std::endl;
         jank::runtime::__rt_ctx = new (GC_malloc(sizeof(jank::runtime::context)))
@@ -296,8 +398,9 @@ extern "C" int sdf_viewer_main(int argc, char* argv[]) {
         std::cout << "============================================" << std::endl;
         std::cout << std::endl;
 
-        // Initialize jank runtime
-        if (!init_jank_runtime()) {
+        // Initialize jank runtime on a thread with larger stack
+        // (iOS main thread has ~1MB stack, jank needs ~8MB for recursive codegen)
+        if (!init_jank_runtime_on_large_stack()) {
             std::cerr << "Warning: jank runtime initialization failed" << std::endl;
             std::cerr << "Continuing without jank support..." << std::endl;
             return 1;
