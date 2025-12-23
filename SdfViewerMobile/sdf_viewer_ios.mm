@@ -26,6 +26,13 @@
 #include <jank/runtime/behavior/callable.hpp>
 #include <jank/runtime/module/loader.hpp>
 #include <jank/error.hpp>
+
+// iOS remote eval server (ClojureScript-style architecture)
+// All nREPL complexity stays on macOS, iOS just does simple eval
+#if defined(JANK_IOS_JIT)
+#include <jank/ios/eval_server.hpp>
+#endif
+
 #pragma pop_macro("nil")
 
 // =============================================================================
@@ -181,70 +188,21 @@ extern "C" void* jank_load_jank_nrepl_server_asio();
 extern "C" void jank_module_set_loaded(const char* module);
 
 #if defined(JANK_IOS_JIT)
-// AOT-compiled core library load functions
-// These are provided by linking the clojure_*_generated.o files
-extern "C" void* jank_load_core();           // clojure.core
-extern "C" void* jank_load_string();         // clojure.string
-extern "C" void* jank_load_set();            // clojure.set
-extern "C" void* jank_load_walk();           // clojure.walk
-extern "C" void* jank_load_template__();     // clojure.template (__ because 'template' is reserved)
-extern "C" void* jank_load_test();           // clojure.test
-
-// Hybrid mode: AOT core libs + JIT user code
-// Core libs are pre-compiled for fast startup, user code is JIT-compiled
+// Full AOT mode: All modules pre-compiled, JIT only for REPL eval
+// This avoids the memory issues of JIT compiling large modules on device
 static bool load_jank_modules_jit() {
-    std::cout << "[jank-hybrid] Loading AOT-compiled core libraries..." << std::endl;
+    std::cout << "[jank-aot] Full AOT mode - loading pre-compiled modules..." << std::endl;
+    std::cout << "[jank-aot] (JIT used for remote eval server)" << std::endl;
 
-    // CRITICAL: Load native functions FIRST - clojure.core depends on these!
-    std::cout << "[jank-hybrid] Loading clojure.core-native (C++ implementations)..." << std::endl;
-    jank_load_clojure_core_native();
-    std::cout << "[jank-hybrid] clojure.core-native loaded!" << std::endl;
+    // Load all AOT modules in correct order
+    // This is much faster and uses much less memory than JIT compiling
+    jank_aot_init();
 
-    // Load AOT-compiled core libraries
-    std::cout << "[jank-hybrid] Loading clojure.core (AOT)..." << std::endl;
-    jank_load_core();
-    std::cout << "[jank-hybrid] clojure.core loaded!" << std::endl;
+    // Note: nREPL native module no longer loaded on iOS
+    // We use the simple eval server instead (ClojureScript-style architecture)
+    // See: compiler+runtime/ai/20251223-ios-remote-nrepl-architecture.md
 
-    std::cout << "[jank-hybrid] Loading clojure.string (AOT)..." << std::endl;
-    jank_load_string();
-    std::cout << "[jank-hybrid] clojure.string loaded!" << std::endl;
-
-    std::cout << "[jank-hybrid] Loading clojure.set (AOT)..." << std::endl;
-    jank_load_set();
-    std::cout << "[jank-hybrid] clojure.set loaded!" << std::endl;
-
-    std::cout << "[jank-hybrid] Loading clojure.walk (AOT)..." << std::endl;
-    jank_load_walk();
-    std::cout << "[jank-hybrid] clojure.walk loaded!" << std::endl;
-
-    std::cout << "[jank-hybrid] Loading clojure.template (AOT)..." << std::endl;
-    jank_load_template__();
-    std::cout << "[jank-hybrid] clojure.template loaded!" << std::endl;
-
-    std::cout << "[jank-hybrid] Loading clojure.test (AOT)..." << std::endl;
-    jank_load_test();
-    std::cout << "[jank-hybrid] clojure.test loaded!" << std::endl;
-
-    // Register nREPL native module as loaded
-    std::cout << "[jank-hybrid] Registering nREPL server native module..." << std::endl;
-    jank_load_jank_nrepl_server_asio();
-    jank_module_set_loaded("jank.nrepl-server.asio");
-    std::cout << "[jank-hybrid] nREPL native module registered!" << std::endl;
-
-    // Now load the application module via JIT
-    std::cout << "[jank-hybrid] Loading vybe.sdf.ios from source (JIT)..." << std::endl;
-    auto app_result = jank::runtime::__rt_ctx->load_module(
-        "/vybe.sdf.ios",
-        jank::runtime::module::origin::source
-    );
-
-    if (app_result.is_err()) {
-        std::cerr << "[jank-hybrid] Failed to load vybe.sdf.ios: "
-                  << app_result.expect_err()->message << std::endl;
-        return false;
-    }
-
-    std::cout << "[jank-hybrid] vybe.sdf.ios loaded successfully!" << std::endl;
+    std::cout << "[jank-aot] All modules loaded successfully!" << std::endl;
     return true;
 }
 #endif
@@ -391,7 +349,7 @@ extern "C" int sdf_viewer_main(int argc, char* argv[]) {
         std::cout << "============================================" << std::endl;
         std::cout << "   SDF Viewer Mobile - iOS Edition" << std::endl;
 #if defined(JANK_IOS_JIT)
-        std::cout << "   (with jank JIT runtime)" << std::endl;
+        std::cout << "   (with jank JIT runtime + Remote Eval)" << std::endl;
 #else
         std::cout << "   (with jank AOT runtime)" << std::endl;
 #endif
@@ -406,8 +364,26 @@ extern "C" int sdf_viewer_main(int argc, char* argv[]) {
             return 1;
         }
 
+#if defined(JANK_IOS_JIT)
+        // Start the remote eval server (ClojureScript-style architecture)
+        // All nREPL complexity stays on macOS, iOS just does simple eval
+        // Connect from macOS with: nc <ios-ip> 5558
+        // Or use the jank nREPL proxy
+        std::cout << std::endl;
+        std::cout << "[ios-eval] Starting remote eval server..." << std::endl;
+        std::cout << "[ios-eval] This allows REPL-driven development from macOS." << std::endl;
+        std::cout << "[ios-eval] Protocol: JSON over TCP (like ClojureScript browser REPL)" << std::endl;
+        jank::ios::start_eval_server(5558);
+        std::cout << std::endl;
+#endif
+
         // Call the jank main function (works for both JIT and AOT)
         call_jank_main();
+
+#if defined(JANK_IOS_JIT)
+        // Stop the eval server on exit
+        jank::ios::stop_eval_server();
+#endif
 
         return 0;
     }

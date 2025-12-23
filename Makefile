@@ -747,9 +747,21 @@ ios-jit-device-project: ios-jit-device-libs
 	cd SdfViewerMobile && xcodegen generate --spec project-jit-device.yml
 	@echo "Project generated!"
 
+# Rebuild vybe AOT library if source files changed
+# This checks if any .jank file is newer than the library
+.PHONY: ios-jit-device-aot
+ios-jit-device-aot:
+	@if [ -n "$$(find src -name '*.jank' -newer SdfViewerMobile/build-iphoneos/libvybe_aot.a 2>/dev/null)" ] || \
+	   [ ! -f "SdfViewerMobile/build-iphoneos/libvybe_aot.a" ]; then \
+		echo "Source files changed - rebuilding AOT library..."; \
+		./SdfViewerMobile/build_ios_jank_aot.sh device; \
+	else \
+		echo "AOT library up to date."; \
+	fi
+
 # Build, install and run iOS JIT app on device
 .PHONY: ios-jit-device-run
-ios-jit-device-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-project
+ios-jit-device-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-aot ios-jit-device-project
 	@echo "Building iOS JIT app for device..."
 	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
 	cd SdfViewerMobile && xcodebuild \

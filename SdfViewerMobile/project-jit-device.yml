@@ -55,9 +55,7 @@ targets:
       # SDF engine implementation
       - path: sdf_engine_impl.cpp
         compilerFlags: ["-x", "c++"]
-      # JIT stub for jank_aot_init (does nothing in JIT mode)
-      - path: build-iphoneos-jit/generated/jank_aot_init.cpp
-        compilerFlags: ["-x", "c++"]
+      # Note: jank_aot_init is provided by libvybe_aot.a (linked via -lvybe_aot)
       # Resources
       - path: LaunchScreen.storyboard
         buildPhase: resources
@@ -121,6 +119,8 @@ targets:
         LIBRARY_SEARCH_PATHS:
           # JIT-specific build directory (DEVICE version)
           - $(PROJECT_DIR)/build-iphoneos-jit
+          # AOT build directory for libvybe_aot.a
+          - $(PROJECT_DIR)/build-iphoneos
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/Frameworks"
         # Linker flags for JIT
@@ -144,13 +144,9 @@ targets:
           - "-ljankzip"
           - "-lgc"
           - "-lfolly"
-          # AOT-compiled core libraries (clojure.core, etc.) for fast startup
-          - "$(PROJECT_DIR)/build-iphoneos-jit/core-aot/clojure_core_generated.o"
-          - "$(PROJECT_DIR)/build-iphoneos-jit/core-aot/clojure_string_generated.o"
-          - "$(PROJECT_DIR)/build-iphoneos-jit/core-aot/clojure_set_generated.o"
-          - "$(PROJECT_DIR)/build-iphoneos-jit/core-aot/clojure_walk_generated.o"
-          - "$(PROJECT_DIR)/build-iphoneos-jit/core-aot/clojure_template_generated.o"
-          - "$(PROJECT_DIR)/build-iphoneos-jit/core-aot/clojure_test_generated.o"
+          # Full AOT - all modules pre-compiled in a single static library
+          # jank_aot_init() creates references to all modules, so no force_load needed
+          - "-lvybe_aot"
           # Merged LLVM library (all LLVM/Clang/CppInterOp static libs)
           - "-lllvm_merged"
           # System libraries needed by LLVM

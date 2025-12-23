@@ -34,8 +34,13 @@
   - [x] show mesh
   - [x] improve script
 - [ ] jit (at least for dev)
-  - [ ] compile
-  - [ ] nREPL
+  - [x] compile
+  - [-] nREPL ios
+    - takes too much memory
+  - [x] ios-eval
+    - cljs-like
+  - [ ] emacs nrepl
+- [ ]
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
 - [ ] print atom
