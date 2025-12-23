@@ -6,7 +6,8 @@
    [vybe.sdf.math :as m]
    [vybe.sdf.state :as state]
    [vybe.sdf.shader :as shader]
-   [vybe.sdf.ui :as ui]))
+   [vybe.sdf.ui :as ui]
+   [jank.nrepl-server.server :as server]))
 
 ;; Direct C++ bridge functions
 (defn init! [shader-dir] (sdfx/init shader-dir))
@@ -118,6 +119,9 @@
 
 ;; iOS run loop
 (defn run! []
+  (println "[iOS] Starting nREPL server on port 5558...")
+  (server/start-server {:port 5558})
+  (println "[iOS] nREPL server started!")
   (when (init-kim!)
     (println "Starting iOS viewer...")
     (loop [frame-count 0]

@@ -627,9 +627,16 @@ ios-jit-device:
 	@echo "NOTE: JIT only works when app is launched from Xcode."
 	@echo "Sign with ios/jank-jit.entitlements for development."
 
+# Sync jank source files to iOS JIT bundle (copies entire vybe directory)
+.PHONY: ios-jit-sync-sources
+ios-jit-sync-sources:
+	@echo "Syncing jank source files to iOS bundle..."
+	@rsync -av --delete --include='*.jank' --include='*/' --exclude='*' src/vybe/ SdfViewerMobile/jank-resources/src/jank/vybe/
+	@echo "Sources synced!"
+
 # Build, install and run iOS JIT app in simulator
 .PHONY: ios-jit-sim-run
-ios-jit-sim-run:
+ios-jit-sim-run: ios-jit-sync-sources
 	@echo "Building iOS JIT app for simulator..."
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile-JIT.xcodeproj \
