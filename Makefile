@@ -671,9 +671,9 @@ ios-jit-sync-lib:
 	@cp $(JANK_SRC)/build-ios-sim-jit/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphonesimulator-jit/
 	@echo "Library synced!"
 
-# Build, install and run iOS JIT app in simulator (hybrid mode with AOT core)
+# Build, install and run iOS JIT app in simulator (mirrors ios-jit-device-run)
 .PHONY: ios-jit-sim-run
-ios-jit-sim-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-sync-lib ios-jit-sim-core-aot
+ios-jit-sim-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-sim-project
 	@echo "Building iOS JIT app for simulator..."
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile-JIT.xcodeproj \
@@ -719,25 +719,46 @@ ios-jit-device-core-aot:
 	@echo "  2. Or update project-jit-device.yml to include them"
 	@echo "  3. Rebuild: make ios-jit-device-run"
 
-# Build AOT-compiled core libs for SIMULATOR JIT (clojure.core, clojure.string, etc.)
-# This enables hybrid mode: AOT core libs + JIT user code
-.PHONY: ios-jit-sim-core-aot
-ios-jit-sim-core-aot:
-	@echo "Building AOT core libs for iOS Simulator JIT..."
-	@echo "This compiles clojure.core, clojure.string, etc. for fast startup."
-	@echo ""
-	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit/core-aot
-	cd $(JANK_SRC) && ./bin/ios-bundle \
-		--build-dir $(PWD)/SdfViewerMobile/build-iphonesimulator-jit/ios-bundle-build \
-		--output-dir $(PWD)/SdfViewerMobile/build-iphonesimulator-jit/core-aot \
-		--skip-build \
-		simulator
-	@echo ""
-	@echo "Copying .o files to build directory..."
-	@cp SdfViewerMobile/build-iphonesimulator-jit/core-aot/*.o SdfViewerMobile/build-iphonesimulator-jit/ 2>/dev/null || true
-	@echo ""
-	@echo "AOT core libs built! Files:"
-	@ls -la SdfViewerMobile/build-iphonesimulator-jit/*.o 2>/dev/null || echo "  (no .o files)"
+# Build AOT modules for SIMULATOR JIT (same as device, just different target)
+# Rebuilds if any .jank file is newer than the library
+.PHONY: ios-jit-sim-aot
+ios-jit-sim-aot:
+	@if [ -n "$$(find src -name '*.jank' -newer SdfViewerMobile/build-iphonesimulator/libvybe_aot.a 2>/dev/null)" ] || \
+	   [ ! -f "SdfViewerMobile/build-iphonesimulator/libvybe_aot.a" ]; then \
+		echo "Source files changed - rebuilding AOT library for simulator..."; \
+		./SdfViewerMobile/build_ios_jank_aot.sh simulator; \
+	else \
+		echo "Simulator AOT library up to date."; \
+	fi
+
+# Copy simulator JIT libraries (mirrors ios-jit-device-libs exactly)
+.PHONY: ios-jit-sim-libs
+ios-jit-sim-libs: ios-jit-sim-aot
+	@echo "Copying simulator JIT libraries..."
+	@if [ ! -f "$(JANK_SRC)/build-ios-sim-jit/libjank.a" ]; then \
+		echo "ERROR: Simulator JIT libraries not found!"; \
+		echo "Run 'make ios-jit-sim' first to build them."; \
+		exit 1; \
+	fi
+	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit/generated
+	@cp $(JANK_SRC)/build-ios-sim-jit/libjank.a SdfViewerMobile/build-iphonesimulator-jit/
+	@cp $(JANK_SRC)/build-ios-sim-jit/libjankzip.a SdfViewerMobile/build-iphonesimulator-jit/
+	@cp $(JANK_SRC)/build-ios-sim-jit/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphonesimulator-jit/
+	@cp $(JANK_SRC)/build-ios-sim-jit/libfolly.a SdfViewerMobile/build-iphonesimulator-jit/
+	@# Create merged LLVM library if it doesn't exist (takes ~30s)
+	@if [ ! -f "SdfViewerMobile/build-iphonesimulator-jit/libllvm_merged.a" ]; then \
+		echo "Creating merged LLVM library (this may take a minute)..."; \
+		libtool -static -o SdfViewerMobile/build-iphonesimulator-jit/libllvm_merged.a \
+			$$HOME/dev/ios-llvm-build/ios-llvm-simulator/lib/*.a 2>/dev/null; \
+	fi
+	@echo "Simulator JIT libraries copied!"
+
+# Generate simulator JIT Xcode project (mirrors ios-jit-device-project)
+.PHONY: ios-jit-sim-project
+ios-jit-sim-project: ios-jit-sim-libs
+	@echo "Generating simulator JIT Xcode project..."
+	cd SdfViewerMobile && xcodegen generate --spec project-jit-sim.yml
+	@echo "Project generated!"
 
 # Copy device JIT libraries from jank build to local directory
 # Depends on ios-jit-device-aot to ensure jank_aot_init.cpp exists
