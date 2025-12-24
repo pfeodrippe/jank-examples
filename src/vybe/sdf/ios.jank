@@ -6,7 +6,8 @@
    [vybe.sdf.math :as m]
    [vybe.sdf.state :as state]
    [vybe.sdf.shader :as shader]
-   [vybe.sdf.ui :as ui]))
+   [vybe.sdf.ui :as ui]
+   [jank.nrepl-server.server :as server]))
 
 ;; Direct C++ bridge functions
 (defn init! [shader-dir] (sdfx/init shader-dir))
@@ -118,8 +119,8 @@
 
 ;; iOS run loop
 (defn run! []
-  ;; nREPL will be started via remote proxy from macOS
-  ;; See: compiler+runtime/ai/20251223-ios-remote-nrepl-architecture.md
+  ;; Start nREPL server on 0.0.0.0 to allow external connections (port 5558 for iOS)
+  (server/start-server {:port 5558 :bind "0.0.0.0"})
   (when (init-kim!)
     (println "Starting iOS viewer...")
     (loop [frame-count 0]

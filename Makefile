@@ -660,9 +660,20 @@ ios-jit-sync-includes:
 	@rsync -av --delete $(JANK_SRC)/include/cpp/clojure/ SdfViewerMobile/jank-resources/include/clojure/
 	@echo "Includes synced!"
 
-# Build, install and run iOS JIT app in simulator
+# Sync jank library to iOS JIT bundle (rebuilds if source changed)
+.PHONY: ios-jit-sync-lib
+ios-jit-sync-lib:
+	@echo "Rebuilding and syncing jank library for iOS Simulator JIT..."
+	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit
+	@ninja -C $(JANK_SRC)/build-ios-sim-jit libjank.a
+	@cp $(JANK_SRC)/build-ios-sim-jit/libjank.a SdfViewerMobile/build-iphonesimulator-jit/
+	@cp $(JANK_SRC)/build-ios-sim-jit/libjankzip.a SdfViewerMobile/build-iphonesimulator-jit/
+	@cp $(JANK_SRC)/build-ios-sim-jit/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphonesimulator-jit/
+	@echo "Library synced!"
+
+# Build, install and run iOS JIT app in simulator (hybrid mode with AOT core)
 .PHONY: ios-jit-sim-run
-ios-jit-sim-run: ios-jit-sync-sources ios-jit-sync-includes
+ios-jit-sim-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-sync-lib ios-jit-sim-core-aot
 	@echo "Building iOS JIT app for simulator..."
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile-JIT.xcodeproj \
@@ -707,6 +718,26 @@ ios-jit-device-core-aot:
 	@echo "  1. Add the .o files to your Xcode project"
 	@echo "  2. Or update project-jit-device.yml to include them"
 	@echo "  3. Rebuild: make ios-jit-device-run"
+
+# Build AOT-compiled core libs for SIMULATOR JIT (clojure.core, clojure.string, etc.)
+# This enables hybrid mode: AOT core libs + JIT user code
+.PHONY: ios-jit-sim-core-aot
+ios-jit-sim-core-aot:
+	@echo "Building AOT core libs for iOS Simulator JIT..."
+	@echo "This compiles clojure.core, clojure.string, etc. for fast startup."
+	@echo ""
+	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit/core-aot
+	cd $(JANK_SRC) && ./bin/ios-bundle \
+		--build-dir $(PWD)/SdfViewerMobile/build-iphonesimulator-jit/ios-bundle-build \
+		--output-dir $(PWD)/SdfViewerMobile/build-iphonesimulator-jit/core-aot \
+		--skip-build \
+		simulator
+	@echo ""
+	@echo "Copying .o files to build directory..."
+	@cp SdfViewerMobile/build-iphonesimulator-jit/core-aot/*.o SdfViewerMobile/build-iphonesimulator-jit/ 2>/dev/null || true
+	@echo ""
+	@echo "AOT core libs built! Files:"
+	@ls -la SdfViewerMobile/build-iphonesimulator-jit/*.o 2>/dev/null || echo "  (no .o files)"
 
 # Copy device JIT libraries from jank build to local directory
 .PHONY: ios-jit-device-libs

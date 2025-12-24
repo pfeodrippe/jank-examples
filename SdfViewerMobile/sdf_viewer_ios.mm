@@ -187,22 +187,31 @@ extern "C" void* jank_load_clojure_core_native();
 extern "C" void* jank_load_jank_nrepl_server_asio();
 extern "C" void jank_module_set_loaded(const char* module);
 
-#if defined(JANK_IOS_JIT)
-// Full AOT mode: All modules pre-compiled, JIT only for REPL eval
-// This avoids the memory issues of JIT compiling large modules on device
-static bool load_jank_modules_jit() {
-    std::cout << "[jank-aot] Full AOT mode - loading pre-compiled modules..." << std::endl;
-    std::cout << "[jank-aot] (JIT used for remote eval server)" << std::endl;
+// nREPL server C API (for starting full nREPL on iOS)
+extern "C" void* jank_nrepl_start_server(int port, char const *bind_address);
+extern "C" void jank_nrepl_stop_server(void* server_handle);
 
-    // Load all AOT modules in correct order
-    // This is much faster and uses much less memory than JIT compiling
+// Global nREPL server handle for cleanup
+static void* g_nrepl_server_handle = nullptr;
+
+#if defined(JANK_IOS_JIT)
+// Hybrid JIT mode: AOT core libs + JIT user code
+// This uses AOT-compiled clojure.core to avoid GC memory issues,
+// while still allowing JIT compilation for REPL eval
+static bool load_jank_modules_jit() {
+    std::cout << "[jank-hybrid] Loading AOT core modules..." << std::endl;
+
+    // jank_aot_init() loads clojure.core-native, clojure.core, and other core libs
+    // These are AOT compiled to avoid the GC memory issues when JIT compiling on iOS
     jank_aot_init();
 
-    // Note: nREPL native module no longer loaded on iOS
-    // We use the simple eval server instead (ClojureScript-style architecture)
-    // See: compiler+runtime/ai/20251223-ios-remote-nrepl-architecture.md
+    // Load nREPL native module (required for nREPL server)
+    std::cout << "[jank-hybrid] Loading nREPL server native module..." << std::endl;
+    jank_load_jank_nrepl_server_asio();
+    jank_module_set_loaded("jank.nrepl-server.asio");
+    std::cout << "[jank-hybrid] nREPL native module loaded!" << std::endl;
 
-    std::cout << "[jank-aot] All modules loaded successfully!" << std::endl;
+    std::cout << "[jank-hybrid] All modules loaded! Ready for REPL." << std::endl;
     return true;
 }
 #endif
@@ -324,6 +333,23 @@ static bool init_jank_runtime_impl() {
 // Call the jank-exported -main function
 static void call_jank_main() {
     try {
+        // First, require the module to trigger JIT compilation
+        std::cout << "[jank] Loading vybe.sdf.ios module..." << std::endl;
+        auto require_var = jank::runtime::__rt_ctx->find_var(
+            jank::runtime::make_box<jank::runtime::obj::symbol>("clojure.core/require")
+        );
+        if (require_var.is_nil()) {
+            std::cerr << "[jank] Could not find clojure.core/require" << std::endl;
+            return;
+        }
+
+        // Call (require 'vybe.sdf.ios)
+        jank::runtime::dynamic_call(
+            require_var->deref(),
+            jank::runtime::make_box<jank::runtime::obj::symbol>("vybe.sdf.ios")
+        );
+        std::cout << "[jank] Module loaded successfully!" << std::endl;
+
         // Look up the -main var in vybe.sdf.ios
         auto var = jank::runtime::__rt_ctx->intern_var("vybe.sdf.ios", "-main");
         if (!var.is_ok()) {
@@ -364,26 +390,13 @@ extern "C" int sdf_viewer_main(int argc, char* argv[]) {
             return 1;
         }
 
-#if defined(JANK_IOS_JIT)
-        // Start the remote eval server (ClojureScript-style architecture)
-        // All nREPL complexity stays on macOS, iOS just does simple eval
-        // Connect from macOS with: nc <ios-ip> 5558
-        // Or use the jank nREPL proxy
-        std::cout << std::endl;
-        std::cout << "[ios-eval] Starting remote eval server..." << std::endl;
-        std::cout << "[ios-eval] This allows REPL-driven development from macOS." << std::endl;
-        std::cout << "[ios-eval] Protocol: JSON over TCP (like ClojureScript browser REPL)" << std::endl;
-        jank::ios::start_eval_server(5558);
-        std::cout << std::endl;
-#endif
+        // nREPL server is now started from Clojure code in vybe.sdf.ios/run!
+        // This avoids the C++ in-ns bootstrap issue and matches the desktop pattern.
+        // See: jank.nrepl-server.server/start-server
 
         // Call the jank main function (works for both JIT and AOT)
+        // The jank code in vybe.sdf.ios will call (server/start-server {:port 5558})
         call_jank_main();
-
-#if defined(JANK_IOS_JIT)
-        // Stop the eval server on exit
-        jank::ios::stop_eval_server();
-#endif
 
         return 0;
     }
