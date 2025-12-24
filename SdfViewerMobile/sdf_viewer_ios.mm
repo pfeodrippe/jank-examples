@@ -184,8 +184,6 @@ extern "C" void jank_aot_init();
 // Native function loader - registers C++ implementations into clojure.core-native namespace
 // This is compiled from clojure/core_native.cpp and MUST be called before loading clojure.core
 extern "C" void* jank_load_clojure_core_native();
-extern "C" void* jank_load_jank_nrepl_server_asio();
-extern "C" void jank_module_set_loaded(const char* module);
 
 // nREPL server C API (for starting full nREPL on iOS)
 extern "C" void* jank_nrepl_start_server(int port, char const *bind_address);
@@ -201,15 +199,11 @@ static void* g_nrepl_server_handle = nullptr;
 static bool load_jank_modules_jit() {
     std::cout << "[jank-hybrid] Loading AOT core modules..." << std::endl;
 
-    // jank_aot_init() loads clojure.core-native, clojure.core, and other core libs
-    // These are AOT compiled to avoid the GC memory issues when JIT compiling on iOS
+    // jank_aot_init() loads:
+    // 1. clojure.core-native, clojure.core, other core libs
+    // 2. nREPL native module (jank.nrepl-server.asio) - inserted by ios-bundle when JANK_IOS_JIT
+    // 3. application modules (which may include jank.nrepl-server.server)
     jank_aot_init();
-
-    // Load nREPL native module (required for nREPL server)
-    std::cout << "[jank-hybrid] Loading nREPL server native module..." << std::endl;
-    jank_load_jank_nrepl_server_asio();
-    jank_module_set_loaded("jank.nrepl-server.asio");
-    std::cout << "[jank-hybrid] nREPL native module loaded!" << std::endl;
 
     std::cout << "[jank-hybrid] All modules loaded! Ready for REPL." << std::endl;
     return true;
@@ -330,9 +324,13 @@ static bool init_jank_runtime_impl() {
     }
 }
 
-// Call the jank-exported -main function
-static void call_jank_main() {
+// Call the jank-exported -main function (actual implementation)
+static void call_jank_main_impl() {
     try {
+        // Set up thread bindings (required for dynamic vars like *ns*)
+        std::cout << "[jank] Setting up thread bindings..." << std::endl;
+        jank::runtime::context::binding_scope bindings;
+
         // First, require the module to trigger JIT compilation
         std::cout << "[jank] Loading vybe.sdf.ios module..." << std::endl;
         auto require_var = jank::runtime::__rt_ctx->find_var(
@@ -360,9 +358,27 @@ static void call_jank_main() {
         // Call it using dynamic_call (no args)
         std::cout << "[jank] Calling vybe.sdf.ios/-main..." << std::endl;
         jank::runtime::dynamic_call(var.expect_ok()->deref());
+    } catch (jtl::ref<jank::error::base> const& e) {
+        std::cerr << "[jank] Error calling -main: " << e->message << std::endl;
+        if (e->cause) {
+            std::cerr << "[jank]   caused by: " << e->cause->message << std::endl;
+        }
+    } catch (jtl::immutable_string const& e) {
+        std::cerr << "[jank] Error calling -main: " << e << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "[jank] Error calling -main: " << e.what() << std::endl;
+        std::cerr << "[jank] Error calling -main (std): " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[jank] Error calling -main: unknown exception" << std::endl;
     }
+}
+
+// Call jank main - runs on main thread for UIKit compatibility
+// The large-stack pthread was needed for JIT compilation during module loading,
+// but -main only runs AOT code and the render loop, which don't need deep stacks.
+// UIKit APIs (SDL window creation) MUST be called from main thread.
+static void call_jank_main() {
+    std::cout << "[jank] Running -main on main thread (required for UIKit)..." << std::endl;
+    call_jank_main_impl();
 }
 
 // =============================================================================

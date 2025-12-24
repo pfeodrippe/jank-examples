@@ -44,12 +44,12 @@
 
 (comment
 
-  (println (+ 4 44))
+  (println (+ 4 49))
 
   (defn aaa
     []
     (+ 4 1))
-  (println :d (incd (aaa)))
+
   (incd 4)
 
   ())

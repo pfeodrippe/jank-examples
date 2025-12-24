@@ -40,8 +40,9 @@
   - [x] ios-eval
     - cljs-like
   - [ ] emacs nrepl
-    - [ ] fix flaky
+    - [x] fix flaky
     - [ ] fix `new-frame!` evaluation
+      - [ ] aot vs jit
     - [ ] fix load-file
   - [ ] build in ci
 - [ ]
@@ -57,9 +58,9 @@
 
 - [x] void as nil
   - 97fed5973
-- [ ] unbox perf
-  -
-  - from 360 us to
+- [x] unbox perf
+- [ ] aot vs jit for new-frame!
+- [ ] aot vs jit unbox at draw-debug-ui!
 
 ## Others
 
