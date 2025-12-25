@@ -723,8 +723,9 @@ ios-jit-device-core-aot:
 
 # Build AOT modules for SIMULATOR JIT (same as device, just different target)
 # Rebuilds if any .jank file is newer than the library
+# Depends on build-sdf-deps-standalone because ios-bundle needs libsdf_deps.dylib for JIT symbol resolution
 .PHONY: ios-jit-sim-aot
-ios-jit-sim-aot:
+ios-jit-sim-aot: build-sdf-deps-standalone
 	@if [ -n "$$(find src -name '*.jank' -newer SdfViewerMobile/build-iphonesimulator/libvybe_aot.a 2>/dev/null)" ] || \
 	   [ ! -f "SdfViewerMobile/build-iphonesimulator/libvybe_aot.a" ] || \
 	   [ ! -f "SdfViewerMobile/build-iphonesimulator/generated/jank_aot_init.cpp" ] || \
@@ -816,8 +817,9 @@ ios-jit-device-project: ios-jit-device-libs
 
 # Rebuild vybe AOT library if source files changed
 # This checks if any .jank file is newer than the library
+# Depends on build-sdf-deps-standalone because ios-bundle needs libsdf_deps.dylib for JIT symbol resolution
 .PHONY: ios-jit-device-aot
-ios-jit-device-aot:
+ios-jit-device-aot: build-sdf-deps-standalone
 	@if [ -n "$$(find src -name '*.jank' -newer SdfViewerMobile/build-iphoneos/libvybe_aot.a 2>/dev/null)" ] || \
 	   [ ! -f "SdfViewerMobile/build-iphoneos/libvybe_aot.a" ] || \
 	   [ ! -f "SdfViewerMobile/build-iphoneos/generated/jank_aot_init.cpp" ] || \

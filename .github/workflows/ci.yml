@@ -39,7 +39,7 @@ jobs:
   build-jank-macos:
     name: Build jank - macOS
     needs: get-jank-commit
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 200
     steps:
       - name: Clone jank
@@ -96,7 +96,7 @@ jobs:
   build-macos:
     name: Build and Test - macOS
     needs: [get-jank-commit, build-jank-macos]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -169,7 +169,7 @@ jobs:
   build-ios-aot:
     name: Build iOS AOT Simulator
     needs: [get-jank-commit, build-jank-macos]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -217,7 +217,7 @@ jobs:
   build-ios-jit:
     name: Build iOS JIT Simulator
     needs: [get-jank-commit, build-jank-macos]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Checkout repository

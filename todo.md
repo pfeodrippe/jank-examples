@@ -69,3 +69,4 @@
 
 - [ ] jank-focused llm
 - [ ] check flecs
+- [ ] ipad simple text-focused app
