@@ -660,6 +660,12 @@ ios-jit-sync-includes:
 	@rsync -av --delete $(JANK_SRC)/include/cpp/clojure/ SdfViewerMobile/jank-resources/include/clojure/
 	@echo "Includes synced!"
 
+# Build precompiled header for iOS JIT (rebuilds when jank headers change)
+.PHONY: ios-jit-pch
+ios-jit-pch: ios-jit-sync-includes
+	@echo "Building iOS JIT precompiled header..."
+	./SdfViewerMobile/build-ios-pch.sh
+
 # Sync jank library to iOS JIT bundle (rebuilds if source changed)
 .PHONY: ios-jit-sync-lib
 ios-jit-sync-lib:
@@ -670,24 +676,6 @@ ios-jit-sync-lib:
 	@cp $(JANK_SRC)/build-ios-sim-jit/libjankzip.a SdfViewerMobile/build-iphonesimulator-jit/
 	@cp $(JANK_SRC)/build-ios-sim-jit/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphonesimulator-jit/
 	@echo "Library synced!"
-
-# Build, install and run iOS JIT app in simulator (mirrors ios-jit-device-run)
-.PHONY: ios-jit-sim-run
-ios-jit-sim-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-sim-project
-	@echo "Building iOS JIT app for simulator..."
-	cd SdfViewerMobile && xcodebuild \
-		-project SdfViewerMobile-JIT.xcodeproj \
-		-scheme SdfViewerMobile-JIT \
-		-configuration Debug \
-		-sdk iphonesimulator \
-		-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
-		build
-	@echo "Launching simulator..."
-	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
-	open -a Simulator
-	xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT 2>/dev/null || true
-	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT.app" -path "*/Build/Products/Debug-iphonesimulator/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
-	xcrun simctl launch --console-pty 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT
 
 # Build AOT-compiled core libs for device JIT (clojure.core, clojure.string, etc.)
 # This enables hybrid mode: AOT core libs + JIT user code
@@ -812,9 +800,42 @@ ios-jit-device-aot:
 		echo "AOT library up to date."; \
 	fi
 
+.PHONY: ios-jit-sim-build
+ios-jit-sim-build: ios-jit-sync-sources ios-jit-pch ios-jit-sim-project
+	@echo "Building iOS JIT app for simulator..."
+	cd SdfViewerMobile && xcodebuild \
+	-project SdfViewerMobile-JIT.xcodeproj \
+	-scheme SdfViewerMobile-JIT \
+	-configuration Debug \
+	-sdk iphonesimulator \
+	-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+	build
+
+# Build, install and run iOS JIT app in simulator
+.PHONY: ios-jit-sim-run
+ios-jit-sim-run: ios-jit-sim-build
+	@echo "Launching simulator..."
+	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT 2>/dev/null || true
+	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT.app" -path "*/Build/Products/Debug-iphonesimulator/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
+	xcrun simctl launch --console-pty 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT
+
+.PHONY: ios-jit-device-build
+ios-jit-device-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-aot ios-jit-device-project
+	@echo "Building iOS JIT app for device..."
+	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
+	cd SdfViewerMobile && xcodebuild \
+	-project SdfViewerMobile-JIT-Device.xcodeproj \
+	-scheme SdfViewerMobile-JIT-Device \
+	-configuration Debug \
+	-sdk iphoneos \
+	-allowProvisioningUpdates \
+	build
+
 # Build, install and run iOS JIT app on device
 .PHONY: ios-jit-device-run
-ios-jit-device-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-aot ios-jit-device-project
+ios-jit-device-run: ios-jit-device-build
 	@echo "Building iOS JIT app for device..."
 	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
 	cd SdfViewerMobile && xcodebuild \

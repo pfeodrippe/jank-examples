@@ -33,6 +33,9 @@
   - [x] device
   - [x] show mesh
   - [x] improve script
+- [ ] build aot in CI
+  - [ ] simulator
+  - [ ] device (until where we don't need code signing)
 - [ ] jit (at least for dev)
   - [x] compile
   - [-] nREPL ios
