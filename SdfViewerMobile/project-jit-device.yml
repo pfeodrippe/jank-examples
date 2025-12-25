@@ -55,7 +55,10 @@ targets:
       # SDF engine implementation
       - path: sdf_engine_impl.cpp
         compilerFlags: ["-x", "c++"]
-      # Note: jank_aot_init is provided by libvybe_aot.a (linked via -lvybe_aot)
+      # jank_aot_init must be compiled by Xcode (not from libvybe_aot.a) to get JANK_IOS_JIT defined
+      # This enables nREPL loading for JIT mode
+      - path: build-iphoneos-jit/generated/jank_aot_init.cpp
+        compilerFlags: ["-x", "c++"]
       # Resources
       - path: LaunchScreen.storyboard
         buildPhase: resources
