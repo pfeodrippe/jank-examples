@@ -164,6 +164,105 @@ jobs:
           if-no-files-found: error
 
   # ============================================================================
+  # iOS Simulator Builds (run in parallel with macOS tests)
+  # ============================================================================
+  build-ios-aot:
+    name: Build iOS AOT Simulator
+    needs: [get-jank-commit, build-jank-macos]
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Clone jank (for source files)
+        run: |
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install Homebrew deps
+        run: |
+          brew install cmake ninja double-conversion pkg-config llvm ccache boost openssl zlib doctest
+          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk
+
+      - name: Restore Clang/LLVM cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
+
+      - name: Restore jank build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/CMakeCache.txt
+            ~/jank/compiler+runtime/build/CMakeFiles
+            ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.ninja
+            ~/jank/compiler+runtime/build/lib
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v2
+
+      - name: Verify jank
+        run: |
+          ~/jank/compiler+runtime/build/jank check-health
+
+      - name: Build iOS AOT Simulator
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make sdf-ios-sim-build JANK_SRC=$HOME/jank/compiler+runtime
+
+  build-ios-jit:
+    name: Build iOS JIT Simulator
+    needs: [get-jank-commit, build-jank-macos]
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Clone jank (for source files)
+        run: |
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install Homebrew deps
+        run: |
+          brew install cmake ninja double-conversion pkg-config llvm ccache boost openssl zlib doctest
+          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk
+
+      - name: Restore Clang/LLVM cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/jank/compiler+runtime/build/llvm-install
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
+
+      - name: Restore jank build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/CMakeCache.txt
+            ~/jank/compiler+runtime/build/CMakeFiles
+            ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.ninja
+            ~/jank/compiler+runtime/build/lib
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v2
+
+      - name: Verify jank
+        run: |
+          ~/jank/compiler+runtime/build/jank check-health
+
+      - name: Build iOS JIT Simulator
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make ios-jit-sim-build JANK_SRC=$HOME/jank/compiler+runtime
+
+  # ============================================================================
   # Linux Pipeline (runs in parallel with macOS)
   # DISABLED: jank has a TLS symbol export issue on Linux with emulated TLS
   # See: https://github.com/pfeodrippe/jank-examples/issues/XXX

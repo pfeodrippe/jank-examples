@@ -6,7 +6,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
-JANK_SRC="/Users/pfeodrippe/dev/jank/compiler+runtime"
+# Use env var or default for local dev
+JANK_SRC="${JANK_SRC:-/Users/pfeodrippe/dev/jank/compiler+runtime}"
 IOS_LLVM_DIR="$HOME/dev/ios-llvm-build/ios-llvm-simulator"
 
 # JIT build directories (separate from AOT builds)

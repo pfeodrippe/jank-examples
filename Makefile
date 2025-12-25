@@ -10,6 +10,7 @@ CXX = clang++
 
 # jank paths (for vybe_flecs_jank.o which needs jank headers)
 JANK_SRC ?= /Users/pfeodrippe/dev/jank/compiler+runtime
+export JANK_SRC  # Export so shell scripts can access it
 JANK_CXX = $(JANK_SRC)/build/llvm-install/usr/local/bin/clang++
 
 # macOS SDK path (needed for system headers when using jank's clang)
@@ -519,9 +520,9 @@ sdf-ios-sim: build-sdf-deps
 .PHONY: sdf-ios-sim-clean
 sdf-ios-sim-clean: clean-cache sdf-ios-sim
 
-# Run iOS app in iPad simulator
-# Build and run for iOS Simulator
-sdf-ios-sim-run: sdf-ios-sim
+# Build iOS app for simulator (xcodebuild only, no launch)
+.PHONY: sdf-ios-sim-build
+sdf-ios-sim-build: sdf-ios-sim
 	@echo "Building iOS app for simulator..."
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile.xcodeproj \
@@ -530,7 +531,10 @@ sdf-ios-sim-run: sdf-ios-sim
 		-sdk iphonesimulator \
 		-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
 		build
-	@echo ""
+
+# Run iOS app in iPad simulator
+.PHONY: sdf-ios-sim-run
+sdf-ios-sim-run: sdf-ios-sim-build
 	@echo "Launching simulator..."
 	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
 	open -a Simulator
@@ -804,12 +808,12 @@ ios-jit-device-aot:
 ios-jit-sim-build: ios-jit-sync-sources ios-jit-pch ios-jit-sim-project
 	@echo "Building iOS JIT app for simulator..."
 	cd SdfViewerMobile && xcodebuild \
-	-project SdfViewerMobile-JIT.xcodeproj \
-	-scheme SdfViewerMobile-JIT \
-	-configuration Debug \
-	-sdk iphonesimulator \
-	-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
-	build
+		-project SdfViewerMobile-JIT.xcodeproj \
+		-scheme SdfViewerMobile-JIT \
+		-configuration Debug \
+		-sdk iphonesimulator \
+		-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+		build
 
 # Build, install and run iOS JIT app in simulator
 .PHONY: ios-jit-sim-run
@@ -826,25 +830,16 @@ ios-jit-device-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-ao
 	@echo "Building iOS JIT app for device..."
 	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
 	cd SdfViewerMobile && xcodebuild \
-	-project SdfViewerMobile-JIT-Device.xcodeproj \
-	-scheme SdfViewerMobile-JIT-Device \
-	-configuration Debug \
-	-sdk iphoneos \
-	-allowProvisioningUpdates \
-	build
-
-# Build, install and run iOS JIT app on device
-.PHONY: ios-jit-device-run
-ios-jit-device-run: ios-jit-device-build
-	@echo "Building iOS JIT app for device..."
-	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
-	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile-JIT-Device.xcodeproj \
 		-scheme SdfViewerMobile-JIT-Device \
 		-configuration Debug \
 		-sdk iphoneos \
 		-allowProvisioningUpdates \
 		build
+
+# Build, install and run iOS JIT app on device
+.PHONY: ios-jit-device-run
+ios-jit-device-run: ios-jit-device-build
 	@echo ""
 	@echo "Installing to connected device..."
 	@DEVICE_ID=$$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*iPad|connected.*iPhone" | awk '{print $$3}' | head -1); \

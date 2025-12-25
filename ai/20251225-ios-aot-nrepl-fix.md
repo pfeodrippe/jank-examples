@@ -76,3 +76,27 @@ make sdf-ios-sim-run
 # JIT build (with nREPL, rebuilds PCH automatically)
 make ios-jit-sim-run
 ```
+
+## CI Update
+
+Added iOS simulator builds as parallel GitHub Actions jobs in `.github/workflows/ci.yml`:
+
+```
+                    ┌─► build-macos (Tests + Standalone)
+                    │
+build-jank-macos ───┼─► build-ios-aot (iOS AOT Simulator)
+                    │
+                    └─► build-ios-jit (iOS JIT Simulator)
+```
+
+All three jobs have `needs: [get-jank-commit, build-jank-macos]` so they run in parallel.
+
+## Removed Hardcoded Paths
+
+Updated iOS build scripts to require `JANK_SRC` environment variable (no hardcoded fallbacks):
+- `SdfViewerMobile/build_ios_jank_aot.sh`
+- `SdfViewerMobile/build_ios_jank.sh`
+- `SdfViewerMobile/build_ios_jit.sh`
+- `SdfViewerMobile/build-ios-pch.sh`
+
+Makefile passes `JANK_SRC` to scripts: `JANK_SRC=$(JANK_SRC) ./script.sh`

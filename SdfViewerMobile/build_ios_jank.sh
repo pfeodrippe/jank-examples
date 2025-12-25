@@ -10,15 +10,8 @@ echo "  Building jank for iOS (AOT compilation)"
 echo "============================================"
 echo ""
 
-# Determine jank paths
-if [ -d "/Users/pfeodrippe/dev/jank/compiler+runtime" ]; then
-    JANK_SRC="/Users/pfeodrippe/dev/jank/compiler+runtime"
-elif [ -d "$HOME/jank/compiler+runtime" ]; then
-    JANK_SRC="$HOME/jank/compiler+runtime"
-else
-    echo "Error: Could not find jank source directory"
-    exit 1
-fi
+# Determine jank paths (env var or default for local dev)
+JANK_SRC="${JANK_SRC:-/Users/pfeodrippe/dev/jank/compiler+runtime}"
 
 JANK_DIR="$JANK_SRC/build"
 JANK_LIB_DIR="$JANK_DIR/llvm-install/usr/local/lib"

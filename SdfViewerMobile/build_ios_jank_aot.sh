@@ -17,12 +17,8 @@ fi
 
 TARGET="$1"
 
-# Determine jank path
+# Determine jank path (env var or default for local dev)
 JANK_SRC="${JANK_SRC:-/Users/pfeodrippe/dev/jank/compiler+runtime}"
-if [[ ! -d "$JANK_SRC" ]]; then
-    echo "Error: jank source directory not found: $JANK_SRC"
-    exit 1
-fi
 
 # Output directory (uses PLATFORM_NAME-compatible names)
 if [[ "$TARGET" == "simulator" ]]; then
