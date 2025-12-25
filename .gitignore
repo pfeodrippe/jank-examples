@@ -20,6 +20,7 @@ SDFViewer*
 !SDFViewerMobile
 SDFViewerMobile/generated
 SDFViewerMobile/build-*
+!SDFViewerMobile/*.sh
 sdf-viewer*
 .DS_Store
 

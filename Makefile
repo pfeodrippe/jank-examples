@@ -507,7 +507,7 @@ sdf-ios: clean-cache build-sdf-deps ios-jank ios-project
 # Build iOS for simulator (incremental - reuses existing builds)
 # The build script now handles: jank runtime build, module compilation, library bundling
 .PHONY: sdf-ios-sim
-sdf-ios-sim: build-sdf-deps
+sdf-ios-sim: build-sdf-deps-standalone
 	@echo "Building vybe.sdf for iOS Simulator..."
 	./SdfViewerMobile/build_ios_jank_aot.sh simulator
 	$(MAKE) ios-project
@@ -549,7 +549,7 @@ sdf-ios-simulator-run: sdf-ios-sim-run
 # Build iOS for device (incremental - reuses existing builds)
 # The build script now handles: jank runtime build, module compilation, library bundling
 .PHONY: sdf-ios-device
-sdf-ios-device: build-sdf-deps
+sdf-ios-device: build-sdf-deps-standalone
 	@echo "Building vybe.sdf for iOS Device..."
 	./SdfViewerMobile/build_ios_jank_aot.sh device
 	$(MAKE) ios-project
@@ -637,6 +637,7 @@ ios-jit-device:
 .PHONY: ios-jit-sync-sources
 ios-jit-sync-sources:
 	@echo "Syncing jank source files to iOS bundle..."
+	@mkdir -p SdfViewerMobile/jank-resources/src/jank/vybe
 	@rsync -av --delete --include='*.jank' --include='*/' --exclude='*' src/vybe/ SdfViewerMobile/jank-resources/src/jank/vybe/
 	@echo "Sources synced!"
 
@@ -644,6 +645,15 @@ ios-jit-sync-sources:
 .PHONY: ios-jit-sync-includes
 ios-jit-sync-includes:
 	@echo "Syncing jank include headers to iOS bundle..."
+	@# Create target directories first (rsync doesn't create nested paths)
+	@mkdir -p SdfViewerMobile/jank-resources/include/gc
+	@mkdir -p SdfViewerMobile/jank-resources/include/immer
+	@mkdir -p SdfViewerMobile/jank-resources/include/bpptree
+	@mkdir -p SdfViewerMobile/jank-resources/include/folly
+	@mkdir -p SdfViewerMobile/jank-resources/include/boost
+	@mkdir -p SdfViewerMobile/jank-resources/include/jank
+	@mkdir -p SdfViewerMobile/jank-resources/include/jtl
+	@mkdir -p SdfViewerMobile/jank-resources/include/clojure
 	@# GC headers from bdwgc (gc/gc_cpp.h, etc.)
 	@rsync -av --delete $(JANK_SRC)/third-party/bdwgc/include/gc/ SdfViewerMobile/jank-resources/include/gc/
 	@cp -f $(JANK_SRC)/third-party/bdwgc/include/gc.h SdfViewerMobile/jank-resources/include/
@@ -826,7 +836,7 @@ ios-jit-sim-run: ios-jit-sim-build
 	xcrun simctl launch --console-pty 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT
 
 .PHONY: ios-jit-device-build
-ios-jit-device-run: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-aot ios-jit-device-project
+ios-jit-device-build: ios-jit-sync-sources ios-jit-sync-includes ios-jit-device-aot ios-jit-device-project
 	@echo "Building iOS JIT app for device..."
 	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
 	cd SdfViewerMobile && xcodebuild \
