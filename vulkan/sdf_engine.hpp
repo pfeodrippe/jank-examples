@@ -908,6 +908,81 @@ inline std::vector<uint32_t> load_spirv_file(const std::string& spv_path) {
 }
 
 #if HAS_SHADERC
+// File-based includer for shaderc to support #include directives
+class FileIncluder : public shaderc::CompileOptions::IncluderInterface {
+public:
+    explicit FileIncluder(const std::string& base_dir) : base_dir_(base_dir) {}
+
+    // Resolve include and return file contents
+    shaderc_include_result* GetInclude(const char* requested_source,
+                                        shaderc_include_type type,
+                                        const char* requesting_source,
+                                        size_t include_depth) override {
+        std::string full_path;
+
+        if (type == shaderc_include_type_relative) {
+            // For relative includes, resolve relative to the requesting file
+            std::string req_path(requesting_source);
+            size_t last_slash = req_path.find_last_of("/\\");
+            if (last_slash != std::string::npos) {
+                full_path = req_path.substr(0, last_slash + 1) + requested_source;
+            } else {
+                full_path = base_dir_ + "/" + requested_source;
+            }
+        } else {
+            // For standard includes, search in base directory
+            full_path = base_dir_ + "/" + requested_source;
+        }
+
+        // Read the file
+        std::ifstream file(full_path);
+        if (!file.is_open()) {
+            // Try without base_dir (for absolute paths or current dir)
+            file.open(requested_source);
+            if (!file.is_open()) {
+                auto* result = new shaderc_include_result;
+                result->source_name = "";
+                result->source_name_length = 0;
+                result->content = "Failed to open include file";
+                result->content_length = strlen(result->content);
+                result->user_data = nullptr;
+                return result;
+            }
+            full_path = requested_source;
+        }
+
+        std::string content((std::istreambuf_iterator<char>(file)),
+                             std::istreambuf_iterator<char>());
+
+        // Allocate result with owned data
+        auto* container = new IncludeData{full_path, content};
+
+        auto* result = new shaderc_include_result;
+        result->source_name = container->path.c_str();
+        result->source_name_length = container->path.size();
+        result->content = container->content.c_str();
+        result->content_length = container->content.size();
+        result->user_data = container;
+
+        return result;
+    }
+
+    // Release include result
+    void ReleaseInclude(shaderc_include_result* data) override {
+        if (data->user_data) {
+            delete static_cast<IncludeData*>(data->user_data);
+        }
+        delete data;
+    }
+
+private:
+    struct IncludeData {
+        std::string path;
+        std::string content;
+    };
+    std::string base_dir_;
+};
+
 // Compile GLSL source to SPIR-V in memory using shaderc
 // Returns empty vector on failure
 inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
@@ -917,6 +992,11 @@ inline std::vector<uint32_t> compile_glsl_to_spirv(const std::string& source,
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
+
+    // Enable include support - resolve from vulkan_kim directory
+    auto* e = get_engine();
+    std::string include_dir = e ? e->shaderDir : "vulkan_kim";
+    options.SetIncluder(std::make_unique<FileIncluder>(include_dir));
 
     auto result = compiler.CompileGlslToSpv(source, kind, filename.c_str(), options);
 

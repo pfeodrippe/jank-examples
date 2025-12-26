@@ -48,7 +48,7 @@
       - [ ] aot vs jit
     - [ ] fix load-file
   - [ ] build in ci
-- [ ]
+- [ ] create sdf core patterns
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
 - [ ] print atom

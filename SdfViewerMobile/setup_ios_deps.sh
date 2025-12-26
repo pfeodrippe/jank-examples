@@ -47,12 +47,18 @@ setup_moltenvk() {
         return 1
     fi
 
-    # Also need vulkan headers
+    # Also need vulkan headers (including vk_video for video codec support)
     if [ -d "$TEMP_DIR/MoltenVK/MoltenVK/include" ]; then
         mkdir -p "$FRAMEWORKS_DIR/include"
         cp -R "$TEMP_DIR/MoltenVK/MoltenVK/include/vulkan" "$FRAMEWORKS_DIR/include/"
         cp -R "$TEMP_DIR/MoltenVK/MoltenVK/include/MoltenVK" "$FRAMEWORKS_DIR/include/"
-        echo "  Vulkan headers installed"
+        # vk_video contains Vulkan video codec headers (H.264, H.265, AV1, etc.)
+        if [ -d "$TEMP_DIR/MoltenVK/MoltenVK/include/vk_video" ]; then
+            cp -R "$TEMP_DIR/MoltenVK/MoltenVK/include/vk_video" "$FRAMEWORKS_DIR/include/"
+            echo "  Vulkan headers installed (including vk_video)"
+        else
+            echo "  Vulkan headers installed (vk_video not found in release)"
+        fi
     fi
 }
 

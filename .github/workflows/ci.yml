@@ -51,12 +51,15 @@ jobs:
           brew install git pkg-config ninja python cmake zlib double-conversion boost openssl doctest
 
       # Cache 1: Clang/LLVM (rarely changes, keyed by branch)
+      # Includes LLVM source (build/llvm) for iOS LLVM cross-compilation
       - name: Cache Clang/LLVM
         id: cache-clang
         uses: actions/cache@v4
         with:
-          path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
+          path: |
+            ~/jank/compiler+runtime/build/llvm-install
+            ~/jank/compiler+runtime/build/llvm
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v2
 
       - name: Build Clang/LLVM
         if: steps.cache-clang.outputs.cache-hit != 'true'
@@ -78,7 +81,7 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v2
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
 
       - name: Build jank
         if: steps.cache-jank.outputs.cache-hit != 'true'
@@ -116,13 +119,15 @@ jobs:
       - name: Install Homebrew deps
         run: |
           brew install cmake ninja double-conversion pkg-config llvm ccache boost openssl zlib doctest
-          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk
+          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk xcodegen
 
       - name: Restore Clang/LLVM cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
+          path: |
+            ~/jank/compiler+runtime/build/llvm-install
+            ~/jank/compiler+runtime/build/llvm
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v2
 
       - name: Restore jank build cache
         uses: actions/cache/restore@v4
@@ -134,7 +139,7 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v2
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
 
       - name: Verify jank
         run: |
@@ -184,13 +189,15 @@ jobs:
       - name: Install Homebrew deps
         run: |
           brew install cmake ninja double-conversion pkg-config llvm ccache boost openssl zlib doctest
-          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk
+          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk xcodegen
 
       - name: Restore Clang/LLVM cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
+          path: |
+            ~/jank/compiler+runtime/build/llvm-install
+            ~/jank/compiler+runtime/build/llvm
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v2
 
       - name: Restore jank build cache
         uses: actions/cache/restore@v4
@@ -202,11 +209,32 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v2
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
 
       - name: Verify jank
         run: |
           ~/jank/compiler+runtime/build/jank check-health
+
+      # Cache iOS frameworks (MoltenVK, SDL3) - takes ~10 min to build SDL3
+      # v2: Added vk_video headers for Vulkan video codec support
+      - name: Cache iOS Frameworks
+        id: cache-ios-frameworks
+        uses: actions/cache@v4
+        with:
+          path: SdfViewerMobile/Frameworks
+          key: ios-frameworks-v2
+
+      # Setup iOS dependencies (downloads MoltenVK, builds SDL3)
+      - name: Setup iOS Dependencies
+        if: steps.cache-ios-frameworks.outputs.cache-hit != 'true'
+        run: |
+          cd SdfViewerMobile && ./setup_ios_deps.sh
+
+      # Create placeholder for gitignored resource files
+      - name: Create placeholder resources
+        run: |
+          # exported_scene.glb is gitignored but required by Xcode build
+          touch SdfViewerMobile/exported_scene.glb
 
       - name: Build iOS AOT Simulator
         run: |
@@ -218,7 +246,7 @@ jobs:
     name: Build iOS JIT Simulator
     needs: [get-jank-commit, build-jank-macos]
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 180  # Increased for iOS LLVM build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -232,13 +260,15 @@ jobs:
       - name: Install Homebrew deps
         run: |
           brew install cmake ninja double-conversion pkg-config llvm ccache boost openssl zlib doctest
-          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk
+          brew install openssl@3 zstd sdl3 vulkan-loader shaderc molten-vk xcodegen
 
       - name: Restore Clang/LLVM cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/jank/compiler+runtime/build/llvm-install
-          key: clang-macos-arm64-${{ env.JANK_REF }}-v1
+          path: |
+            ~/jank/compiler+runtime/build/llvm-install
+            ~/jank/compiler+runtime/build/llvm
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v2
 
       - name: Restore jank build cache
         uses: actions/cache/restore@v4
@@ -250,11 +280,63 @@ jobs:
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v2
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
 
       - name: Verify jank
         run: |
           ~/jank/compiler+runtime/build/jank check-health
+
+      # Cache iOS frameworks (MoltenVK, SDL3) - takes ~10 min to build SDL3
+      # v2: Added vk_video headers for Vulkan video codec support
+      - name: Cache iOS Frameworks
+        id: cache-ios-frameworks
+        uses: actions/cache@v4
+        with:
+          path: SdfViewerMobile/Frameworks
+          key: ios-frameworks-v2
+
+      # Setup iOS dependencies (downloads MoltenVK, builds SDL3)
+      - name: Setup iOS Dependencies
+        if: steps.cache-ios-frameworks.outputs.cache-hit != 'true'
+        run: |
+          cd SdfViewerMobile && ./setup_ios_deps.sh
+
+      # Create placeholder for gitignored resource files
+      - name: Create placeholder resources
+        run: |
+          # exported_scene.glb is gitignored but required by Xcode build
+          touch SdfViewerMobile/exported_scene.glb
+
+      # Cache iOS LLVM (keyed by jank branch, rarely changes)
+      # This is the cross-compiled LLVM for iOS simulator (~541MB)
+      - name: Cache iOS LLVM (simulator)
+        id: cache-ios-llvm
+        uses: actions/cache@v4
+        with:
+          path: ~/dev/ios-llvm-build/ios-llvm-simulator
+          key: ios-llvm-simulator-${{ env.JANK_REF }}-v1
+
+      # Build iOS LLVM if not cached (takes ~2 hours first time)
+      - name: Build iOS LLVM
+        if: steps.cache-ios-llvm.outputs.cache-hit != 'true'
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          cd ~/jank/compiler+runtime
+          # Patch CppInterOp to support LLVM 22.x (upstream only supports up to 19.1.x)
+          sed -i '' 's/CLANG_MAX_SUPPORTED "19.1.x"/CLANG_MAX_SUPPORTED "22.x"/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/CLANG_VERSION_UPPER_BOUND 20.0.0/CLANG_VERSION_UPPER_BOUND 23.0.0/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLD_MAX_SUPPORTED "19.1.x"/LLD_MAX_SUPPORTED "22.x"/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLD_VERSION_UPPER_BOUND 20.0.0/LLD_VERSION_UPPER_BOUND 23.0.0/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLVM_MAX_SUPPORTED "19.1.x"/LLVM_MAX_SUPPORTED "22.x"/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLVM_VERSION_UPPER_BOUND 20.0.0/LLVM_VERSION_UPPER_BOUND 23.0.0/' third-party/cppinterop/CMakeLists.txt
+          ./bin/build-ios-llvm simulator
+
+      # Build jank iOS JIT libraries (libjank.a, etc. for iOS simulator with JIT)
+      - name: Build jank iOS JIT libs
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          cd ~/jank/compiler+runtime
+          ./bin/build-ios build-ios-sim-jit Debug simulator jit
 
       - name: Build iOS JIT Simulator
         run: |
