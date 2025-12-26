@@ -211,7 +211,23 @@ The iOS LLVM cache was being rebuilt every time because `actions/cache@v4` only 
 
 This ensures the cache is saved even if later steps fail.
 
+## Issue: Missing jank-resources/clang Directory
+
+Error in CI:
+```
+Spec validation error: Target "SdfViewerMobile-JIT" has a missing source directory ".../jank-resources/clang"
+```
+
+The `project-jit-sim.yml` references `jank-resources/clang` for bundling clang builtin headers (stddef.h, stdarg.h, etc.) needed for JIT compilation at runtime.
+
+**Fix:** Added clang headers to `ios-jit-sync-includes` target in Makefile:
+```makefile
+# Clang builtin headers (needed for JIT - stddef.h, stdarg.h, etc.)
+@mkdir -p SdfViewerMobile/jank-resources/clang/include
+@rsync -av --delete $(JANK_SRC)/build/llvm-install/usr/local/lib/clang/*/include/ SdfViewerMobile/jank-resources/clang/include/
+```
+
 ## Next Steps
 - Push changes and verify CI passes
-- First run will take ~2 hours to build iOS LLVM, but subsequent runs will use cache
+- iOS LLVM is now cached, so builds should be faster
 - Consider caching the jank iOS JIT build output to speed up future runs

@@ -31,6 +31,7 @@
 // All nREPL complexity stays on macOS, iOS just does simple eval
 #if defined(JANK_IOS_JIT)
 #include <jank/ios/eval_server.hpp>
+#include <jank/compile_server/remote_compile.hpp>
 #endif
 
 #pragma pop_macro("nil")
@@ -299,6 +300,21 @@ static bool init_jank_runtime_impl() {
             jank::runtime::context{};
 
 #if defined(JANK_IOS_JIT)
+        // Configure and connect to remote compile server on macOS
+        // This enables JIT compilation via the macOS compile-server
+        // TODO: Make host configurable (e.g., via environment or plist)
+        std::string const remote_host = "127.0.0.1";  // localhost for simulator
+        uint16_t const remote_port = 5570;
+
+        std::cout << "[jank] Configuring remote compile server at " << remote_host << ":" << remote_port << "..." << std::endl;
+        jank::compile_server::configure_remote_compile(remote_host, remote_port);
+
+        if (jank::compile_server::connect_remote_compile()) {
+            std::cout << "[jank] Connected to remote compile server!" << std::endl;
+        } else {
+            std::cout << "[jank] Warning: Could not connect to remote compile server. Local JIT will be used." << std::endl;
+        }
+
         // JIT mode: Load modules from bundled source files
         std::cout << "[jank] JIT mode - loading modules from source..." << std::endl;
         if (!load_jank_modules_jit()) {

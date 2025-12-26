@@ -7,6 +7,8 @@ cd "$(dirname "$0")/.."
 STANDALONE=false
 OUTPUT_NAME="sdf-viewer"
 USE_LLDB=false
+IOS_COMPILE_SERVER_PORT=0
+IOS_RESOURCE_DIR=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --standalone)
@@ -21,9 +23,17 @@ while [[ $# -gt 0 ]]; do
             USE_LLDB=true
             shift
             ;;
+        --ios-compile-server)
+            IOS_COMPILE_SERVER_PORT="$2"
+            shift 2
+            ;;
+        --ios-resource-dir)
+            IOS_RESOURCE_DIR="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--standalone] [-o|--output <name>] [--lldb]"
+            echo "Usage: $0 [--standalone] [-o|--output <name>] [--lldb] [--ios-compile-server <port>] [--ios-resource-dir <path>]"
             exit 1
             ;;
     esac
@@ -801,9 +811,34 @@ else
     for lib in "${DYLIBS[@]}"; do
         JANK_ARGS+=(--lib "$lib")
     done
+
+    # Build the run-main command with optional iOS compile server
+    RUN_MAIN_ARGS=(run-main vybe.sdf)
+    if [ "$IOS_COMPILE_SERVER_PORT" -ne 0 ]; then
+        RUN_MAIN_ARGS+=(--ios-compile-server "$IOS_COMPILE_SERVER_PORT")
+        if [ -n "$IOS_RESOURCE_DIR" ]; then
+            RUN_MAIN_ARGS+=(--ios-resource-dir "$IOS_RESOURCE_DIR")
+            echo ""
+            echo "============================================"
+            echo "  Starting iOS Compile Server on port $IOS_COMPILE_SERVER_PORT"
+            echo "  iOS resource dir: $IOS_RESOURCE_DIR"
+            echo "  iOS apps can connect for remote compilation"
+            echo "============================================"
+            echo ""
+        else
+            echo ""
+            echo "============================================"
+            echo "  Starting iOS Compile Server on port $IOS_COMPILE_SERVER_PORT"
+            echo "  iOS apps can connect for remote compilation"
+            echo "============================================"
+            echo ""
+        fi
+    fi
+    RUN_MAIN_ARGS+=(-main)
+
     if [ "$USE_LLDB" = true ]; then
-        lldb -b -o "run" -k "bt" -k "quit" -- jank "${JANK_ARGS[@]}" run-main vybe.sdf -main
+        lldb -b -o "run" -k "bt" -k "quit" -- jank "${JANK_ARGS[@]}" "${RUN_MAIN_ARGS[@]}"
     else
-        jank "${JANK_ARGS[@]}" run-main vybe.sdf -main
+        jank "${JANK_ARGS[@]}" "${RUN_MAIN_ARGS[@]}"
     fi
 fi

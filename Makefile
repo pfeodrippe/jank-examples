@@ -678,6 +678,9 @@ ios-jit-sync-includes:
 	@rsync -av --delete $(JANK_SRC)/include/cpp/jtl/ SdfViewerMobile/jank-resources/include/jtl/
 	@# clojure native headers (from include/cpp/clojure/, NOT src/cpp/clojure/)
 	@rsync -av --delete $(JANK_SRC)/include/cpp/clojure/ SdfViewerMobile/jank-resources/include/clojure/
+	@# Clang builtin headers (needed for JIT - stddef.h, stdarg.h, etc.)
+	@mkdir -p SdfViewerMobile/jank-resources/clang/include
+	@rsync -av --delete $(JANK_SRC)/build/llvm-install/usr/local/lib/clang/*/include/ SdfViewerMobile/jank-resources/clang/include/
 	@echo "Includes synced!"
 
 # Build precompiled header for iOS JIT (rebuilds when jank headers change)

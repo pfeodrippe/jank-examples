@@ -24,10 +24,34 @@ fi
 echo "Using clang: $LLVM_CLANG"
 $LLVM_CLANG --version | head -1
 
-# Prelude header location
-PRELUDE_HEADER="$JANK_SRC/include/cpp/jank/prelude.hpp"
-if [ ! -f "$PRELUDE_HEADER" ]; then
-    echo "Error: prelude.hpp not found at $PRELUDE_HEADER"
+# Always sync jank headers to output directory to ensure consistency
+# The PCH must use the same header paths as cross-compilation
+INCLUDE_DIR="$OUTPUT_DIR/include"
+echo "Syncing jank headers to $INCLUDE_DIR..."
+mkdir -p "$INCLUDE_DIR"
+rm -rf "$INCLUDE_DIR/jank" "$INCLUDE_DIR/jtl"
+cp -r "$JANK_SRC/include/cpp/"* "$INCLUDE_DIR/"
+echo "Headers synced."
+
+# Create iOS PCH wrapper that includes prelude + fstream (needed by native code)
+PCH_WRAPPER="$OUTPUT_DIR/ios_pch_wrapper.hpp"
+cat > "$PCH_WRAPPER" << 'WRAPPER_EOF'
+// iOS PCH wrapper - includes prelude plus additional standard headers
+// that user native code may need but aren't in the jank prelude
+#pragma once
+
+#include <jank/prelude.hpp>
+
+// Standard library headers needed by native user code
+#include <fstream>
+WRAPPER_EOF
+echo "Created PCH wrapper: $PCH_WRAPPER"
+
+# Prelude header location - use the wrapper for PCH build
+PRELUDE_HEADER="$PCH_WRAPPER"
+if [ ! -f "$INCLUDE_DIR/jank/prelude.hpp" ]; then
+    echo "Error: prelude.hpp not found at $INCLUDE_DIR/jank/prelude.hpp"
+    echo "Make sure headers were copied correctly."
     exit 1
 fi
 
@@ -53,7 +77,7 @@ $LLVM_CLANG \
     -DFOLLY_ASSUME_NO_JEMALLOC=1 -DFOLLY_ASSUME_NO_TCMALLOC=1 \
     -DJANK_TARGET_IOS=1 \
     -frtti \
-    -I"$JANK_SRC/include/cpp" \
+    -I"$INCLUDE_DIR" \
     -I"$JANK_SRC/src/cpp" \
     -I"$JANK_SRC/third-party/immer" \
     -I"$JANK_SRC/third-party/bdwgc/include" \
