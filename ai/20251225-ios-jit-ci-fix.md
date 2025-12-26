@@ -152,6 +152,65 @@ fi
 
 Bumped iOS frameworks cache key from `v1` to `v2` to force rebuild.
 
+## Issue: Hardcoded jank Paths in project.yml
+
+Error in CI:
+```
+fatal error: 'gc.h' file not found
+ld: warning: search path '/Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator' not found
+```
+
+The `SdfViewerMobile/project*.yml` files had hardcoded paths to `/Users/pfeodrippe/dev/jank/...` but CI clones jank to `~/jank/compiler+runtime`.
+
+**Fix:** Updated all project.yml files to use environment variables:
+- `${JANK_SRC}` for jank paths (e.g., `${JANK_SRC}/include/cpp`)
+- `${HOME}/dev/ios-llvm-build/...` for iOS LLVM paths
+
+xcodegen substitutes these at project generation time. The Makefile already exports `JANK_SRC`:
+```makefile
+JANK_SRC ?= /Users/pfeodrippe/dev/jank/compiler+runtime
+export JANK_SRC  # Export so shell scripts can access it
+```
+
+CI passes `JANK_SRC=$HOME/jank/compiler+runtime` to make, so the paths resolve correctly.
+
+**Files updated:**
+- `SdfViewerMobile/project.yml`
+- `SdfViewerMobile/project-jit.yml`
+- `SdfViewerMobile/project-jit-sim.yml`
+- `SdfViewerMobile/project-jit-device.yml`
+- `SdfViewerMobile/project-jit-only-sim.yml`
+
+**Added wrapper script:** `SdfViewerMobile/generate-project.sh`
+- Sets `JANK_SRC` with default value before calling xcodegen
+- Usage: `./generate-project.sh [spec-file]`
+- All Makefile targets now use this wrapper instead of calling xcodegen directly
+
+## Issue: iOS LLVM Cache Not Saved When Job Fails
+
+The iOS LLVM cache was being rebuilt every time because `actions/cache@v4` only saves in a "Post" step at job end. When the job failed (e.g., due to the hardcoded paths issue), the cache was never saved.
+
+**Fix:** Changed to use explicit `actions/cache/restore@v4` and `actions/cache/save@v4`:
+```yaml
+# Restore cache first
+- uses: actions/cache/restore@v4
+  with:
+    key: ios-llvm-simulator-${{ env.JANK_REF }}-v1
+
+# Build if not cached
+- name: Build iOS LLVM
+  if: steps.cache-ios-llvm.outputs.cache-hit != 'true'
+  run: ./bin/build-ios-llvm simulator
+
+# Save cache IMMEDIATELY after building (don't wait for job end)
+- uses: actions/cache/save@v4
+  if: steps.cache-ios-llvm.outputs.cache-hit != 'true'
+  with:
+    key: ios-llvm-simulator-${{ env.JANK_REF }}-v1
+```
+
+This ensures the cache is saved even if later steps fail.
+
 ## Next Steps
 - Push changes and verify CI passes
 - First run will take ~2 hours to build iOS LLVM, but subsequent runs will use cache

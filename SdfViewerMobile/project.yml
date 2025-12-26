@@ -1,6 +1,10 @@
 # XcodeGen project specification for SDF Viewer Mobile
-# Generate Xcode project with: xcodegen generate
+# Generate with: ./generate-project.sh (sets defaults) or via Makefile
 # Install xcodegen: brew install xcodegen
+#
+# Environment variables (set by generate-project.sh or Makefile):
+#   JANK_SRC - Path to jank compiler+runtime
+#              Default: /Users/pfeodrippe/dev/jank/compiler+runtime
 
 name: SdfViewerMobile
 
@@ -81,24 +85,25 @@ targets:
           - $(PROJECT_DIR)/Frameworks/include/SDL3
           - $(PROJECT_DIR)/Frameworks/include/vulkan
           - $(PROJECT_DIR)/Frameworks/include/MoltenVK
-          # jank headers
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/include/cpp
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/src/cpp
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/immer
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bdwgc/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bpptree/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-preprocessor/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-multiprecision/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/folly
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/stduuid/include
+          # jank headers (uses JANK_SRC env var, substituted at xcodegen time)
+          - ${JANK_SRC}/include/cpp
+          - ${JANK_SRC}/src/cpp
+          - ${JANK_SRC}/third-party/immer
+          - ${JANK_SRC}/third-party/bdwgc/include
+          - ${JANK_SRC}/third-party/bpptree/include
+          - ${JANK_SRC}/third-party/boost-preprocessor/include
+          - ${JANK_SRC}/third-party/boost-multiprecision/include
+          - ${JANK_SRC}/third-party/folly
+          - ${JANK_SRC}/third-party/stduuid/include
         FRAMEWORK_SEARCH_PATHS:
           - $(PROJECT_DIR)/Frameworks
         LIBRARY_SEARCH_PATHS:
           - $(PROJECT_DIR)/build-$(PLATFORM_NAME)
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios-simulator/third-party/bdwgc
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/build-ios/third-party/bdwgc
+          # jank libraries (uses JANK_SRC env var, substituted at xcodegen time)
+          - ${JANK_SRC}/build-ios-simulator
+          - ${JANK_SRC}/build-ios-simulator/third-party/bdwgc
+          - ${JANK_SRC}/build-ios
+          - ${JANK_SRC}/build-ios/third-party/bdwgc
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/Frameworks"
         # Linker flags

@@ -307,11 +307,11 @@ jobs:
           # exported_scene.glb is gitignored but required by Xcode build
           touch SdfViewerMobile/exported_scene.glb
 
-      # Cache iOS LLVM (keyed by jank branch, rarely changes)
+      # Restore iOS LLVM cache (keyed by jank branch, rarely changes)
       # This is the cross-compiled LLVM for iOS simulator (~541MB)
-      - name: Cache iOS LLVM (simulator)
+      - name: Restore iOS LLVM cache (simulator)
         id: cache-ios-llvm
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/dev/ios-llvm-build/ios-llvm-simulator
           key: ios-llvm-simulator-${{ env.JANK_REF }}-v1
@@ -330,6 +330,15 @@ jobs:
           sed -i '' 's/LLVM_MAX_SUPPORTED "19.1.x"/LLVM_MAX_SUPPORTED "22.x"/' third-party/cppinterop/CMakeLists.txt
           sed -i '' 's/LLVM_VERSION_UPPER_BOUND 20.0.0/LLVM_VERSION_UPPER_BOUND 23.0.0/' third-party/cppinterop/CMakeLists.txt
           ./bin/build-ios-llvm simulator
+
+      # Save iOS LLVM cache immediately after building (don't wait for job end)
+      # This ensures cache is saved even if later steps fail
+      - name: Save iOS LLVM cache (simulator)
+        if: steps.cache-ios-llvm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/dev/ios-llvm-build/ios-llvm-simulator
+          key: ios-llvm-simulator-${{ env.JANK_REF }}-v1
 
       # Build jank iOS JIT libraries (libjank.a, etc. for iOS simulator with JIT)
       - name: Build jank iOS JIT libs

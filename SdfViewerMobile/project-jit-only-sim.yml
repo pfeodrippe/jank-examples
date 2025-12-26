@@ -1,14 +1,15 @@
-# XcodeGen project specification for SDF Viewer Mobile - JIT Version
-# Generate with: ./generate-project.sh project-jit.yml or via Makefile
+# XcodeGen project specification for SDF Viewer Mobile - JIT-ONLY Version (Simulator)
+# Generate with: ./generate-project.sh project-jit-only-sim.yml or via Makefile
 #
-# IMPORTANT: JIT only works when launched from Xcode!
-# This build includes LLVM for runtime compilation.
+# JIT-ONLY MODE: App namespaces are loaded via remote compile server!
+# Only core libs (clojure.core, etc.) are bundled. No app modules.
+# Requires: compile-server running on macOS before loading app namespaces.
 #
 # Environment variables (set by generate-project.sh or Makefile):
 #   JANK_SRC - Path to jank compiler+runtime
 #              Default: /Users/pfeodrippe/dev/jank/compiler+runtime
 
-name: SdfViewerMobile-JIT
+name: SdfViewerMobile-JIT-Only
 
 options:
   bundleIdPrefix: com.vybe
@@ -20,7 +21,7 @@ options:
 
 settings:
   base:
-    PRODUCT_NAME: SdfViewerMobile-JIT
+    PRODUCT_NAME: SdfViewerMobile-JIT-Only
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: "937QJHK26U"
@@ -35,10 +36,10 @@ settings:
       - JANK_IOS_JIT=1
       - IMMER_HAS_LIBGC=1
       - IMMER_TAGGED_NODE=0
-      # NO SDF_AOT_BUILD - we use JIT!
+      # NO SDF_AOT_BUILD - we use JIT-only mode with remote compile server!
 
 targets:
-  SdfViewerMobile-JIT:
+  SdfViewerMobile-JIT-Only:
     type: application
     platform: iOS
     deploymentTarget: "17.0"
@@ -59,7 +60,7 @@ targets:
       # SDF engine implementation
       - path: sdf_engine_impl.cpp
         compilerFlags: ["-x", "c++"]
-      # JIT stub for jank_aot_init (does nothing in JIT mode)
+      # JIT-only jank_aot_init - only loads core libs, NOT app modules
       - path: build-iphonesimulator-jit/generated/jank_aot_init.cpp
         compilerFlags: ["-x", "c++"]
       # Resources
@@ -71,19 +72,15 @@ targets:
       - path: exported_scene.glb
         buildPhase: resources
       # jank resources for JIT (bundled with app)
-      # src/jank/ - jank source files (clojure.core, etc.)
       - path: jank-resources/src
         buildPhase: resources
         type: folder
-      # include/ - jank C++ headers for JIT compilation
       - path: jank-resources/include
         buildPhase: resources
         type: folder
-      # clang/ - clang resource directory (compiler headers)
       - path: jank-resources/clang
         buildPhase: resources
         type: folder
-      # Pre-compiled header for fast JIT startup
       - path: jank-resources/incremental.pch
         buildPhase: resources
     entitlements:
@@ -91,11 +88,10 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: Info.plist
-        TARGETED_DEVICE_FAMILY: "2"  # iPad only
+        TARGETED_DEVICE_FAMILY: "2"  # iPad only (for simulator)
         IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         CODE_SIGN_ENTITLEMENTS: jank-jit.entitlements
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
-        # Include paths
         HEADER_SEARCH_PATHS:
           - $(PROJECT_DIR)/../vendor/imgui
           - $(PROJECT_DIR)/../vendor/imgui/backends
@@ -116,17 +112,16 @@ targets:
           - ${JANK_SRC}/third-party/boost-multiprecision/include
           - ${JANK_SRC}/third-party/folly
           - ${JANK_SRC}/third-party/stduuid/include
-          # LLVM/Clang headers for JIT
+          # LLVM/Clang headers for JIT (SIMULATOR version)
           - ${HOME}/dev/ios-llvm-build/ios-llvm-simulator/include
           - ${JANK_SRC}/third-party/cppinterop/include
         FRAMEWORK_SEARCH_PATHS:
           - $(PROJECT_DIR)/Frameworks
         LIBRARY_SEARCH_PATHS:
-          # JIT-specific build directory
+          # JIT-specific build directory (SIMULATOR version)
           - $(PROJECT_DIR)/build-iphonesimulator-jit
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/Frameworks"
-        # Linker flags for JIT
         OTHER_LDFLAGS:
           - "-framework Metal"
           - "-framework MetalKit"
@@ -142,11 +137,14 @@ targets:
           - "-framework IOSurface"
           - "-framework IOKit"
           - "-lc++"
-          # Force load jank symbols for JIT resolution (not all_load to avoid LLVM conflicts)
+          # Force load jank symbols for JIT resolution (SIMULATOR version)
           - "-Wl,-force_load,$(PROJECT_DIR)/build-iphonesimulator-jit/libjank.a"
           - "-ljankzip"
           - "-lgc"
           - "-lfolly"
+          # JIT-ONLY: Only core libs, NO app modules!
+          # libjank_aot.a contains: core libs + jank_aot_init.o (core-only version)
+          - "-ljank_aot"
           # Merged LLVM library (all LLVM/Clang/CppInterOp static libs)
           - "-lllvm_merged"
           # System libraries needed by LLVM
@@ -178,10 +176,10 @@ targets:
           fi
 
 schemes:
-  SdfViewerMobile-JIT:
+  SdfViewerMobile-JIT-Only:
     build:
       targets:
-        SdfViewerMobile-JIT: all
+        SdfViewerMobile-JIT-Only: all
     run:
       config: Debug
     test:

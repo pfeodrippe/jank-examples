@@ -30,9 +30,10 @@ ifeq ($(UNAME_S),Darwin)
     # Shader compiler (prefer glslangValidator on macOS)
     GLSLC := $(shell command -v glslangValidator 2>/dev/null || command -v glslc 2>/dev/null)
     ifeq ($(findstring glslangValidator,$(GLSLC)),glslangValidator)
-        GLSLC_FLAGS = -V
+        # -V = Vulkan SPIR-V, -I = include path for #include directives
+        GLSLC_FLAGS = -V -I vulkan_kim
     else
-        GLSLC_FLAGS =
+        GLSLC_FLAGS = -I vulkan_kim
     endif
 else
     SHARED_LIB_EXT = so
@@ -43,9 +44,10 @@ else
     SHARED_FLAGS = -shared -fPIC -Wl,--allow-shlib-undefined
     GLSLC := $(shell command -v glslangValidator 2>/dev/null || command -v glslc 2>/dev/null)
     ifeq ($(findstring glslangValidator,$(GLSLC)),glslangValidator)
-        GLSLC_FLAGS = -V
+        # -V = Vulkan SPIR-V, -I = include path for #include directives
+        GLSLC_FLAGS = -V -I vulkan_kim
     else
-        GLSLC_FLAGS =
+        GLSLC_FLAGS = -I vulkan_kim
     endif
 endif
 
@@ -325,6 +327,10 @@ sdf: build-sdf-deps .jank-headers-stamp
 sdf-clean: clean-cache build-sdf-deps
 	./bin/run_sdf.sh
 
+# Run SDF viewer with iOS compile server enabled (for remote iOS JIT)
+sdf-ios-server: clean-cache build-sdf-deps
+	./bin/run_sdf.sh --ios-compile-server 5570 --ios-resource-dir $(PWD)/SdfViewerMobile/jank-resources
+
 sdf-standalone: clean-cache build-sdf-deps-standalone
 	./bin/run_sdf.sh --standalone -o SDFViewer
 
@@ -454,7 +460,7 @@ ios-project: build-shaders $(IOS_LOCAL_LIBS)
 		echo "Error: xcodegen not found. Install with: brew install xcodegen"; \
 		exit 1; \
 	fi
-	cd SdfViewerMobile && xcodegen generate
+	cd SdfViewerMobile && ./generate-project.sh
 	@echo "Xcode project generated: SdfViewerMobile/SdfViewerMobile.xcodeproj"
 
 # Build iOS app (requires prior setup and project generation)
@@ -736,6 +742,62 @@ ios-jit-sim-aot: build-sdf-deps-standalone
 		echo "Simulator AOT library up to date."; \
 	fi
 
+# Build JIT-only core libs (no app modules - they're loaded via remote compile server)
+# Note: Always runs ninja which handles incrementality properly via source dependencies
+.PHONY: ios-jit-sim-core
+ios-jit-sim-core:
+	@echo "Building JIT-only core libs for simulator (ninja handles incrementality)..."
+	@./SdfViewerMobile/build_ios_jank_jit.sh simulator
+
+# Copy JIT-only simulator libraries (no app modules - uses remote compile server)
+# libfolly.a comes from the JIT-only build (build-ios-jit-simulator)
+.PHONY: ios-jit-sim-core-libs
+ios-jit-sim-core-libs: ios-jit-sim-core
+	@echo "Copying JIT-only simulator libraries..."
+	@if [ ! -f "$(JANK_SRC)/build-ios-jit-simulator/libjank.a" ]; then \
+		echo "ERROR: JIT-only libraries not found!"; \
+		echo "Run 'make ios-jit-sim-core' first."; \
+		exit 1; \
+	fi
+	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit/generated
+	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit/obj
+	@# Copy from JIT-only build (core libs + jank_aot_init)
+	@cp $(JANK_SRC)/build-ios-jit-simulator/libjank.a SdfViewerMobile/build-iphonesimulator-jit/
+	@cp $(JANK_SRC)/build-ios-jit-simulator/libjankzip.a SdfViewerMobile/build-iphonesimulator-jit/
+	@cp $(JANK_SRC)/build-ios-jit-simulator/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphonesimulator-jit/
+	@# Create libjank_aot.a from core libs + nREPL server + jank_aot_init.o (JIT-only)
+	@echo "Creating libjank_aot.a for JIT-only mode (core libs + nREPL server)..."
+	@ar -crs SdfViewerMobile/build-iphonesimulator-jit/libjank_aot.a \
+		$(JANK_SRC)/build-ios-jit-simulator/clojure_core_generated.o \
+		$(JANK_SRC)/build-ios-jit-simulator/clojure_set_generated.o \
+		$(JANK_SRC)/build-ios-jit-simulator/clojure_string_generated.o \
+		$(JANK_SRC)/build-ios-jit-simulator/clojure_walk_generated.o \
+		$(JANK_SRC)/build-ios-jit-simulator/clojure_template_generated.o \
+		$(JANK_SRC)/build-ios-jit-simulator/clojure_test_generated.o \
+		$(JANK_SRC)/build-ios-jit-simulator/obj/jank_nrepl_server_server_generated.o \
+		$(JANK_SRC)/build-ios-jit-simulator/obj/jank_aot_init.o
+	@# Copy generated jank_aot_init.cpp (JIT-only version with core libs only)
+	@cp $(JANK_SRC)/build-ios-jit-simulator/generated/jank_aot_init.cpp SdfViewerMobile/build-iphonesimulator-jit/generated/ 2>/dev/null || true
+	@cp $(JANK_SRC)/build-ios-jit-simulator/obj/*.o SdfViewerMobile/build-iphonesimulator-jit/obj/ 2>/dev/null || true
+	@# Copy libfolly.a (try JIT-only build first, then regular JIT build)
+	@if [ -f "$(JANK_SRC)/build-ios-jit-simulator/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-jit-simulator/libfolly.a SdfViewerMobile/build-iphonesimulator-jit/; \
+	elif [ -f "$(JANK_SRC)/build-ios-sim-jit/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-sim-jit/libfolly.a SdfViewerMobile/build-iphonesimulator-jit/; \
+	else \
+		echo "WARNING: libfolly.a not found - linking may fail"; \
+	fi
+	@# Create merged LLVM library if it doesn't exist
+	@if [ ! -f "SdfViewerMobile/build-iphonesimulator-jit/libllvm_merged.a" ]; then \
+		echo "Creating merged LLVM library (this may take a minute)..."; \
+		libtool -static -o SdfViewerMobile/build-iphonesimulator-jit/libllvm_merged.a \
+			$$HOME/dev/ios-llvm-build/ios-llvm-simulator/lib/*.a 2>/dev/null || true; \
+	fi
+	@echo "JIT-only simulator libraries copied!"
+	@echo ""
+	@echo "NOTE: App namespaces are NOT included."
+	@echo "They will be loaded via remote compile server at runtime."
+
 # Copy simulator JIT libraries (mirrors ios-jit-device-libs exactly)
 .PHONY: ios-jit-sim-libs
 ios-jit-sim-libs: ios-jit-sim-aot
@@ -772,8 +834,46 @@ ios-jit-sim-libs: ios-jit-sim-aot
 .PHONY: ios-jit-sim-project
 ios-jit-sim-project: ios-jit-sim-libs
 	@echo "Generating simulator JIT Xcode project..."
-	cd SdfViewerMobile && xcodegen generate --spec project-jit-sim.yml
+	cd SdfViewerMobile && ./generate-project.sh project-jit-sim.yml
 	@echo "Project generated!"
+
+# ============================================================================
+# JIT-ONLY Mode (remote compile server for app namespaces)
+# ============================================================================
+
+# Generate JIT-only Xcode project (uses remote compile server for app namespaces)
+.PHONY: ios-jit-only-sim-project
+ios-jit-only-sim-project: ios-jit-sim-core-libs
+	@echo "Generating JIT-only simulator Xcode project..."
+	cd SdfViewerMobile && ./generate-project.sh project-jit-only-sim.yml
+	@echo "Project generated!"
+	@echo ""
+	@echo "NOTE: This is JIT-ONLY mode. App namespaces will be loaded via"
+	@echo "remote compile server at runtime. Start compile-server on macOS first!"
+
+# Build JIT-only simulator app
+.PHONY: ios-jit-only-sim-build
+ios-jit-only-sim-build: ios-jit-sync-sources ios-jit-pch ios-jit-only-sim-project
+	@echo "Building iOS JIT-only app for simulator..."
+	@# Clean Xcode's cached object files for jank_aot_init to ensure fresh rebuild
+	@rm -rf ~/Library/Developer/Xcode/DerivedData/SdfViewerMobile-JIT-Only-*/Build/Intermediates.noindex/SdfViewerMobile-JIT-Only.build/Debug-iphonesimulator/SdfViewerMobile-JIT-Only.build/Objects-normal/arm64/jank_aot_init.* 2>/dev/null || true
+	cd SdfViewerMobile && xcodebuild \
+		-project SdfViewerMobile-JIT-Only.xcodeproj \
+		-scheme SdfViewerMobile-JIT-Only \
+		-configuration Debug \
+		-sdk iphonesimulator \
+		-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+		build
+
+# Build, install and run iOS JIT-only app in simulator
+.PHONY: ios-jit-only-sim-run
+ios-jit-only-sim-run: ios-jit-only-sim-build
+	@echo "Launching simulator..."
+	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT-Only 2>/dev/null || true
+	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT-Only.app" -path "*/Build/Products/Debug-iphonesimulator/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
+	xcrun simctl launch --console-pty 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT-Only
 
 # Copy device JIT libraries from jank build to local directory
 # Depends on ios-jit-device-aot to ensure jank_aot_init.cpp exists
@@ -812,7 +912,7 @@ ios-jit-device-libs: ios-jit-device-aot
 .PHONY: ios-jit-device-project
 ios-jit-device-project: ios-jit-device-libs
 	@echo "Generating device JIT Xcode project..."
-	cd SdfViewerMobile && xcodegen generate --spec project-jit-device.yml
+	cd SdfViewerMobile && ./generate-project.sh project-jit-device.yml
 	@echo "Project generated!"
 
 # Rebuild vybe AOT library if source files changed

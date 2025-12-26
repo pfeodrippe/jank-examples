@@ -1,8 +1,12 @@
 # XcodeGen project specification for SDF Viewer Mobile - JIT Version (Simulator)
-# Generate Xcode project with: xcodegen generate --spec project-jit-sim.yml --project SdfViewerMobile-JIT
+# Generate with: ./generate-project.sh project-jit-sim.yml or via Makefile
 #
 # IMPORTANT: JIT only works when launched from Xcode!
 # This build includes LLVM for runtime compilation on iOS Simulator.
+#
+# Environment variables (set by generate-project.sh or Makefile):
+#   JANK_SRC - Path to jank compiler+runtime
+#              Default: /Users/pfeodrippe/dev/jank/compiler+runtime
 
 name: SdfViewerMobile-JIT
 
@@ -103,19 +107,19 @@ targets:
           - $(PROJECT_DIR)/Frameworks/include/SDL3
           - $(PROJECT_DIR)/Frameworks/include/vulkan
           - $(PROJECT_DIR)/Frameworks/include/MoltenVK
-          # jank headers
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/include/cpp
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/src/cpp
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/immer
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bdwgc/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/bpptree/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-preprocessor/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/boost-multiprecision/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/folly
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/stduuid/include
+          # jank headers (uses JANK_SRC env var, substituted at xcodegen time)
+          - ${JANK_SRC}/include/cpp
+          - ${JANK_SRC}/src/cpp
+          - ${JANK_SRC}/third-party/immer
+          - ${JANK_SRC}/third-party/bdwgc/include
+          - ${JANK_SRC}/third-party/bpptree/include
+          - ${JANK_SRC}/third-party/boost-preprocessor/include
+          - ${JANK_SRC}/third-party/boost-multiprecision/include
+          - ${JANK_SRC}/third-party/folly
+          - ${JANK_SRC}/third-party/stduuid/include
           # LLVM/Clang headers for JIT (SIMULATOR version)
-          - /Users/pfeodrippe/dev/ios-llvm-build/ios-llvm-simulator/include
-          - /Users/pfeodrippe/dev/jank/compiler+runtime/third-party/cppinterop/include
+          - ${HOME}/dev/ios-llvm-build/ios-llvm-simulator/include
+          - ${JANK_SRC}/third-party/cppinterop/include
         FRAMEWORK_SEARCH_PATHS:
           - $(PROJECT_DIR)/Frameworks
         LIBRARY_SEARCH_PATHS:
