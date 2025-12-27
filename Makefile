@@ -328,8 +328,28 @@ sdf-clean: clean-cache build-sdf-deps
 	./bin/run_sdf.sh
 
 # Run SDF viewer with iOS compile server enabled (for remote iOS JIT)
+# NOTE: This is the SLOW integrated server - use ios-compile-server instead
 sdf-ios-server: clean-cache build-sdf-deps
 	./bin/run_sdf.sh --ios-compile-server 5570 --ios-resource-dir $(PWD)/SdfViewerMobile/jank-resources
+
+# Fast standalone compile server for iOS JIT development
+# Run this first, then run ios-jit-only-sim-run in another terminal
+ios-compile-server:
+	cd $(JANK_SRC) && ./build/compile-server --target sim --port 5570 \
+		--module-path $(PWD)/SdfViewerMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
+		--jit-lib /opt/homebrew/lib/libvulkan.dylib \
+		--jit-lib /opt/homebrew/lib/libSDL3.dylib \
+		--jit-lib /opt/homebrew/lib/libshaderc_shared.dylib \
+		--jit-lib $(PWD)/vulkan/libsdf_deps.dylib \
+		-I $(PWD)/SdfViewerMobile/jank-resources/include \
+		-I /opt/homebrew/include \
+		-I /opt/homebrew/include/SDL3 \
+		-I $(PWD) \
+		-I $(PWD)/vendor \
+		-I $(PWD)/vendor/imgui \
+		-I $(PWD)/vendor/imgui/backends \
+		-I $(PWD)/vendor/flecs/distr \
+		-I $(PWD)/vendor/miniaudio
 
 sdf-standalone: clean-cache build-sdf-deps-standalone
 	./bin/run_sdf.sh --standalone -o SDFViewer

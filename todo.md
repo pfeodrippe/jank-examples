@@ -41,7 +41,7 @@
     - cljs-like
   - [ ] compiler server
     - [x] simulator
-    - [ ] make it faster
+    - [x] make it faster
     - [ ] device
   - [ ] emacs nrepl
     - [x] fix flaky

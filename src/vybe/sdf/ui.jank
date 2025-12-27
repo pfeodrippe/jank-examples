@@ -47,8 +47,9 @@
   (println (+ 4 49))
 
   (defn aaa
-    []
-    (+ 4 1))
+    [v]
+    (+ 4 v))
+  (aaa 552)
 
   (incd 4)
 
@@ -89,7 +90,7 @@
            (when-not mesh-initialized (imgui/Text "  - pipeline not init"))
            (when-not mesh-has-indices (imgui/Text "  - no triangles")))))
      (imgui/Separator)
-     (imgui/Text #cpp "Camera _8:")
+     (imgui/Text #cpp "Camera _16:")
      (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (:distance cam)))
      (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (:angle-x cam)))
      (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (:angle-y cam)))
