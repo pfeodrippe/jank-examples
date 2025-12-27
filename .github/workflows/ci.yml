@@ -11,6 +11,9 @@ env:
   JANK_REPO: pfeodrippe/jank
   JANK_REF: nrepl
   HOMEBREW_NO_AUTO_UPDATE: 1
+  # Skip AOT check in check-health - spawned subprocess loads Swift/Cocoa frameworks
+  # that expect newer C++ symbols not in jank's bundled LLVM libc++abi
+  JANK_SKIP_AOT_CHECK: 1
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -996,7 +996,16 @@ ios-jit-only-device-run: ios-jit-only-device-build ios-compile-server-device ios
 	echo "Terminating existing app (if running)..."; \
 	xcrun devicectl device process terminate --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Only-Device 2>/dev/null || true; \
 	echo "Launching app..."; \
-	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Only-Device
+	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Only-Device; \
+	echo ""; \
+	echo "═══════════════════════════════════════════════════════════════════════"; \
+	echo "  App launched! Compile server running on port 5571."; \
+	echo "  Connect nREPL to localhost:5559"; \
+	echo "  Press Ctrl+C to stop compile server and exit."; \
+	echo "═══════════════════════════════════════════════════════════════════════"; \
+	echo ""; \
+	echo "Compile server logs:"; \
+	tail -f /dev/null
 
 # Compile server for iOS Device JIT development (port 5571)
 # Always restarts to pick up latest code changes
