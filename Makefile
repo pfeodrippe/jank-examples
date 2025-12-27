@@ -810,44 +810,27 @@ ios-jit-sim-core:
 	@echo "Building JIT-only core libs for simulator (ninja handles incrementality)..."
 	@./SdfViewerMobile/build_ios_jank_jit.sh simulator
 
-# Copy JIT-only simulator libraries (no app modules - uses remote compile server)
-# libfolly.a comes from the JIT-only build (build-ios-jit-simulator)
+# Create libjank_aot.a from locally generated object files
+# NOTE: ios-bundle --jit already generates all files into SdfViewerMobile/build-iphonesimulator-jit/
+# We just need to create the combined static library for Xcode
 .PHONY: ios-jit-sim-core-libs
 ios-jit-sim-core-libs: ios-jit-sim-core
-	@echo "Copying JIT-only simulator libraries..."
-	@if [ ! -f "$(JANK_SRC)/build-ios-jit-simulator/libjank.a" ]; then \
+	@echo "Creating libjank_aot.a from locally generated object files..."
+	@if [ ! -f "SdfViewerMobile/build-iphonesimulator-jit/libjank.a" ]; then \
 		echo "ERROR: JIT-only libraries not found!"; \
 		echo "Run 'make ios-jit-sim-core' first."; \
 		exit 1; \
 	fi
-	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit/generated
-	@mkdir -p SdfViewerMobile/build-iphonesimulator-jit/obj
-	@# Copy from JIT-only build (core libs + jank_aot_init)
-	@cp $(JANK_SRC)/build-ios-jit-simulator/libjank.a SdfViewerMobile/build-iphonesimulator-jit/
-	@cp $(JANK_SRC)/build-ios-jit-simulator/libjankzip.a SdfViewerMobile/build-iphonesimulator-jit/
-	@cp $(JANK_SRC)/build-ios-jit-simulator/third-party/bdwgc/libgc.a SdfViewerMobile/build-iphonesimulator-jit/
-	@# Create libjank_aot.a from core libs + nREPL server + jank_aot_init.o (JIT-only)
-	@echo "Creating libjank_aot.a for JIT-only mode (core libs + nREPL server)..."
+	@# Create libjank_aot.a from locally generated core libs + nREPL server + jank_aot_init.o
 	@ar -crs SdfViewerMobile/build-iphonesimulator-jit/libjank_aot.a \
-		$(JANK_SRC)/build-ios-jit-simulator/clojure_core_generated.o \
-		$(JANK_SRC)/build-ios-jit-simulator/clojure_set_generated.o \
-		$(JANK_SRC)/build-ios-jit-simulator/clojure_string_generated.o \
-		$(JANK_SRC)/build-ios-jit-simulator/clojure_walk_generated.o \
-		$(JANK_SRC)/build-ios-jit-simulator/clojure_template_generated.o \
-		$(JANK_SRC)/build-ios-jit-simulator/clojure_test_generated.o \
-		$(JANK_SRC)/build-ios-jit-simulator/obj/jank_nrepl_server_server_generated.o \
-		$(JANK_SRC)/build-ios-jit-simulator/obj/jank_aot_init.o
-	@# Copy generated jank_aot_init.cpp (JIT-only version with core libs only)
-	@cp $(JANK_SRC)/build-ios-jit-simulator/generated/jank_aot_init.cpp SdfViewerMobile/build-iphonesimulator-jit/generated/ 2>/dev/null || true
-	@cp $(JANK_SRC)/build-ios-jit-simulator/obj/*.o SdfViewerMobile/build-iphonesimulator-jit/obj/ 2>/dev/null || true
-	@# Copy libfolly.a (try JIT-only build first, then regular JIT build)
-	@if [ -f "$(JANK_SRC)/build-ios-jit-simulator/libfolly.a" ]; then \
-		cp $(JANK_SRC)/build-ios-jit-simulator/libfolly.a SdfViewerMobile/build-iphonesimulator-jit/; \
-	elif [ -f "$(JANK_SRC)/build-ios-sim-jit/libfolly.a" ]; then \
-		cp $(JANK_SRC)/build-ios-sim-jit/libfolly.a SdfViewerMobile/build-iphonesimulator-jit/; \
-	else \
-		echo "WARNING: libfolly.a not found - linking may fail"; \
-	fi
+		SdfViewerMobile/build-iphonesimulator-jit/obj/clojure_core_generated.o \
+		SdfViewerMobile/build-iphonesimulator-jit/obj/clojure_set_generated.o \
+		SdfViewerMobile/build-iphonesimulator-jit/obj/clojure_string_generated.o \
+		SdfViewerMobile/build-iphonesimulator-jit/obj/clojure_walk_generated.o \
+		SdfViewerMobile/build-iphonesimulator-jit/obj/clojure_template_generated.o \
+		SdfViewerMobile/build-iphonesimulator-jit/obj/clojure_test_generated.o \
+		SdfViewerMobile/build-iphonesimulator-jit/obj/jank_nrepl_server_server_generated.o \
+		SdfViewerMobile/build-iphonesimulator-jit/obj/jank_aot_init.o
 	@# Create merged LLVM library if it doesn't exist
 	@if [ ! -f "SdfViewerMobile/build-iphonesimulator-jit/libllvm_merged.a" ]; then \
 		echo "Creating merged LLVM library (this may take a minute)..."; \

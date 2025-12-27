@@ -89,6 +89,9 @@ targets:
         type: folder
       - path: jank-resources/incremental.pch
         buildPhase: resources
+      # .clang-format needed for native-source formatting
+      - path: jank-resources/.clang-format
+        buildPhase: resources
     entitlements:
       path: jank-jit.entitlements
     settings:
