@@ -302,8 +302,18 @@ static bool init_jank_runtime_impl() {
 #if defined(JANK_IOS_JIT)
         // Configure and connect to remote compile server on macOS
         // This enables JIT compilation via the macOS compile-server
-        // TODO: Make host configurable (e.g., via environment or plist)
-        std::string const remote_host = "127.0.0.1";  // localhost for simulator
+#if TARGET_OS_SIMULATOR
+        // Simulator runs on same machine as compile-server
+        std::string const remote_host = "127.0.0.1";
+#else
+        // Device needs Mac's actual IP - can override with JANK_COMPILE_SERVER_HOST define
+#ifdef JANK_COMPILE_SERVER_HOST
+        std::string const remote_host = JANK_COMPILE_SERVER_HOST;
+#else
+        // Default to common local network IP - update for your network!
+        std::string const remote_host = "192.168.2.25";
+#endif
+#endif
         uint16_t const remote_port = 5570;
 
         std::cout << "[jank] Configuring remote compile server at " << remote_host << ":" << remote_port << "..." << std::endl;

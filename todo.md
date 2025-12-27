@@ -33,22 +33,18 @@
   - [x] device
   - [x] show mesh
   - [x] improve script
-- [ ] jit (at least for dev)
+- [x] jit (at least for dev)
   - [x] compile
   - [-] nREPL ios
     - takes too much memory
   - [x] ios-eval
     - cljs-like
-  - [ ] compiler server
+  - [x] compiler server
     - [x] simulator
     - [x] make it faster
-    - [ ] device
-  - [ ] emacs nrepl
-    - [x] fix flaky
-    - [ ] fix `new-frame!` evaluation
-      - [ ] aot vs jit
-    - [ ] fix load-file
-  - [ ] build in ci
+    - [x] device
+  - [x] emacs nrepl
+    - [x] build in ci
 - [ ] create sdf core patterns
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?

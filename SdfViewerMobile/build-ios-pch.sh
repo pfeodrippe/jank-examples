@@ -1,6 +1,9 @@
 #!/bin/bash
 # Build iOS pre-compiled header for jank JIT
 # This script must be run on macOS with the jank compiler+runtime build available
+#
+# Usage: ./build-ios-pch.sh [target]
+#   target: 'simulator' (default) or 'device'
 
 set -e
 
@@ -9,9 +12,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JANK_SRC="${JANK_SRC:-/Users/pfeodrippe/dev/jank/compiler+runtime}"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/jank-resources}"
 
-# Get iOS simulator SDK path
-IOS_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+# Parse target argument (default: simulator)
+TARGET="${1:-simulator}"
+if [[ "$TARGET" != "simulator" && "$TARGET" != "device" ]]; then
+    echo "Error: Invalid target '$TARGET'. Must be 'simulator' or 'device'"
+    exit 1
+fi
+
+# Set SDK and target triple based on target
+if [[ "$TARGET" == "simulator" ]]; then
+    IOS_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+    TARGET_TRIPLE="arm64-apple-ios17.0-simulator"
+else
+    IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+    TARGET_TRIPLE="arm64-apple-ios17.0"
+fi
+
+echo "Building PCH for iOS $TARGET"
 echo "Using iOS SDK: $IOS_SDK"
+echo "Target triple: $TARGET_TRIPLE"
 
 # Use the jank LLVM clang (same version as iOS LLVM)
 LLVM_CLANG="$JANK_SRC/build/llvm-install/usr/local/bin/clang++"
@@ -55,11 +74,15 @@ if [ ! -f "$INCLUDE_DIR/jank/prelude.hpp" ]; then
     exit 1
 fi
 
-# Output PCH path
-OUTPUT_PCH="$OUTPUT_DIR/incremental.pch"
+# Output PCH path - use different names for simulator vs device
+if [[ "$TARGET" == "simulator" ]]; then
+    OUTPUT_PCH="$OUTPUT_DIR/incremental.pch"
+else
+    OUTPUT_PCH="$OUTPUT_DIR/incremental-device.pch"
+fi
 mkdir -p "$OUTPUT_DIR"
 
-echo "Building PCH for iOS simulator (arm64)..."
+echo "Building PCH for iOS $TARGET (arm64)..."
 echo "  Input: $PRELUDE_HEADER"
 echo "  Output: $OUTPUT_PCH"
 
@@ -67,7 +90,7 @@ echo "  Output: $OUTPUT_PCH"
 # IMPORTANT: Use -nostdinc++ and explicitly add iOS SDK's libc++ headers
 # This ensures the PCH uses iOS SDK headers, not LLVM's bundled libc++
 $LLVM_CLANG \
-    -target arm64-apple-ios17.0-simulator \
+    -target "$TARGET_TRIPLE" \
     -isysroot "$IOS_SDK" \
     -nostdinc++ \
     -isystem "$IOS_SDK/usr/include/c++/v1" \

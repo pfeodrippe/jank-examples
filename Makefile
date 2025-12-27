@@ -61,38 +61,59 @@ CXXFLAGS = -fPIC -O2 -std=c++17
 
 # Default target
 help:
-	@echo "Available targets:"
-	@echo "  make sdf         - Run SDF Vulkan viewer (dev mode)"
-	@echo "  make sdf-clean   - Run SDF viewer with fresh cache (like sdf but clean)"
-	@echo "  make integrated  - Run integrated demo (Raylib+ImGui+Jolt+Flecs)"
-	@echo "  make imgui       - Run ImGui demo"
-	@echo "  make jolt        - Run Jolt physics demo"
-	@echo "  make test        - Run tests"
+	@echo "═══════════════════════════════════════════════════════════════════════"
+	@echo "                         AVAILABLE TARGETS"
+	@echo "═══════════════════════════════════════════════════════════════════════"
 	@echo ""
-	@echo "  make clean       - Clean all build artifacts and cache"
-	@echo "  make clean-cache - Clean only jank module cache (target/)"
+	@echo "── Desktop ─────────────────────────────────────────────────────────────"
+	@echo "  make sdf              - Run SDF Vulkan viewer (dev mode)"
+	@echo "  make sdf-clean        - Run SDF viewer with fresh cache"
+	@echo "  make sdf-standalone   - Build standalone SDF viewer app"
+	@echo "  make integrated       - Run integrated demo (Raylib+ImGui+Jolt+Flecs)"
+	@echo "  make imgui            - Run ImGui demo"
+	@echo "  make jolt             - Run Jolt physics demo"
+	@echo "  make test             - Run tests"
 	@echo ""
-	@echo "  make build-deps     - Build all dependencies (Jolt, ImGui, Flecs)"
-	@echo "  make build-sdf-deps - Build SDF dependencies (imgui, shaders, obj files)"
+	@echo "── Build & Clean ───────────────────────────────────────────────────────"
+	@echo "  make build-deps       - Build all dependencies (Jolt, ImGui, Flecs)"
+	@echo "  make build-sdf-deps   - Build SDF dependencies (imgui, shaders, obj)"
+	@echo "  make clean            - Clean all build artifacts and cache"
+	@echo "  make clean-cache      - Clean only jank module cache (target/)"
 	@echo ""
-	@echo "Standalone builds:"
-	@echo "  make sdf-standalone  - Build standalone SDF viewer app"
+	@echo "── iOS AOT (Full App Bundle) ────────────────────────────────────────────"
+	@echo "  make sdf-ios-simulator-run  - Build and run AOT app in iPad simulator"
+	@echo "  make sdf-ios-device-run     - Build and run AOT app on connected device"
+	@echo "  make ios-setup              - Download/build iOS dependencies"
+	@echo "  make ios-project            - Generate Xcode project"
+	@echo "  make ios-build              - Build iOS app"
+	@echo "  make ios-clean              - Clean iOS build artifacts"
 	@echo ""
-	@echo "iOS builds:"
-	@echo "  make sdf-ios-simulator-run - Build and run iOS app in iPad simulator"
-	@echo "  make sdf-ios-device-run    - Build and run iOS app on connected device"
-	@echo "  make ios-setup    - Download/build iOS dependencies (MoltenVK, SDL3)"
-	@echo "  make ios-project  - Generate Xcode project (requires xcodegen)"
-	@echo "  make ios-build    - Build iOS app"
-	@echo "  make ios-clean    - Clean iOS build artifacts"
+	@echo "── iOS JIT (Full JIT, All Bundled) ──────────────────────────────────────"
+	@echo "  make ios-jit-llvm-sim       - Build LLVM for Simulator (~2hrs, one-time)"
+	@echo "  make ios-jit-llvm-device    - Build LLVM for Device (~2hrs, one-time)"
+	@echo "  make ios-jit-sim            - Build jank with JIT for Simulator"
+	@echo "  make ios-jit-device         - Build jank with JIT for Device"
+	@echo "  make ios-jit-sim-run        - Build, install, run JIT app in simulator"
+	@echo "  make ios-jit-device-run     - Build, install, run JIT app on device"
 	@echo ""
-	@echo "iOS JIT builds (development only - requires Xcode):"
-	@echo "  make ios-jit-llvm-sim   - Build LLVM for iOS Simulator (~2 hours, one-time)"
-	@echo "  make ios-jit-llvm-device - Build LLVM for iOS Device (~2 hours, one-time)"
-	@echo "  make ios-jit-sim        - Build jank with JIT for iOS Simulator"
-	@echo "  make ios-jit-device     - Build jank with JIT for iOS Device"
-	@echo "  make ios-jit-sim-run    - Build, install, run JIT app in simulator"
-	@echo "  make ios-jit-device-run - Build, install, run JIT app on device"
+	@echo "── iOS JIT-Only (Remote Compile - RECOMMENDED FOR DEV) ──────────────────"
+	@echo "  Core libs bundled, app namespaces loaded via remote compile server."
+	@echo "  No redeploy needed for code changes - just eval via nREPL!"
+	@echo ""
+	@echo "  Simulator:"
+	@echo "    make ios-compile-server-sim   - Start compile server for simulator"
+	@echo "    make ios-jit-only-sim-run     - Build and run JIT-only app in simulator"
+	@echo ""
+	@echo "  Device:"
+	@echo "    make ios-compile-server-device - Start compile server for device"
+	@echo "    make ios-jit-only-device-run   - Build, install, run on device"
+	@echo "    make ios-device-nrepl-proxy    - Start iproxy (Mac:5559 -> Device:5558)"
+	@echo ""
+	@echo "  Workflow:"
+	@echo "    1. Terminal 1: make ios-compile-server-device"
+	@echo "    2. Terminal 2: make ios-jit-only-device-run"
+	@echo "    3. Connect nREPL to localhost:5559 (auto-started via iproxy)"
+	@echo "═══════════════════════════════════════════════════════════════════════"
 
 # ============================================================================
 # Object file targets (with proper dependencies)
@@ -706,8 +727,14 @@ ios-jit-sync-includes:
 # Build precompiled header for iOS JIT (rebuilds when jank headers change)
 .PHONY: ios-jit-pch
 ios-jit-pch: ios-jit-sync-includes
-	@echo "Building iOS JIT precompiled header..."
-	./SdfViewerMobile/build-ios-pch.sh
+	@echo "Building iOS JIT precompiled header (simulator)..."
+	./SdfViewerMobile/build-ios-pch.sh simulator
+
+# Build PCH for device
+.PHONY: ios-jit-pch-device
+ios-jit-pch-device: ios-jit-sync-includes
+	@echo "Building iOS JIT precompiled header (device)..."
+	./SdfViewerMobile/build-ios-pch.sh device
 
 # Sync jank library to iOS JIT bundle (rebuilds if source changed)
 .PHONY: ios-jit-sync-lib
@@ -897,6 +924,122 @@ ios-jit-only-sim-run: ios-jit-only-sim-build
 	xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT-Only 2>/dev/null || true
 	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT-Only.app" -path "*/Build/Products/Debug-iphonesimulator/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
 	xcrun simctl launch --console-pty 'iPad Pro 13-inch (M4)' com.vybe.SdfViewerMobile-JIT-Only
+
+# ============================================================================
+# iOS JIT-ONLY Device Targets (remote compile server for app namespaces)
+# ============================================================================
+
+# Build JIT-only core libs for device
+.PHONY: ios-jit-device-core
+ios-jit-device-core:
+	@echo "Building JIT-only core libs for device (ninja handles incrementality)..."
+	@./SdfViewerMobile/build_ios_jank_jit.sh device
+
+# Copy JIT-only device libraries (no app modules - uses remote compile server)
+# Note: ios-bundle puts everything in SdfViewerMobile/build-iphoneos-jit/ already
+.PHONY: ios-jit-device-core-libs
+ios-jit-device-core-libs: ios-jit-device-core
+	@echo "Device JIT-only libraries already in place from ios-bundle..."
+	@# ios-bundle already creates libjank_aot.a with core libs + JIT init
+	@# Just need to copy libfolly.a and create libllvm_merged.a
+	@if [ -f "$(JANK_SRC)/build-ios-jit-device/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-jit-device/libfolly.a SdfViewerMobile/build-iphoneos-jit/; \
+	elif [ -f "$(JANK_SRC)/build-ios-device-jit/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-device-jit/libfolly.a SdfViewerMobile/build-iphoneos-jit/; \
+	else \
+		echo "WARNING: libfolly.a not found"; \
+	fi
+	@# Create merged LLVM library if it doesn't exist
+	@if [ ! -f "SdfViewerMobile/build-iphoneos-jit/libllvm_merged.a" ]; then \
+		echo "Creating merged LLVM library (this may take a minute)..."; \
+		libtool -static -o SdfViewerMobile/build-iphoneos-jit/libllvm_merged.a \
+			$$HOME/dev/ios-llvm-build/ios-llvm-device/lib/*.a 2>/dev/null; \
+	fi
+	@echo "Device JIT-only libraries ready!"
+
+# Generate device JIT-only Xcode project
+.PHONY: ios-jit-only-device-project
+ios-jit-only-device-project: ios-jit-device-core-libs
+	@echo "Generating JIT-only device Xcode project..."
+	cd SdfViewerMobile && ./generate-project.sh project-jit-only-device.yml
+	@echo "Project generated!"
+	@echo ""
+	@echo "NOTE: This is JIT-ONLY mode. App namespaces will be loaded via"
+	@echo "remote compile server at runtime. Start compile-server on macOS first!"
+
+# Build JIT-only device app
+.PHONY: ios-jit-only-device-build
+ios-jit-only-device-build: ios-jit-sync-sources ios-jit-pch-device ios-jit-only-device-project
+	@echo "Building iOS JIT-only app for device..."
+	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Only-Device.xcodeproj)"
+	@# Clean Xcode's cached object files for jank_aot_init to ensure fresh rebuild
+	@rm -rf ~/Library/Developer/Xcode/DerivedData/SdfViewerMobile-JIT-Only-Device-*/Build/Intermediates.noindex/SdfViewerMobile-JIT-Only-Device.build/Debug-iphoneos/SdfViewerMobile-JIT-Only-Device.build/Objects-normal/arm64/jank_aot_init.* 2>/dev/null || true
+	cd SdfViewerMobile && xcodebuild \
+		-project SdfViewerMobile-JIT-Only-Device.xcodeproj \
+		-scheme SdfViewerMobile-JIT-Only-Device \
+		-configuration Debug \
+		-sdk iphoneos \
+		-allowProvisioningUpdates \
+		build
+
+# Build, install and run iOS JIT-only app on device
+.PHONY: ios-jit-only-device-run
+ios-jit-only-device-run: ios-jit-only-device-build ios-device-nrepl-proxy
+	@echo ""
+	@echo "Installing to connected device..."
+	@DEVICE_ID=$$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*iPad|connected.*iPhone" | awk '{print $$3}' | head -1); \
+	if [ -z "$$DEVICE_ID" ]; then \
+		echo "ERROR: No iOS device found. Connect your device and try again."; \
+		exit 1; \
+	fi; \
+	APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile-JIT-Only-Device.app" -path "*/Debug-iphoneos/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1); \
+	if [ -z "$$APP_PATH" ]; then \
+		echo "ERROR: Built app not found!"; \
+		exit 1; \
+	fi; \
+	echo "Installing $$APP_PATH to device $$DEVICE_ID..."; \
+	xcrun devicectl device install app --device "$$DEVICE_ID" "$$APP_PATH"; \
+	echo "Terminating existing app (if running)..."; \
+	xcrun devicectl device process terminate --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Only-Device 2>/dev/null || true; \
+	echo "Launching app..."; \
+	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Only-Device
+
+# Start compile server for device (run on macOS, device connects to it)
+.PHONY: ios-compile-server-device
+ios-compile-server-device:
+	cd $(JANK_SRC) && ./build/compile-server --target device --port 5570 \
+		--module-path $(PWD)/SdfViewerMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
+		--jit-lib /opt/homebrew/lib/libvulkan.dylib \
+		--jit-lib /opt/homebrew/lib/libSDL3.dylib \
+		--jit-lib /opt/homebrew/lib/libshaderc_shared.dylib \
+		--jit-lib $(PWD)/vulkan/libsdf_deps.dylib \
+		-I $(PWD)/SdfViewerMobile/jank-resources/include \
+		-I /opt/homebrew/include \
+		-I /opt/homebrew/include/SDL3 \
+		-I $(PWD) \
+		-I $(PWD)/vendor \
+		-I $(PWD)/vendor/imgui \
+		-I $(PWD)/vendor/imgui/backends \
+		-I $(PWD)/vendor/flecs/distr \
+		-I $(PWD)/vendor/miniaudio
+
+# Start iproxy to forward nREPL from device to Mac
+# Device nREPL runs on port 5558, Mac listens on 5559
+# Runs in background if not already running
+.PHONY: ios-device-nrepl-proxy
+ios-device-nrepl-proxy:
+	@if ! lsof -i :5559 >/dev/null 2>&1; then \
+		echo "Starting iproxy: Mac:5559 -> Device:5558 (background)"; \
+		iproxy 5559 5558 & \
+		sleep 0.5; \
+		echo "nREPL proxy started. Connect to localhost:5559"; \
+	else \
+		echo "iproxy already running on port 5559"; \
+	fi
+
+# ============================================================================
+# End iOS JIT-ONLY Device Targets
+# ============================================================================
 
 # Copy device JIT libraries from jank build to local directory
 # Depends on ios-jit-device-aot to ensure jank_aot_init.cpp exists
