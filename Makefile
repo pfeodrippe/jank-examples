@@ -99,20 +99,19 @@ help:
 	@echo "── iOS JIT-Only (Remote Compile - RECOMMENDED FOR DEV) ──────────────────"
 	@echo "  Core libs bundled, app namespaces loaded via remote compile server."
 	@echo "  No redeploy needed for code changes - just eval via nREPL!"
+	@echo "  Compile server auto-starts and restarts with each run."
 	@echo ""
-	@echo "  Simulator:"
-	@echo "    make ios-compile-server-sim   - Start compile server for simulator"
-	@echo "    make ios-jit-only-sim-run     - Build and run JIT-only app in simulator"
+	@echo "  Simulator (port 5570):"
+	@echo "    make ios-jit-only-sim-run     - Build and run (auto-starts server)"
+	@echo "    make ios-compile-server-sim   - Start compile server standalone"
 	@echo ""
-	@echo "  Device:"
-	@echo "    make ios-compile-server-device - Start compile server for device"
-	@echo "    make ios-jit-only-device-run   - Build, install, run on device"
+	@echo "  Device (port 5571):"
+	@echo "    make ios-jit-only-device-run   - Build and run (auto-starts server+iproxy)"
+	@echo "    make ios-compile-server-device - Start compile server standalone"
 	@echo "    make ios-device-nrepl-proxy    - Start iproxy (Mac:5559 -> Device:5558)"
 	@echo ""
-	@echo "  Workflow:"
-	@echo "    1. Terminal 1: make ios-compile-server-device"
-	@echo "    2. Terminal 2: make ios-jit-only-device-run"
-	@echo "    3. Connect nREPL to localhost:5559 (auto-started via iproxy)"
+	@echo "  Just run: make ios-jit-only-device-run"
+	@echo "  Then connect nREPL to localhost:5559"
 	@echo "═══════════════════════════════════════════════════════════════════════"
 
 # ============================================================================
@@ -353,10 +352,14 @@ sdf-clean: clean-cache build-sdf-deps
 sdf-ios-server: clean-cache build-sdf-deps
 	./bin/run_sdf.sh --ios-compile-server 5570 --ios-resource-dir $(PWD)/SdfViewerMobile/jank-resources
 
-# Fast standalone compile server for iOS JIT development
-# Run this first, then run ios-jit-only-sim-run in another terminal
-ios-compile-server:
-	cd $(JANK_SRC) && ./build/compile-server --target sim --port 5570 \
+# Compile server for iOS Simulator JIT development (port 5570)
+# Always restarts to pick up latest code changes
+.PHONY: ios-compile-server-sim
+ios-compile-server-sim:
+	@echo "Starting compile server for simulator (port 5570)..."
+	@-pkill -f "compile-server.*--port 5570" 2>/dev/null || true
+	@sleep 0.2
+	@cd $(JANK_SRC) && ./build/compile-server --target sim --port 5570 \
 		--module-path $(PWD)/SdfViewerMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
 		--jit-lib /opt/homebrew/lib/libvulkan.dylib \
 		--jit-lib /opt/homebrew/lib/libSDL3.dylib \
@@ -370,7 +373,15 @@ ios-compile-server:
 		-I $(PWD)/vendor/imgui \
 		-I $(PWD)/vendor/imgui/backends \
 		-I $(PWD)/vendor/flecs/distr \
-		-I $(PWD)/vendor/miniaudio
+		-I $(PWD)/vendor/miniaudio & \
+	echo "Waiting for compile server to be ready..."; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		sleep 0.5; \
+		if lsof -i :5570 >/dev/null 2>&1; then \
+			echo "Compile server ready!"; \
+			break; \
+		fi; \
+	done
 
 sdf-standalone: clean-cache build-sdf-deps-standalone
 	./bin/run_sdf.sh --standalone -o SDFViewer
@@ -917,7 +928,7 @@ ios-jit-only-sim-build: ios-jit-sync-sources ios-jit-pch ios-jit-only-sim-projec
 
 # Build, install and run iOS JIT-only app in simulator
 .PHONY: ios-jit-only-sim-run
-ios-jit-only-sim-run: ios-jit-only-sim-build
+ios-jit-only-sim-run: ios-jit-only-sim-build ios-compile-server-sim
 	@echo "Launching simulator..."
 	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
 	open -a Simulator
@@ -984,7 +995,7 @@ ios-jit-only-device-build: ios-jit-sync-sources ios-jit-pch-device ios-jit-only-
 
 # Build, install and run iOS JIT-only app on device
 .PHONY: ios-jit-only-device-run
-ios-jit-only-device-run: ios-jit-only-device-build ios-device-nrepl-proxy
+ios-jit-only-device-run: ios-jit-only-device-build ios-compile-server-device ios-device-nrepl-proxy
 	@echo ""
 	@echo "Installing to connected device..."
 	@DEVICE_ID=$$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*iPad|connected.*iPhone" | awk '{print $$3}' | head -1); \
@@ -1004,10 +1015,14 @@ ios-jit-only-device-run: ios-jit-only-device-build ios-device-nrepl-proxy
 	echo "Launching app..."; \
 	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.SdfViewerMobile-JIT-Only-Device
 
-# Start compile server for device (run on macOS, device connects to it)
+# Compile server for iOS Device JIT development (port 5571)
+# Always restarts to pick up latest code changes
 .PHONY: ios-compile-server-device
 ios-compile-server-device:
-	cd $(JANK_SRC) && ./build/compile-server --target device --port 5570 \
+	@echo "Starting compile server for device (port 5571)..."
+	@-pkill -f "compile-server.*--port 5571" 2>/dev/null || true
+	@sleep 0.2
+	@cd $(JANK_SRC) && ./build/compile-server --target device --port 5571 \
 		--module-path $(PWD)/SdfViewerMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
 		--jit-lib /opt/homebrew/lib/libvulkan.dylib \
 		--jit-lib /opt/homebrew/lib/libSDL3.dylib \
@@ -1021,7 +1036,15 @@ ios-compile-server-device:
 		-I $(PWD)/vendor/imgui \
 		-I $(PWD)/vendor/imgui/backends \
 		-I $(PWD)/vendor/flecs/distr \
-		-I $(PWD)/vendor/miniaudio
+		-I $(PWD)/vendor/miniaudio & \
+	echo "Waiting for compile server to be ready..."; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		sleep 0.5; \
+		if lsof -i :5571 >/dev/null 2>&1; then \
+			echo "Compile server ready!"; \
+			break; \
+		fi; \
+	done
 
 # Start iproxy to forward nREPL from device to Mac
 # Device nREPL runs on port 5558, Mac listens on 5559

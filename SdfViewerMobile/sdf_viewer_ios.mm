@@ -305,6 +305,7 @@ static bool init_jank_runtime_impl() {
 #if TARGET_OS_SIMULATOR
         // Simulator runs on same machine as compile-server
         std::string const remote_host = "127.0.0.1";
+        uint16_t const remote_port = 5570;  // Simulator uses port 5570
 #else
         // Device needs Mac's actual IP - can override with JANK_COMPILE_SERVER_HOST define
 #ifdef JANK_COMPILE_SERVER_HOST
@@ -313,8 +314,8 @@ static bool init_jank_runtime_impl() {
         // Default to common local network IP - update for your network!
         std::string const remote_host = "192.168.2.25";
 #endif
+        uint16_t const remote_port = 5571;  // Device uses port 5571
 #endif
-        uint16_t const remote_port = 5570;
 
         std::cout << "[jank] Configuring remote compile server at " << remote_host << ":" << remote_port << "..." << std::endl;
         jank::compile_server::configure_remote_compile(remote_host, remote_port);
