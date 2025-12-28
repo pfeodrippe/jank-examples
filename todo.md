@@ -45,6 +45,19 @@
     - [x] device
   - [x] emacs nrepl
     - [x] build in ci
+- [ ] add jolt to sdf project
+- [ ] ios
+  - [x] new namespaces
+  - [ ] fix namespace info and eldoc nREPL ops
+  - [ ] Fix eid defn || 1. Unhandled internal/codegen-failure
+   Remote compilation failed: analyze/invalid-cpp-call: No matching
+   call to 'ecs_lookup' function. With argument 0 having type
+   'jank::runtime::object *'. With argument 1 having type
+   'jank::runtime::object *'.
+   {:jank/error-kind "internal/codegen-failure" :jank/error-message "Remote compilation failed: analyze/invalid-cpp-call: No matching call to 'ecs_lookup' function. With argument 0 having type 'jank::runtime::object *'. With argument 1 having type 'jank::runtime::object *'." :clojure.error/phase :compile}
+                       nil:   -1  internal/codegen-failure/internal/codegen-failure
+  - [ ]
+
 - [ ] create sdf core patterns
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?

@@ -352,6 +352,16 @@ sdf-clean: clean-cache build-sdf-deps
 sdf-ios-server: clean-cache build-sdf-deps
 	./bin/run_sdf.sh --ios-compile-server 5570 --ios-resource-dir $(PWD)/SdfViewerMobile/jank-resources
 
+# List vybe modules transitively used by vybe.sdf.ios
+.PHONY: check-jank-modules
+check-jank-modules:
+	@$(PWD)/bin/list-vybe-deps.sh vybe.sdf.ios
+
+# Evaluate all vybe modules via nREPL (requires iOS app running on port 5558)
+.PHONY: check-jank-modules-nrepl
+check-jank-modules-nrepl:
+	@$(PWD)/bin/list-vybe-deps.sh vybe.sdf.ios 5558
+
 # Compile server for iOS Simulator JIT development (port 5570)
 # Always restarts to pick up latest code changes
 .PHONY: ios-compile-server-sim
@@ -978,7 +988,7 @@ ios-jit-only-device-build: ios-jit-sync-sources ios-jit-pch-device ios-jit-only-
 
 # Build, install and run iOS JIT-only app on device
 .PHONY: ios-jit-only-device-run
-ios-jit-only-device-run: ios-jit-only-device-build ios-compile-server-device ios-device-nrepl-proxy
+ios-jit-only-device-run: ios-compile-server-device ios-device-nrepl-proxy ios-jit-only-device-build
 	@echo ""
 	@echo "Installing to connected device..."
 	@DEVICE_ID=$$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*iPad|connected.*iPhone" | awk '{print $$3}' | head -1); \

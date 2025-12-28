@@ -7,6 +7,7 @@
    [vybe.sdf.state :as state]
    [vybe.sdf.shader :as shader]
    [vybe.sdf.ui :as ui]
+   [vybe.flecs :as vf]
    [jank.nrepl-server.server :as server]))
 
 ;; Direct C++ bridge functions
