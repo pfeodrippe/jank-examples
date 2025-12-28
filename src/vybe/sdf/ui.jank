@@ -8,7 +8,7 @@
    [vybe.sdf.state :as state]
    [vybe.sdf.greeting :as greeting]
    [vybe.util :as u]
-   [jank.compiler :as jc]))
+   #_[jank.compiler :as jc]))
 
 ;; ImGui wrapper for SDF viewer
 ;; Uses header require for direct ImGui API access

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0528F9E597E8EE24EEB8F1FD /* stb_impl.c in Sources */ = {isa = PBXBuildFile; fileRef = 53B71B9A337663AAA2BE8F90 /* stb_impl.c */; };
+		05834F59B9E65D2362FD1D53 /* flecs.c in Sources */ = {isa = PBXBuildFile; fileRef = B4D56C926340AE4C3241EE0A /* flecs.c */; settings = {COMPILER_FLAGS = "-O2"; }; };
 		1ECE9664FB884E5A9E40D96F /* imgui_impl_vulkan.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0847191FF6535242DB9F1C3E /* imgui_impl_vulkan.cpp */; };
 		24414756541BB63C3D6EB6AC /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 4334768E4099E7D1C2468FE0 /* LaunchScreen.storyboard */; };
 		2EEBAA05B6D87046989A07E2 /* vulkan_kim in Resources */ = {isa = PBXBuildFile; fileRef = 41B947D3FF32F5A63ADD3735 /* vulkan_kim */; };
@@ -24,6 +25,7 @@
 		8E1D79C24AF569BC829DA788 /* MoltenVK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */; };
 		AB57A01747D467CB2436A95D /* exported_scene.glb in Resources */ = {isa = PBXBuildFile; fileRef = B9424EF0C990815E2953B1A7 /* exported_scene.glb */; };
 		B0B0D8C4FC2F65DA4375D48B /* imgui_impl_sdl3.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */; };
+		F8243EBF07CBD89DFB68C22F /* vybe_flecs_jank.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DEF55755C900E5A8218DA37 /* vybe_flecs_jank.cpp */; settings = {COMPILER_FLAGS = "-O2"; }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -49,10 +51,12 @@
 		41B947D3FF32F5A63ADD3735 /* vulkan_kim */ = {isa = PBXFileReference; lastKnownFileType = folder; path = vulkan_kim; sourceTree = SOURCE_ROOT; };
 		4334768E4099E7D1C2468FE0 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		53B71B9A337663AAA2BE8F90 /* stb_impl.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = stb_impl.c; sourceTree = "<group>"; };
+		6DEF55755C900E5A8218DA37 /* vybe_flecs_jank.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = vybe_flecs_jank.cpp; sourceTree = "<group>"; };
 		857E42D7C8915767C904761A /* sdf_viewer_ios.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = sdf_viewer_ios.mm; sourceTree = "<group>"; };
 		93498D9AC2ED4B60251A30E8 /* imgui_tables.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_tables.cpp; sourceTree = "<group>"; };
 		AED5918FFD3AEC2347DED32C /* MoltenVK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MoltenVK.xcframework; path = Frameworks/MoltenVK.xcframework; sourceTree = "<group>"; };
 		B22DD2F6D05F33713D6DDFDC /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		B4D56C926340AE4C3241EE0A /* flecs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = flecs.c; sourceTree = "<group>"; };
 		B9424EF0C990815E2953B1A7 /* exported_scene.glb */ = {isa = PBXFileReference; path = exported_scene.glb; sourceTree = "<group>"; };
 		BE5E8F16F9D0CA223DC43F71 /* imgui_draw.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_draw.cpp; sourceTree = "<group>"; };
 		C46B894CBEA388B2B754C7B5 /* imgui_impl_sdl3.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = imgui_impl_sdl3.cpp; sourceTree = "<group>"; };
@@ -89,8 +93,10 @@
 			isa = PBXGroup;
 			children = (
 				B528B0017BF10ECBCB88AAF6 /* backends */,
+				85B224B2AD25FEDCA8BEB723 /* distr */,
 				0D1CB5910010CF787E1D33B6 /* imgui */,
 				96D8AB83CB8B3A9EFB144465 /* vulkan */,
+				D0115432690A3CE7F9A0FA0F /* vybe */,
 				B9424EF0C990815E2953B1A7 /* exported_scene.glb */,
 				4334768E4099E7D1C2468FE0 /* LaunchScreen.storyboard */,
 				B22DD2F6D05F33713D6DDFDC /* main.mm */,
@@ -100,6 +106,15 @@
 				D8090746A8CD26A9D667B182 /* Frameworks */,
 				A7DED8193497A68BDFD051E9 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		85B224B2AD25FEDCA8BEB723 /* distr */ = {
+			isa = PBXGroup;
+			children = (
+				B4D56C926340AE4C3241EE0A /* flecs.c */,
+			);
+			name = distr;
+			path = ../vendor/flecs/distr;
 			sourceTree = "<group>";
 		};
 		96D8AB83CB8B3A9EFB144465 /* vulkan */ = {
@@ -127,6 +142,15 @@
 			);
 			name = backends;
 			path = ../vendor/imgui/backends;
+			sourceTree = "<group>";
+		};
+		D0115432690A3CE7F9A0FA0F /* vybe */ = {
+			isa = PBXGroup;
+			children = (
+				6DEF55755C900E5A8218DA37 /* vybe_flecs_jank.cpp */,
+			);
+			name = vybe;
+			path = ../vendor/vybe;
 			sourceTree = "<group>";
 		};
 		D8090746A8CD26A9D667B182 /* Frameworks */ = {
@@ -172,7 +196,7 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					5D711447D940445672EDAD5E = {
-						DevelopmentTeam = 937QJHK26U;
+						DevelopmentTeam = GNRTKYX7C4;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -235,6 +259,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				05834F59B9E65D2362FD1D53 /* flecs.c in Sources */,
 				668CB8DE1AFBCADB69B784AA /* imgui.cpp in Sources */,
 				68FAB6FAF882EF432FC88416 /* imgui_draw.cpp in Sources */,
 				B0B0D8C4FC2F65DA4375D48B /* imgui_impl_sdl3.cpp in Sources */,
@@ -245,6 +270,7 @@
 				48E3EE59651DCFCB8D4A5DC1 /* sdf_engine_impl.cpp in Sources */,
 				6AD161A1809DC6BE8339F469 /* sdf_viewer_ios.mm in Sources */,
 				0528F9E597E8EE24EEB8F1FD /* stb_impl.c in Sources */,
+				F8243EBF07CBD89DFB68C22F /* vybe_flecs_jank.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -357,7 +383,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 937QJHK26U;
+				DEVELOPMENT_TEAM = GNRTKYX7C4;
 				ENABLE_BITCODE = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -500,7 +526,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 937QJHK26U;
+				DEVELOPMENT_TEAM = GNRTKYX7C4;
 				ENABLE_BITCODE = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

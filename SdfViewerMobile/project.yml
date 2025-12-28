@@ -55,6 +55,12 @@ targets:
       - path: ../vendor/imgui/backends/imgui_impl_sdl3.cpp
       # STB implementation
       - path: ../vulkan/stb_impl.c
+      # Flecs ECS (needed for vybe.type and vybe.flecs)
+      - path: ../vendor/flecs/distr/flecs.c
+        compilerFlags: ["-O2"]
+      # Vybe Flecs helpers (needed for vybe.flecs jank bindings)
+      - path: ../vendor/vybe/vybe_flecs_jank.cpp
+        compilerFlags: ["-O2"]
       # SDF engine implementation (compiled once to avoid duplicate symbols)
       - path: sdf_engine_impl.cpp
         compilerFlags: ["-x", "c++"]

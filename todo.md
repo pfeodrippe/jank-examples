@@ -45,6 +45,7 @@
     - [x] device
   - [x] emacs nrepl
     - [x] build in ci
+- [ ] ios native
 - [ ] add jolt to sdf project
 - [ ] ios
   - [x] new namespaces

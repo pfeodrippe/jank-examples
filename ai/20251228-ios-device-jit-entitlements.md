@@ -1,3 +1,10 @@
+# iOS Device JIT & AOT Fixes
+
+## Session Summary
+- Fixed `make ios-jit-only-device-run` to open Xcode automatically (JIT requires debugger)
+- Fixed `make sdf-ios-device-run` missing Flecs symbols (added flecs.c and vybe_flecs_jank.cpp to project.yml)
+- Fixed app path finder excluding `Index.noindex` directory
+
 # iOS Device JIT Entitlements
 
 ## Problem

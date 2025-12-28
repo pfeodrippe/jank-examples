@@ -8,7 +8,7 @@
    [vybe.sdf.shader :as shader]
    [vybe.sdf.ui :as ui]
    [vybe.flecs :as vf]
-   [jank.nrepl-server.server :as server]))
+   #_[jank.nrepl-server.server :as server]))
 
 ;; Direct C++ bridge functions
 (defn init! [shader-dir] (sdfx/init shader-dir))
@@ -121,7 +121,7 @@
 ;; iOS run loop
 (defn run! []
   ;; Start nREPL server on 0.0.0.0 to allow external connections (port 5558 for iOS)
-  (server/start-server {:port 5558 :bind "0.0.0.0"})
+  #_(server/start-server {:port 5558 :bind "0.0.0.0"})
   (when (init-kim!)
     (println "Starting iOS viewer...")
     (loop [frame-count 0]

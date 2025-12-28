@@ -649,7 +649,7 @@ sdf-ios-device-run: sdf-ios-device
 		echo "No iOS device found. Connect your device and try again."; \
 		exit 1; \
 	fi; \
-	APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile.app" -path "*/Debug-iphoneos/*" 2>/dev/null | head -1); \
+	APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name "SdfViewerMobile.app" -path "*/Debug-iphoneos/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1); \
 	echo "Installing $$APP_PATH to device $$DEVICE_ID..."; \
 	xcrun devicectl device install app --device "$$DEVICE_ID" "$$APP_PATH"; \
 	echo "Terminating existing app (if running)..."; \
