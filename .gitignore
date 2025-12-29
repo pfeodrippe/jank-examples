@@ -20,6 +20,7 @@ SDFViewer*
 !SDFViewerMobile
 SDFViewerMobile/generated
 SDFViewerMobile/build-*
+SdfViewerMobile/jank-resources
 !SDFViewerMobile/*.sh
 sdf-viewer*
 .DS_Store
