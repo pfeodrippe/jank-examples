@@ -852,6 +852,14 @@ ios-jit-sim-core-libs: ios-jit-sim-core
 		SdfViewerMobile/build-iphonesimulator-jit/obj/clojure_test_generated.o \
 		SdfViewerMobile/build-iphonesimulator-jit/obj/jank_nrepl_server_server_generated.o \
 		SdfViewerMobile/build-iphonesimulator-jit/obj/jank_aot_init.o
+	@# Copy libfolly.a from jank build (ios-bundle doesn't copy it)
+	@if [ -f "$(JANK_SRC)/build-ios-sim-jit/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-sim-jit/libfolly.a SdfViewerMobile/build-iphonesimulator-jit/; \
+	elif [ -f "$(JANK_SRC)/build-ios-jit-simulator/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-jit-simulator/libfolly.a SdfViewerMobile/build-iphonesimulator-jit/; \
+	else \
+		echo "WARNING: libfolly.a not found in jank build directories"; \
+	fi
 	@# Create merged LLVM library if it doesn't exist
 	@if [ ! -f "SdfViewerMobile/build-iphonesimulator-jit/libllvm_merged.a" ]; then \
 		echo "Creating merged LLVM library (this may take a minute)..."; \

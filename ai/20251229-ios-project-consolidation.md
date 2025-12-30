@@ -87,10 +87,16 @@ make ios-jit-device-run    # Device (port 5571)
 ## Free Developer Profile Note
 Free developer profiles have a limit of 3 apps installed at once. If install fails with "maximum number of installed apps" error, delete an existing app from the device first.
 
-## CI Fix (2025-12-30)
-Fixed XcodeGen validation error in CI for JIT builds:
+## CI Fixes (2025-12-30)
+
+### Fix 1: XcodeGen validation error
 - Error: `Target "SdfViewerMobile-JIT-Sim" has a missing source directory "jank-resources/.clang-format"`
 - Cause: `ios-jit-sim-project` ran before `ios-jit-sync-sources`, so `jank-resources/.clang-format` didn't exist
 - Fix:
   1. Added `ios-jit-sync-sources` as dependency of `ios-jit-sim-project` and `ios-jit-device-project`
   2. Added `.clang-format` copy to `ios-jit-sync-sources` (from `JANK_SRC/build-ios-sim-jit/`)
+
+### Fix 2: Missing libfolly.a
+- Error: `ld: library 'folly' not found`
+- Cause: `ios-bundle` script doesn't copy `libfolly.a`, only: libjank.a, libjankzip.a, libgc.a, libjank_aot.a
+- Fix: Added `libfolly.a` copy to `ios-jit-sim-core-libs` target from `JANK_SRC/build-ios-sim-jit/`
