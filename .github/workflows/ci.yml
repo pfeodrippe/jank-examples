@@ -243,7 +243,7 @@ jobs:
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make sdf-ios-sim-build JANK_SRC=$HOME/jank/compiler+runtime
+          make ios-aot-sim-build JANK_SRC=$HOME/jank/compiler+runtime
 
   build-ios-jit:
     name: Build iOS JIT Simulator

@@ -1,0 +1,79 @@
+# XcodeGen project specification for SDF Viewer Mobile - AOT Device
+# Generate with: ./generate-project.sh project-aot-device.yml or via Makefile
+# Install xcodegen: brew install xcodegen
+#
+# Environment variables (set by generate-project.sh or Makefile):
+#   JANK_SRC - Path to jank compiler+runtime
+#              Default: /Users/pfeodrippe/dev/jank/compiler+runtime
+
+name: SdfViewerMobile-AOT-Device
+
+include:
+  - config-common.yml
+
+settings:
+  base:
+    PRODUCT_NAME: SdfViewerMobile-AOT-Device
+    GCC_PREPROCESSOR_DEFINITIONS:
+      - VK_USE_PLATFORM_IOS_MVK=1
+      - VK_USE_PLATFORM_METAL_EXT=1
+      - JANK_TARGET_IOS=1
+      - JANK_TARGET_WASM=1
+      - JANK_TARGET_EMSCRIPTEN=1
+      - IMMER_HAS_LIBGC=1
+      - IMMER_TAGGED_NODE=0
+      - SDF_AOT_BUILD=1
+
+targets:
+  SdfViewerMobile-AOT-Device:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    templates: [CommonSources]
+    settings:
+      groups: [CommonHeaders, CommonCodeSign]
+      base:
+        INFOPLIST_FILE: Info.plist
+        TARGETED_DEVICE_FAMILY: "2"  # iPad only
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/build-iphoneos
+          - ${JANK_SRC}/build-ios
+          - ${JANK_SRC}/build-ios/third-party/bdwgc
+        OTHER_LDFLAGS:
+          # Common frameworks
+          - "-framework Metal"
+          - "-framework MetalKit"
+          - "-framework QuartzCore"
+          - "-framework UIKit"
+          - "-framework Foundation"
+          - "-framework CoreGraphics"
+          - "-framework CoreVideo"
+          - "-framework AVFoundation"
+          - "-framework GameController"
+          - "-framework CoreHaptics"
+          - "-framework CoreMotion"
+          - "-framework IOSurface"
+          - "-framework IOKit"
+          - "-lc++"
+          # jank runtime libraries (AOT version)
+          - "-ljank"
+          - "-ljankzip"
+          - "-lgc"
+          - "-lvybe_aot"
+
+schemes:
+  SdfViewerMobile-AOT-Device:
+    build:
+      targets:
+        SdfViewerMobile-AOT-Device: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

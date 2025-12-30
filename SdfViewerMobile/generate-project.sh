@@ -9,7 +9,7 @@ set -e
 export JANK_SRC="${JANK_SRC:-/Users/pfeodrippe/dev/jank/compiler+runtime}"
 export HOME="${HOME:-$HOME}"
 
-SPEC_FILE="${1:-project.yml}"
+SPEC_FILE="${1:-project-aot-sim.yml}"
 
 echo "Generating Xcode project from $SPEC_FILE"
 echo "  JANK_SRC=$JANK_SRC"
