@@ -667,17 +667,76 @@ ios-aot-device-run: ios-aot-device
 # Build LLVM first: make ios-jit-llvm-sim (takes ~2 hours)
 
 # Build LLVM for iOS Simulator (one-time, ~2 hours)
+# Saves the LLVM commit hash for version checking
 ios-jit-llvm-sim:
 	@echo "Building LLVM for iOS Simulator (this takes ~2 hours)..."
 	cd $(JANK_SRC) && ./bin/build-ios-llvm simulator
+	@# Save the LLVM commit hash for version checking
+	@cd $(JANK_SRC)/build/llvm && git rev-parse HEAD > $(HOME)/dev/ios-llvm-build/ios-llvm-simulator.commit
+	@echo "Saved LLVM commit: $$(cat $(HOME)/dev/ios-llvm-build/ios-llvm-simulator.commit)"
 
 # Build LLVM for iOS Device (one-time, ~2 hours)
+# Saves the LLVM commit hash for version checking
 ios-jit-llvm-device:
 	@echo "Building LLVM for iOS Device (this takes ~2 hours)..."
 	cd $(JANK_SRC) && ./bin/build-ios-llvm device
+	@# Save the LLVM commit hash for version checking
+	@cd $(JANK_SRC)/build/llvm && git rev-parse HEAD > $(HOME)/dev/ios-llvm-build/ios-llvm-device.commit
+	@echo "Saved LLVM commit: $$(cat $(HOME)/dev/ios-llvm-build/ios-llvm-device.commit)"
+
+# Check that iOS LLVM version matches current jank LLVM (simulator)
+.PHONY: check-ios-llvm-version-sim
+check-ios-llvm-version-sim:
+	@if [ ! -f "$(HOME)/dev/ios-llvm-build/ios-llvm-simulator.commit" ]; then \
+		echo ""; \
+		echo "ERROR: iOS LLVM for simulator has not been built yet."; \
+		echo "       Run: make ios-jit-llvm-sim (takes ~2 hours)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@IOS_COMMIT=$$(cat $(HOME)/dev/ios-llvm-build/ios-llvm-simulator.commit); \
+	JANK_COMMIT=$$(cd $(JANK_SRC)/build/llvm && git rev-parse HEAD); \
+	if [ "$$IOS_COMMIT" != "$$JANK_COMMIT" ]; then \
+		echo ""; \
+		echo "ERROR: iOS LLVM version mismatch!"; \
+		echo "       iOS LLVM commit:  $$IOS_COMMIT"; \
+		echo "       jank LLVM commit: $$JANK_COMMIT"; \
+		echo ""; \
+		echo "The PCH will be incompatible. Rebuild iOS LLVM:"; \
+		echo "       make ios-jit-llvm-sim (takes ~2 hours)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "iOS LLVM version OK: $$(cat $(HOME)/dev/ios-llvm-build/ios-llvm-simulator.commit | cut -c1-12)"
+
+# Check that iOS LLVM version matches current jank LLVM (device)
+.PHONY: check-ios-llvm-version-device
+check-ios-llvm-version-device:
+	@if [ ! -f "$(HOME)/dev/ios-llvm-build/ios-llvm-device.commit" ]; then \
+		echo ""; \
+		echo "ERROR: iOS LLVM for device has not been built yet."; \
+		echo "       Run: make ios-jit-llvm-device (takes ~2 hours)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@IOS_COMMIT=$$(cat $(HOME)/dev/ios-llvm-build/ios-llvm-device.commit); \
+	JANK_COMMIT=$$(cd $(JANK_SRC)/build/llvm && git rev-parse HEAD); \
+	if [ "$$IOS_COMMIT" != "$$JANK_COMMIT" ]; then \
+		echo ""; \
+		echo "ERROR: iOS LLVM version mismatch!"; \
+		echo "       iOS LLVM commit:  $$IOS_COMMIT"; \
+		echo "       jank LLVM commit: $$JANK_COMMIT"; \
+		echo ""; \
+		echo "The PCH will be incompatible. Rebuild iOS LLVM:"; \
+		echo "       make ios-jit-llvm-device (takes ~2 hours)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "iOS LLVM version OK: $$(cat $(HOME)/dev/ios-llvm-build/ios-llvm-device.commit | cut -c1-12)"
 
 # Build jank with JIT for iOS Simulator
-ios-jit-sim:
+# Depends on check-ios-llvm-version-sim to ensure PCH compatibility
+ios-jit-sim: check-ios-llvm-version-sim
 	@echo "Building jank with JIT for iOS Simulator..."
 	cd $(JANK_SRC) && ./bin/build-ios build-ios-sim-jit Debug simulator jit
 	@echo ""
@@ -828,9 +887,11 @@ ios-jit-sim-aot: build-sdf-deps-standalone
 
 # Build JIT-only core libs (no app modules - they're loaded via remote compile server)
 # Note: Always runs ninja which handles incrementality properly via source dependencies
+# ios-jit-sim-core depends on ios-jit-sim to ensure libjank.a is built first
+# ios-jit-sim runs ninja which handles incrementality via source/header dependencies
 .PHONY: ios-jit-sim-core
-ios-jit-sim-core:
-	@echo "Building JIT-only core libs for simulator (ninja handles incrementality)..."
+ios-jit-sim-core: ios-jit-sim
+	@echo "Building JIT-only core libs for simulator..."
 	@./SdfViewerMobile/build_ios_jank_jit.sh simulator
 
 # Create libjank_aot.a from locally generated object files

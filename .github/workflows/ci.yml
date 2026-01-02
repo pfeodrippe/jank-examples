@@ -79,12 +79,15 @@ jobs:
         with:
           path: |
             ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/jank-phase-1
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
+            ~/jank/compiler+runtime/build/core-libs
+            ~/jank/compiler+runtime/build/classes
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v5
 
       - name: Build jank
         if: steps.cache-jank.outputs.cache-hit != 'true'
@@ -137,12 +140,15 @@ jobs:
         with:
           path: |
             ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/jank-phase-1
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
+            ~/jank/compiler+runtime/build/core-libs
+            ~/jank/compiler+runtime/build/classes
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v5
 
       - name: Verify jank
         run: |
@@ -207,12 +213,15 @@ jobs:
         with:
           path: |
             ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/jank-phase-1
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
+            ~/jank/compiler+runtime/build/core-libs
+            ~/jank/compiler+runtime/build/classes
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v5
 
       - name: Verify jank
         run: |
@@ -278,12 +287,15 @@ jobs:
         with:
           path: |
             ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/jank-phase-1
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v3
+            ~/jank/compiler+runtime/build/core-libs
+            ~/jank/compiler+runtime/build/classes
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v5
 
       - name: Verify jank
         run: |
@@ -405,6 +417,7 @@ jobs:
         with:
           path: |
             ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/jank-phase-1
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
@@ -412,7 +425,9 @@ jobs:
             ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v12
+            ~/jank/compiler+runtime/build/core-libs
+            ~/jank/compiler+runtime/build/classes
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v14
 
       # Cache 3: PCH separately (takes 1h30 to build)
       # NO restore-keys fallback! PCH must match exact commit or compilation fails
@@ -533,6 +548,7 @@ jobs:
         with:
           path: |
             ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/jank-phase-1
             ~/jank/compiler+runtime/build/CMakeCache.txt
             ~/jank/compiler+runtime/build/CMakeFiles
             ~/jank/compiler+runtime/build/*.a
@@ -540,7 +556,9 @@ jobs:
             ~/jank/compiler+runtime/build/**/*.o
             ~/jank/compiler+runtime/build/*.ninja
             ~/jank/compiler+runtime/build/lib
-          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v12
+            ~/jank/compiler+runtime/build/core-libs
+            ~/jank/compiler+runtime/build/classes
+          key: jank-build-linux-x64-${{ needs.get-jank-commit.outputs.commit }}-v14
           # NO restore-keys! Must match exact build from build-jank-linux job
 
       - name: Restore PCH cache

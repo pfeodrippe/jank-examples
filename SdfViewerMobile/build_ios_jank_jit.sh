@@ -21,10 +21,13 @@ TARGET="$1"
 JANK_SRC="${JANK_SRC:-/Users/pfeodrippe/dev/jank/compiler+runtime}"
 
 # Output directory (JIT mode uses different directories)
+# Build directory where libjank.a was built by 'make ios-jit-sim' or 'make ios-jit-device'
 if [[ "$TARGET" == "simulator" ]]; then
     OUTPUT_DIR="SdfViewerMobile/build-iphonesimulator-jit"
+    BUILD_DIR="$JANK_SRC/build-ios-sim-jit"
 else
     OUTPUT_DIR="SdfViewerMobile/build-iphoneos-jit"
+    BUILD_DIR="$JANK_SRC/build-ios-device-jit"
 fi
 
 echo "Building iOS JIT-only bundle..."
@@ -34,8 +37,10 @@ echo ""
 # Build iOS JIT bundle using jank's ios-bundle --jit
 # This only compiles core libs + jank_aot_init.cpp for JIT mode
 # App namespaces will be loaded via remote compile server at runtime
+# --build-dir tells ios-bundle where to find the pre-built libjank.a (built by make ios-jit-sim/device)
 "$JANK_SRC/bin/ios-bundle" \
   --jit \
+  --build-dir "$BUILD_DIR" \
   --output-dir "$OUTPUT_DIR" \
   "$TARGET"
 
