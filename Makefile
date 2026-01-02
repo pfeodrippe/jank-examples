@@ -571,10 +571,11 @@ ios-legacy: clean-cache build-sdf-deps ios-jank ios-project
 # Build iOS AOT for simulator (incremental - reuses existing builds)
 # The build script now handles: jank runtime build, module compilation, library bundling
 .PHONY: ios-aot-sim
-ios-aot-sim: build-sdf-deps-standalone
+ios-aot-sim: build-sdf-deps-standalone build-shaders
 	@echo "Building vybe.sdf for iOS Simulator (AOT)..."
 	./SdfViewerMobile/build_ios_jank_aot.sh simulator
-	$(MAKE) ios-project
+	@echo "Generating iOS Simulator Xcode project..."
+	cd SdfViewerMobile && ./generate-project.sh project-aot-sim.yml
 	@echo ""
 	@echo "============================================"
 	@echo "  iOS AOT Simulator Build Complete!"
@@ -617,10 +618,11 @@ ios-aot-device-project: build-shaders $(IOS_LOCAL_LIBS)
 # Build iOS AOT for device (incremental - reuses existing builds)
 # The build script now handles: jank runtime build, module compilation, library bundling
 .PHONY: ios-aot-device
-ios-aot-device: build-sdf-deps-standalone
+ios-aot-device: build-sdf-deps-standalone build-shaders
 	@echo "Building vybe.sdf for iOS Device (AOT)..."
 	./SdfViewerMobile/build_ios_jank_aot.sh device
-	$(MAKE) ios-aot-device-project
+	@echo "Generating iOS Device Xcode project..."
+	cd SdfViewerMobile && ./generate-project.sh project-aot-device.yml
 	@echo ""
 	@echo "============================================"
 	@echo "  iOS AOT Device Build Complete!"

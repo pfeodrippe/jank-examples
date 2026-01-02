@@ -45,7 +45,12 @@
     - [x] device
   - [x] emacs nrepl
     - [x] build in ci
-- [ ] ios native
+- [ ] ios device projects
+- [ ] ipad simple animation app
+  - [ ] loom-like control
+  - [ ] but with shaders
+  - [ ] export
+- [ ] dynamic dependencies (e.g. using clang-repl) at runtime (without using precompiled shared objs)
 - [ ] add jolt to sdf project
 - [ ] ios
   - [x] new namespaces
@@ -57,8 +62,6 @@
    'jank::runtime::object *'.
    {:jank/error-kind "internal/codegen-failure" :jank/error-message "Remote compilation failed: analyze/invalid-cpp-call: No matching call to 'ecs_lookup' function. With argument 0 having type 'jank::runtime::object *'. With argument 1 having type 'jank::runtime::object *'." :clojure.error/phase :compile}
                        nil:   -1  internal/codegen-failure/internal/codegen-failure
-  - [ ]
-
 - [ ] create sdf core patterns
 - [ ] wasm
 - [ ] how can we eliminate jit at all when not needed?
@@ -67,17 +70,25 @@
   - [ ] tests
   - [ ] standalone
 - [ ] ios release mode
+- [ ] "no object_ref allowed" mode
+- [ ] "strip down" mode (e.g. direct translation for small functions)
 
 ## Jank
 
 - [x] void as nil
   - 97fed5973
 - [x] unbox perf
-- [ ] aot vs jit for new-frame!
-- [ ] aot vs jit unbox at draw-debug-ui!
+- [ ] native require (:scope)
+- [ ] map
+- [ ] oref<obj::nil> specialization at lines 364-467 has an erase() method that calls jank_const_nil(), which creates the infinite recursion: jank_const_nil() → jank_nil().erase() → jank_const_nil() → ...
+  - [ ] is this really a problem ?
 
 ## Others
 
 - [ ] jank-focused llm
 - [ ] check flecs
 - [ ] ipad simple text-focused app
+- [ ] support other langs (with first-class nREPL support!)
+  - [ ] odin
+  - [ ] rust
+  - [ ] zig

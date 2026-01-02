@@ -48,3 +48,11 @@ export CXX=$PWD/build/llvm-install/usr/local/bin/clang++
 - **Workaround in demo**: Demo-specific logic, one-off cases that don't affect other users
 - I've restarted it, but don't use :reload-all
 - we want to put as many things as possibles in jank!!
+
+## Command Output Best Practices
+
+Rule 3 - **Use tee for commands with potential failures**
+- When running commands that may produce errors, use `2>&1 | tee /tmp/build_output.txt` to save output
+- This avoids running slow commands twice just to see the full error output
+- Example: `make ios-aot-sim-run 2>&1 | tee /tmp/ios_build.txt`
+- Then read the file with `Read` tool or `cat /tmp/ios_build.txt` if needed

@@ -834,7 +834,6 @@ else
             echo ""
         fi
     fi
-    RUN_MAIN_ARGS+=(-main)
 
     if [ "$USE_LLDB" = true ]; then
         lldb -b -o "run" -k "bt" -k "quit" -- jank "${JANK_ARGS[@]}" "${RUN_MAIN_ARGS[@]}"
