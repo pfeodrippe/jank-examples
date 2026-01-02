@@ -60,7 +60,7 @@ JANK_ARGS=(
     -I./vendor
     $OBJ_ARGS
     --module-path src:test
-    run-main vybe.flecs-test -main
+    run-main vybe.flecs-test
 )
 
 echo "=== Running vybe.flecs-test ==="
@@ -73,7 +73,7 @@ JANK_TYPE_ARGS=(
     -I./vendor
     $OBJ_ARGS
     --module-path src:test
-    run-main vybe.type-test -main
+    run-main vybe.type-test
 )
 jank "${JANK_TYPE_ARGS[@]}"
 
