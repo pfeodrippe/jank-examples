@@ -33,6 +33,16 @@ make clean            # Clean all build artifacts
 ./build_jolt.sh
 ```
 
+## jank Compiler Build (macOS)
+```bash
+cd /Users/pfeodrippe/dev/jank/compiler+runtime
+export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+export CC=$PWD/build/llvm-install/usr/local/bin/clang
+export CXX=$PWD/build/llvm-install/usr/local/bin/clang++
+./bin/compile   # Build
+./bin/test      # Run tests
+```
+
 ## Troubleshooting
 If you get "Failed to find symbol: 'jank_load_*'" errors:
 ```bash

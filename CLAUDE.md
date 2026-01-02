@@ -9,6 +9,10 @@ Rule 2 - **Use jank/cpp prefix, cpp/raw is LAST RESORT**
 - Only use `cpp/raw` when absolutely necessary (complex loops, callbacks, templates, ODR-safe globals)
 - Check `ai/20251202-native-resources-guide.md` for complete cpp/ API
 
+Rule 3 - DON'T do one-off commands without also improving the makefile script!!!
+
+Rule 4 - For commands that may require further inspection, use tee to append to also put the output into a file!!
+
 ## Linking
 
 - **ALWAYS use static linking** - Never use dynamic libraries (.dylib, .so)
@@ -51,7 +55,7 @@ export CXX=$PWD/build/llvm-install/usr/local/bin/clang++
 
 ## Command Output Best Practices
 
-Rule 3 - **Use tee for commands with potential failures**
+Rule 10 - **Use tee for commands with potential failures**
 - When running commands that may produce errors, use `2>&1 | tee /tmp/build_output.txt` to save output
 - This avoids running slow commands twice just to see the full error output
 - Example: `make ios-aot-sim-run 2>&1 | tee /tmp/ios_build.txt`

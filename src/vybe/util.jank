@@ -157,7 +157,12 @@
 (defn now-us
   "Get current time in microseconds (from nanoseconds)."
   []
-  (quot (@#'clojure.core/current-time) 1000))
+  #_(quot (@#'clojure.core/current-time) 1000)
+  ;; Use cpp/raw instead of @#'clojure.core/current-time to avoid JIT var ref issues
+  #_(let* [ns-time (cpp/raw "jank::i64"
+                            "std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count()")]
+      (quot ns-time 1000))
+  0)
 
 (defn record-metric!
   "Record a timing measurement for the given key."

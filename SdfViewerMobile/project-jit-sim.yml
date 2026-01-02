@@ -65,7 +65,6 @@ targets:
           - ${JANK_SRC}/src/cpp
           - ${JANK_SRC}/third-party/immer
           - ${JANK_SRC}/third-party/bdwgc/include
-          - ${JANK_SRC}/third-party/bpptree/include
           - ${JANK_SRC}/third-party/boost-preprocessor/include
           - ${JANK_SRC}/third-party/boost-multiprecision/include
           - ${JANK_SRC}/third-party/folly

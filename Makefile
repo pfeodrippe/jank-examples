@@ -171,10 +171,11 @@ VYBE_FLECS_JANK_INCLUDES = \
 	-I$(JANK_SRC)/third-party \
 	-I$(JANK_SRC)/third-party/bdwgc/include \
 	-I$(JANK_SRC)/third-party/immer \
-	-I$(JANK_SRC)/third-party/bpptree/include \
 	-I$(JANK_SRC)/third-party/folly \
 	-I$(JANK_SRC)/third-party/boost-multiprecision/include \
 	-I$(JANK_SRC)/third-party/boost-preprocessor/include \
+	-I$(JANK_SRC)/third-party/stduuid/include \
+	-I$(JANK_SRC)/third-party/cppinterop/include \
 	-I$(JANK_SRC)/build/llvm-install/usr/local/include \
 	-Ivendor -Ivendor/flecs/distr
 
@@ -788,7 +789,6 @@ ios-jit-sync-includes:
 	@# Create target directories first (rsync doesn't create nested paths)
 	@mkdir -p SdfViewerMobile/jank-resources/include/gc
 	@mkdir -p SdfViewerMobile/jank-resources/include/immer
-	@mkdir -p SdfViewerMobile/jank-resources/include/bpptree
 	@mkdir -p SdfViewerMobile/jank-resources/include/folly
 	@mkdir -p SdfViewerMobile/jank-resources/include/boost
 	@mkdir -p SdfViewerMobile/jank-resources/include/jank
@@ -800,13 +800,13 @@ ios-jit-sync-includes:
 	@cp -f $(JANK_SRC)/third-party/bdwgc/include/gc_cpp.h SdfViewerMobile/jank-resources/include/
 	@# immer headers (immer/heap/heap_policy.hpp, etc.) - NOTE: source is immer/immer/, target is immer/
 	@rsync -av --delete $(JANK_SRC)/third-party/immer/immer/ SdfViewerMobile/jank-resources/include/immer/
-	@# bpptree headers
-	@rsync -av --delete $(JANK_SRC)/third-party/bpptree/include/bpptree/ SdfViewerMobile/jank-resources/include/bpptree/
 	@# folly headers (folly/SharedMutex.h, etc.) - NOTE: source is folly/folly/, target is folly/
 	@rsync -av --delete $(JANK_SRC)/third-party/folly/folly/ SdfViewerMobile/jank-resources/include/folly/
 	@# boost headers (merge boost-preprocessor and boost-multiprecision into boost/)
 	@rsync -av $(JANK_SRC)/third-party/boost-preprocessor/include/boost/ SdfViewerMobile/jank-resources/include/boost/
 	@rsync -av $(JANK_SRC)/third-party/boost-multiprecision/include/boost/ SdfViewerMobile/jank-resources/include/boost/
+	@# stduuid header (uuid.h)
+	@cp -f $(JANK_SRC)/third-party/stduuid/include/uuid.h SdfViewerMobile/jank-resources/include/
 	@# jank headers (jank/runtime/object.hpp, etc.)
 	@rsync -av --delete $(JANK_SRC)/include/cpp/jank/ SdfViewerMobile/jank-resources/include/jank/
 	@rsync -av --delete $(JANK_SRC)/include/cpp/jtl/ SdfViewerMobile/jank-resources/include/jtl/

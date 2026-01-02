@@ -46,6 +46,10 @@
   - [x] emacs nrepl
     - [x] build in ci
 - [ ] ios device projects
+  - [x] aot sim
+  - [x] aot device
+  - [ ] jit sim
+  - [ ] jit device
 - [ ] ipad simple animation app
   - [ ] loom-like control
   - [ ] but with shaders

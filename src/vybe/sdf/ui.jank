@@ -70,143 +70,141 @@
 (defn draw-debug-ui!
   "Draw debug UI panel using direct ImGui header require."
   []
-  (u/timed
-   :DD
-   (let [cam (state/get-camera)
-         edit (state/get-edit-mode)
-         objs (state/get-objects)
-         io (imgui/GetIO)
-         fps (cpp/.-Framerate io)]
-     (imgui/SetNextWindowPos (imgui-h/ImVec2. (cpp/float. 10.0) (cpp/float. 10.0))
-                             imgui-h/ImGuiCond_FirstUseEver)
-     (imgui/Begin "SDF Debug")
-     (imgui/Text #cpp "FPS: %.1f" fps)
-     (imgui/Text (str "Greeting: " (greeting/get-greeting)))
-     (imgui/Text (str "Version: " (greeting/get-version)))
-     ;; SDF compute status with detailed breakdown
-     (let [mesh-visible (sdfx/get_mesh_preview_visible)
-           mesh-solid (sdfx/get_mesh_render_solid)
-           mesh-initialized (sdfx/get_mesh_pipeline_initialized)
-           mesh-has-indices (> (sdfx/get_mesh_preview_triangle_count) 0)
-           compute-skipped (and mesh-visible mesh-solid mesh-initialized mesh-has-indices)]
-       (if compute-skipped
-         (imgui/TextColored (imgui-h/ImVec4. (cpp/float. 0.0) (cpp/float. 1.0) (cpp/float. 0.0) (cpp/float. 1.0))
-                            "SDF Compute: SKIPPED")
-         (do
-           (imgui/TextColored (imgui-h/ImVec4. (cpp/float. 1.0) (cpp/float. 0.5) (cpp/float. 0.0) (cpp/float. 1.0))
-                              "SDF Compute: RUNNING")
-           ;; Show why it's running
-           (when-not mesh-visible (imgui/Text "  - mesh not visible"))
-           (when-not mesh-solid (imgui/Text "  - solid mode off"))
-           (when-not mesh-initialized (imgui/Text "  - pipeline not init"))
-           (when-not mesh-has-indices (imgui/Text "  - no triangles")))))
-     (imgui/Separator)
-     (imgui/Text #cpp "Camera _20:")
-     (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (:distance cam)))
-     (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (:angle-x cam)))
-     (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (:angle-y cam)))
-     (imgui/Separator)
-     (imgui/Text #cpp "Edit Mode: %s" (if (:enabled edit) "ON" "OFF"))
-     (imgui/Text #cpp "Selected: %d" (cpp/int. (:selected-object edit)))
-     (imgui/Separator)
-     (imgui/Text #cpp "Objects: %d" (cpp/int. (count objs)))
-     (imgui/Separator)
-     (imgui/Text #cpp "Mesh Preview:")
-     ;; Mesh preview toggle button
-     (let [visible (sdfx/get_mesh_preview_visible)]
-       (when (imgui/Button (if visible "Hide Mesh" "Show Mesh"))
-         (sdfx/toggle_mesh_preview)))
-     ;; Solid/wireframe mode checkbox (syncs with engine)
-     (imgui/Checkbox "Solid Mode" (cpp/unbox *mesh-solid-mode))
-     (sdfx/set_mesh_render_solid (u/p->v *mesh-solid-mode))
-     ;; Auto-rotate checkbox
-     (imgui/Checkbox "Auto Rotate" (cpp/unbox *auto-rotate))
-     ;; Mesh scale slider
-     (imgui/SliderFloat "Mesh Scale" (cpp/unbox *mesh-scale) (cpp/float. 0.1) (cpp/float. 3.0))
-     (sdfx/set_mesh_scale (u/p->v *mesh-scale))
-     ;; Resolution controls (step size scales with resolution)
-     (let [res (sdfx/get_mesh_preview_resolution)
-           step (cond
-                  (< res 64) 8
-                  (< res 128) 16
-                  (< res 256) 32
-                  :else 64)]
-       (imgui/Text #cpp "Resolution: %d" (cpp/int. res))
-       (imgui/SameLine)
-       (when (imgui/Button "-")
-         (sdfx/set_mesh_preview_resolution (cpp/int. (- res step))))
-       (imgui/SameLine)
-       (when (imgui/Button "+")
-         (sdfx/set_mesh_preview_resolution (cpp/int. (+ res step)))))
-     ;; Show current mesh stats
-     (let [verts (sdfx/get_mesh_preview_vertex_count)
-           tris (sdfx/get_mesh_preview_triangle_count)]
-       (imgui/Text #cpp "  Verts: %d  Tris: %d" (cpp/int. verts) (cpp/int. tris)))
-     ;; Mesh algorithm selection
-     (imgui/Checkbox "Dual Contouring" (cpp/unbox *use-dual-contouring))
-     (imgui/SameLine)
-     (imgui/TextDisabled "(sharper edges)")
-     ;; Sync DC checkbox with engine
-     (sdfx/set_mesh_use_dual_contouring (cpp/bool. (u/p->v *use-dual-contouring)))
-     ;; Fill with cubes option (only relevant for DC)
-     (when (u/p->v *use-dual-contouring)
-       (imgui/Checkbox "Fill With Cubes" (cpp/unbox *fill-with-cubes))
-       (imgui/SameLine)
-       (imgui/TextDisabled "(voxel style)")
-       (sdfx/set_mesh_fill_with_cubes (cpp/bool. (u/p->v *fill-with-cubes)))
-       ;; Voxel size slider (only when fill with cubes is enabled)
-       (when (u/p->v *fill-with-cubes)
-         (imgui/SliderFloat "Voxel Size" (cpp/unbox *voxel-size) (cpp/float. 0.1) (cpp/float. 2.0))
-         (sdfx/set_mesh_voxel_size (u/p->v *voxel-size)))
-       ;; GPU DC toggle (works for both DC and cubes mode now)
-       (imgui/Checkbox "GPU DC (experimental)" (cpp/unbox *use-gpu-dc))
-       (sdfx/set_mesh_use_gpu_dc (cpp/bool. (u/p->v *use-gpu-dc))))
+  (let [cam (state/get-camera)
+        edit (state/get-edit-mode)
+        objs (state/get-objects)
+        io (imgui/GetIO)
+        fps (cpp/.-Framerate io)]
+    (imgui/SetNextWindowPos (imgui-h/ImVec2. (cpp/float. 10.0) (cpp/float. 10.0))
+                            imgui-h/ImGuiCond_FirstUseEver)
+    (imgui/Begin "SDF Debug")
+    (imgui/Text #cpp "FPS: %.1f" fps)
+    (imgui/Text (str "Greeting: " (greeting/get-greeting)))
+    (imgui/Text (str "Version: " (greeting/get-version)))
+    ;; SDF compute status with detailed breakdown
+    (let [mesh-visible (sdfx/get_mesh_preview_visible)
+          mesh-solid (sdfx/get_mesh_render_solid)
+          mesh-initialized (sdfx/get_mesh_pipeline_initialized)
+          mesh-has-indices (> (sdfx/get_mesh_preview_triangle_count) 0)
+          compute-skipped (and mesh-visible mesh-solid mesh-initialized mesh-has-indices)]
+      (if compute-skipped
+        (imgui/TextColored (imgui-h/ImVec4. (cpp/float. 0.0) (cpp/float. 1.0) (cpp/float. 0.0) (cpp/float. 1.0))
+                           "SDF Compute: SKIPPED")
+        (do
+          (imgui/TextColored (imgui-h/ImVec4. (cpp/float. 1.0) (cpp/float. 0.5) (cpp/float. 0.0) (cpp/float. 1.0))
+                             "SDF Compute: RUNNING")
+          ;; Show why it's running
+          (when-not mesh-visible (imgui/Text "  - mesh not visible"))
+          (when-not mesh-solid (imgui/Text "  - solid mode off"))
+          (when-not mesh-initialized (imgui/Text "  - pipeline not init"))
+          (when-not mesh-has-indices (imgui/Text "  - no triangles")))))
+    (imgui/Separator)
+    (imgui/Text #cpp "Camera _20:")
+    (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (:distance cam)))
+    (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (:angle-x cam)))
+    (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (:angle-y cam)))
+    (imgui/Separator)
+    (imgui/Text #cpp "Edit Mode: %s" (if (:enabled edit) "ON" "OFF"))
+    (imgui/Text #cpp "Selected: %d" (cpp/int. (:selected-object edit)))
+    (imgui/Separator)
+    (imgui/Text #cpp "Objects: %d" (cpp/int. (count objs)))
+    (imgui/Separator)
+    (imgui/Text #cpp "Mesh Preview:")
+    ;; Mesh preview toggle button
+    (let [visible (sdfx/get_mesh_preview_visible)]
+      (when (imgui/Button (if visible "Hide Mesh" "Show Mesh"))
+        (sdfx/toggle_mesh_preview)))
+    ;; Solid/wireframe mode checkbox (syncs with engine)
+    (imgui/Checkbox "Solid Mode" (cpp/unbox *mesh-solid-mode))
+    (sdfx/set_mesh_render_solid (u/p->v *mesh-solid-mode))
+    ;; Auto-rotate checkbox
+    (imgui/Checkbox "Auto Rotate" (cpp/unbox *auto-rotate))
+    ;; Mesh scale slider
+    (imgui/SliderFloat "Mesh Scale" (cpp/unbox *mesh-scale) (cpp/float. 0.1) (cpp/float. 3.0))
+    (sdfx/set_mesh_scale (u/p->v *mesh-scale))
+    ;; Resolution controls (step size scales with resolution)
+    (let [res (sdfx/get_mesh_preview_resolution)
+          step (cond
+                 (< res 64) 8
+                 (< res 128) 16
+                 (< res 256) 32
+                 :else 64)]
+      (imgui/Text #cpp "Resolution: %d" (cpp/int. res))
+      (imgui/SameLine)
+      (when (imgui/Button "-")
+        (sdfx/set_mesh_preview_resolution (cpp/int. (- res step))))
+      (imgui/SameLine)
+      (when (imgui/Button "+")
+        (sdfx/set_mesh_preview_resolution (cpp/int. (+ res step)))))
+    ;; Show current mesh stats
+    (let [verts (sdfx/get_mesh_preview_vertex_count)
+          tris (sdfx/get_mesh_preview_triangle_count)]
+      (imgui/Text #cpp "  Verts: %d  Tris: %d" (cpp/int. verts) (cpp/int. tris)))
+    ;; Mesh algorithm selection
+    (imgui/Checkbox "Dual Contouring" (cpp/unbox *use-dual-contouring))
+    (imgui/SameLine)
+    (imgui/TextDisabled "(sharper edges)")
+    ;; Sync DC checkbox with engine
+    (sdfx/set_mesh_use_dual_contouring (cpp/bool. (u/p->v *use-dual-contouring)))
+    ;; Fill with cubes option (only relevant for DC)
+    (when (u/p->v *use-dual-contouring)
+      (imgui/Checkbox "Fill With Cubes" (cpp/unbox *fill-with-cubes))
+      (imgui/SameLine)
+      (imgui/TextDisabled "(voxel style)")
+      (sdfx/set_mesh_fill_with_cubes (cpp/bool. (u/p->v *fill-with-cubes)))
+      ;; Voxel size slider (only when fill with cubes is enabled)
+      (when (u/p->v *fill-with-cubes)
+        (imgui/SliderFloat "Voxel Size" (cpp/unbox *voxel-size) (cpp/float. 0.1) (cpp/float. 2.0))
+        (sdfx/set_mesh_voxel_size (u/p->v *voxel-size)))
+      ;; GPU DC toggle (works for both DC and cubes mode now)
+      (imgui/Checkbox "GPU DC (experimental)" (cpp/unbox *use-gpu-dc))
+      (sdfx/set_mesh_use_gpu_dc (cpp/bool. (u/p->v *use-gpu-dc))))
 
-     ;; Regenerate button
-     (when (imgui/Button "Regenerate Mesh")
-       (sdfx/generate_mesh_preview (cpp/int. -1)))
-     (imgui/Separator)
-     (imgui/Text #cpp "Mesh Export:")
-     ;; Export options checkboxes (Include Colors also affects preview)
-     (imgui/Checkbox "Include Colors" (cpp/unbox *export-colors))
-     ;; Sync colors checkbox with mesh preview - will trigger regeneration when changed
-     (sdfx/set_mesh_use_vertex_colors (cpp/bool. (u/p->v *export-colors)))
-     (imgui/Checkbox "Include UVs" (cpp/unbox *export-uvs))
-     ;; GPU-based scene export using current resolution
-     (let [res (sdfx/get_mesh_preview_resolution)
-           inc-colors (u/p->v *export-colors)
-           inc-uvs (u/p->v *export-uvs)]
-       (when (imgui/Button "Export GLB")
-         (let [result (sdfx/export_scene_mesh_gpu "exported_scene.glb" (cpp/int. res)
-                                                  inc-colors inc-uvs)]
-           (if (cpp/.-success result)
-             (do
-               (println "Exported GLB at" res "res:" (cpp/.-vertices result) "verts,"
-                        (cpp/.-triangles result) "tris")
-               (when inc-colors (println "  With vertex colors")))
-             (println "GLB export failed:" (cpp/.-message result)))))
-       (imgui/SameLine)
-       (when (imgui/Button "Export OBJ")
-         (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. res)
-                                                  inc-colors inc-uvs)]
-           (if (cpp/.-success result)
-             (do
-               (println "Exported OBJ at" res "res:" (cpp/.-vertices result) "verts,"
-                        (cpp/.-triangles result) "tris"))
-             (println "OBJ export failed:" (cpp/.-message result))))))
-     ;; View exported GLB in viewer
-     (when (imgui/Button "View exported_scene.glb")
-       (if (sdfx/load_glb_and_display "exported_scene.glb")
-         (println "Loaded exported_scene.glb into viewer")
-         (println "Failed to load exported_scene.glb")))
-     ;; Auto-regenerate mesh if needed (e.g., colors toggled)
-     (when (and (sdfx/get_mesh_preview_visible)
-                (sdfx/mesh_preview_needs_regenerate))
-       (println "REGENERATING MESH!") ;; Debug: should NOT print continuously!
-       (sdfx/generate_mesh_preview (cpp/int. -1))
-       (sdfx/clear_mesh_regenerate_flag))
-     (imgui/End)
-     nil)))
+    ;; Regenerate button
+    (when (imgui/Button "Regenerate Mesh")
+      (sdfx/generate_mesh_preview (cpp/int. -1)))
+    (imgui/Separator)
+    (imgui/Text #cpp "Mesh Export:")
+    ;; Export options checkboxes (Include Colors also affects preview)
+    (imgui/Checkbox "Include Colors" (cpp/unbox *export-colors))
+    ;; Sync colors checkbox with mesh preview - will trigger regeneration when changed
+    (sdfx/set_mesh_use_vertex_colors (cpp/bool. (u/p->v *export-colors)))
+    (imgui/Checkbox "Include UVs" (cpp/unbox *export-uvs))
+    ;; GPU-based scene export using current resolution
+    (let [res (sdfx/get_mesh_preview_resolution)
+          inc-colors (u/p->v *export-colors)
+          inc-uvs (u/p->v *export-uvs)]
+      (when (imgui/Button "Export GLB")
+        (let [result (sdfx/export_scene_mesh_gpu "exported_scene.glb" (cpp/int. res)
+                                                 inc-colors inc-uvs)]
+          (if (cpp/.-success result)
+            (do
+              (println "Exported GLB at" res "res:" (cpp/.-vertices result) "verts,"
+                       (cpp/.-triangles result) "tris")
+              (when inc-colors (println "  With vertex colors")))
+            (println "GLB export failed:" (cpp/.-message result)))))
+      (imgui/SameLine)
+      (when (imgui/Button "Export OBJ")
+        (let [result (sdfx/export_scene_mesh_gpu "exported_scene.obj" (cpp/int. res)
+                                                 inc-colors inc-uvs)]
+          (if (cpp/.-success result)
+            (do
+              (println "Exported OBJ at" res "res:" (cpp/.-vertices result) "verts,"
+                       (cpp/.-triangles result) "tris"))
+            (println "OBJ export failed:" (cpp/.-message result))))))
+    ;; View exported GLB in viewer
+    (when (imgui/Button "View exported_scene.glb")
+      (if (sdfx/load_glb_and_display "exported_scene.glb")
+        (println "Loaded exported_scene.glb into viewer")
+        (println "Failed to load exported_scene.glb")))
+    ;; Auto-regenerate mesh if needed (e.g., colors toggled)
+    (when (and (sdfx/get_mesh_preview_visible)
+               (sdfx/mesh_preview_needs_regenerate))
+      (println "REGENERATING MESH!") ;; Debug: should NOT print continuously!
+      (sdfx/generate_mesh_preview (cpp/int. -1))
+      (sdfx/clear_mesh_regenerate_flag))
+    (imgui/End)
+    nil))
 
 (defn auto-rotate?
   "Check if auto-rotation is enabled."
