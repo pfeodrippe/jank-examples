@@ -28,9 +28,10 @@ When you need to fix issues in the jank compiler itself (not WASM workarounds):
 **Build Environment Setup** (required before building on macOS):
 ```bash
 cd /Users/pfeodrippe/dev/jank/compiler+runtime
-export SDKROOT=$(xcrun --show-sdk-path)
-export CC=$PWD/build/llvm-install/usr/local/bin/clang
-export CXX=$PWD/build/llvm-install/usr/local/bin/clang++
+# IMPORTANT: Use the actual expanded path, NOT $(xcrun --show-sdk-path) which may not expand in some shells
+export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+export CC=/Users/pfeodrippe/dev/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang
+export CXX=/Users/pfeodrippe/dev/jank/compiler+runtime/build/llvm-install/usr/local/bin/clang++
 ```
 
 **Build Commands**:

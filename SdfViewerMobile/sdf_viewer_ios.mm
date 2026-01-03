@@ -5,11 +5,14 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <pthread.h>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <execinfo.h>
+#include <cxxabi.h>
 
 // Include the SDF engine header (inline functions)
 // Note: SDF_ENGINE_IMPLEMENTATION is only defined in sdf_engine_impl.cpp
@@ -26,12 +29,15 @@
 #include <jank/runtime/behavior/callable.hpp>
 #include <jank/runtime/module/loader.hpp>
 #include <jank/error.hpp>
+#include <jank/util/cpptrace.hpp>
 
 // iOS remote eval server (ClojureScript-style architecture)
 // All nREPL complexity stays on macOS, iOS just does simple eval
 #if defined(JANK_IOS_JIT)
 #include <jank/ios/eval_server.hpp>
 #include <jank/compile_server/remote_compile.hpp>
+// Forward declare debug function for ABI comparison
+extern "C" void jank_debug_print_sizeof();
 #endif
 
 #pragma pop_macro("nil")
@@ -300,6 +306,9 @@ static bool init_jank_runtime_impl() {
             jank::runtime::context{};
 
 #if defined(JANK_IOS_JIT)
+        // Print sizeof for key types to help diagnose ABI mismatches
+        jank_debug_print_sizeof();
+
         // Configure and connect to remote compile server on macOS
         // This enables JIT compilation via the macOS compile-server
 #if TARGET_OS_SIMULATOR
@@ -353,7 +362,12 @@ static bool init_jank_runtime_impl() {
 
 // Call the jank-exported -main function (actual implementation)
 static void call_jank_main_impl() {
-    try {
+    // TEMPORARILY COMMENTED OUT FOR DEBUGGING - LET EXCEPTIONS CRASH TO SEE FULL STACK IN XCODE
+    // try {
+        // Enable verbose JIT logging to see what functions are being compiled
+        std::cout << "[jank] Enabling verbose JIT logging..." << std::endl;
+        // Note: You may need to set an environment variable or jank option for this
+
         // Set up thread bindings (required for dynamic vars like *ns*)
         std::cout << "[jank] Setting up thread bindings..." << std::endl;
         jank::runtime::context::binding_scope bindings;
@@ -385,18 +399,121 @@ static void call_jank_main_impl() {
         // Call it using dynamic_call (no args)
         std::cout << "[jank] Calling vybe.sdf.ios/-main..." << std::endl;
         jank::runtime::dynamic_call(var.expect_ok()->deref());
+    /* TEMPORARILY COMMENTED OUT FOR DEBUGGING
     } catch (jtl::ref<jank::error::base> const& e) {
-        std::cerr << "[jank] Error calling -main: " << e->message << std::endl;
-        if (e->cause) {
-            std::cerr << "[jank]   caused by: " << e->cause->message << std::endl;
+        // Enhanced error display with stack traces!
+        std::cerr << "\n";
+        std::cerr << "╔══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ jank Runtime Error\n";
+        std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ " << e->message << "\n";
+
+        // Print source location if available (check if file is not NO_SOURCE_PATH)
+        if (e->source.file != jank::read::no_source_path) {
+            std::cerr << "║ at " << e->source.to_string() << "\n";
         }
+
+        // Print notes if available
+        if (!e->notes.empty()) {
+            std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+            std::cerr << "║ Additional context:\n";
+            for (auto const& note : e->notes) {
+                std::cerr << "║   • " << note.message << "\n";
+                if (note.source.file != jank::read::no_source_path) {
+                    std::cerr << "║     at " << note.source.to_string() << "\n";
+                }
+            }
+        }
+
+        // Print cause chain if available
+        if (e->cause) {
+            std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+            std::cerr << "║ Caused by:\n";
+            auto cause = e->cause;
+            while (cause) {
+                std::cerr << "║   " << cause->message << "\n";
+                if (cause->source.file != jank::read::no_source_path) {
+                    std::cerr << "║   at " << cause->source.to_string() << "\n";
+                }
+                cause = cause->cause;
+            }
+        }
+
+        // Print stack trace if available
+        if (e->trace) {
+            std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+            std::cerr << "║ Stack Trace:\n";
+            std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+            // cpptrace::stacktrace::print() outputs to stderr by default
+            e->trace->print();
+        }
+
+        std::cerr << "╚══════════════════════════════════════════════════════════════\n";
+        std::cerr << "\n";
     } catch (jtl::immutable_string const& e) {
-        std::cerr << "[jank] Error calling -main: " << e << std::endl;
+        std::cerr << "\n";
+        std::cerr << "╔══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ jank Error (string exception)\n";
+        std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ " << e << "\n";
+        std::cerr << "╚══════════════════════════════════════════════════════════════\n";
+        std::cerr << "\n";
     } catch (const std::exception& e) {
-        std::cerr << "[jank] Error calling -main (std): " << e.what() << std::endl;
+        std::cerr << "\n";
+        std::cerr << "╔══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ C++ Standard Exception\n";
+        std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ " << e.what() << "\n";
+        std::cerr << "║\n";
+        std::cerr << "║ Note: This is a C++ exception, not a jank exception.\n";
+        std::cerr << "║ It may be from C++ interop code or runtime type checking.\n";
+        std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ Stack Trace:\n";
+        std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+
+        // Use native iOS backtrace with demangling (cpptrace has build issues on iOS)
+        void* callstack[128];
+        int frames_count = backtrace(callstack, 128);
+        char** strs = backtrace_symbols(callstack, frames_count);
+
+        for (int i = 0; i < frames_count; ++i) {
+            std::string frame_str(strs[i]);
+
+            // Try to find and demangle the C++ symbol
+            // Format is typically: "0   Module   0xADDRESS _ZN...mangled... + offset"
+            size_t mangled_start = frame_str.find("_Z");
+            if (mangled_start != std::string::npos) {
+                // Find the end of the mangled name (space or + usually)
+                size_t mangled_end = frame_str.find_first_of(" +", mangled_start);
+                std::string mangled = frame_str.substr(mangled_start, mangled_end - mangled_start);
+
+                // Demangle it
+                int status = 0;
+                char* demangled = abi::__cxa_demangle(mangled.c_str(), nullptr, nullptr, &status);
+
+                if (status == 0 && demangled) {
+                    // Replace mangled name with demangled version
+                    frame_str.replace(mangled_start, mangled.length(), demangled);
+                    free(demangled);
+                }
+            }
+
+            std::cerr << "║ " << frame_str << "\n";
+        }
+        free(strs);
+        std::cerr << "╚══════════════════════════════════════════════════════════════\n";
+        std::cerr << "\n";
     } catch (...) {
-        std::cerr << "[jank] Error calling -main: unknown exception" << std::endl;
+        std::cerr << "\n";
+        std::cerr << "╔══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ Unknown Exception\n";
+        std::cerr << "╠══════════════════════════════════════════════════════════════\n";
+        std::cerr << "║ An unknown exception was thrown.\n";
+        std::cerr << "║ This could be a non-standard exception type.\n";
+        std::cerr << "╚══════════════════════════════════════════════════════════════\n";
+        std::cerr << "\n";
     }
+    END OF COMMENTED OUT CATCH BLOCKS */
 }
 
 // Call jank main - runs on main thread for UIKit compatibility

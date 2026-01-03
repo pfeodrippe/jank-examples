@@ -95,10 +95,11 @@ $LLVM_CLANG \
     -nostdinc++ \
     -isystem "$IOS_SDK/usr/include/c++/v1" \
     -std=gnu++20 \
+    -DJANK_IOS_JIT=1 \
+    -DJANK_TARGET_IOS=1 \
     -DIMMER_HAS_LIBGC=1 -DIMMER_TAGGED_NODE=0 -DHAVE_CXX14=1 \
     -DFOLLY_HAVE_JEMALLOC=0 -DFOLLY_HAVE_TCMALLOC=0 \
     -DFOLLY_ASSUME_NO_JEMALLOC=1 -DFOLLY_ASSUME_NO_TCMALLOC=1 \
-    -DJANK_TARGET_IOS=1 \
     -frtti \
     -I"$INCLUDE_DIR" \
     -I"$JANK_SRC/src/cpp" \

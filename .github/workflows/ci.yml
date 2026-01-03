@@ -162,13 +162,13 @@ jobs:
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make test JANK_SRC=$HOME/jank/compiler+runtime
+          make test JANK_SRC="$HOME/jank/compiler+runtime"
 
       - name: Build standalone app
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make sdf-standalone JANK_SRC=$HOME/jank/compiler+runtime
+          make sdf-standalone JANK_SRC="$HOME/jank/compiler+runtime"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -252,7 +252,7 @@ jobs:
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make ios-aot-sim-build JANK_SRC=$HOME/jank/compiler+runtime
+          make ios-aot-sim-build JANK_SRC="$HOME/jank/compiler+runtime"
 
   build-ios-jit:
     name: Build iOS JIT Simulator
@@ -366,7 +366,7 @@ jobs:
         run: |
           export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make ios-jit-sim-build JANK_SRC=$HOME/jank/compiler+runtime
+          make ios-jit-sim-build JANK_SRC="$HOME/jank/compiler+runtime"
 
   # ============================================================================
   # Linux Pipeline (runs in parallel with macOS)
@@ -580,7 +580,7 @@ jobs:
       - name: Run tests
         run: |
           export PATH="$HOME/jank/compiler+runtime/build:$PATH"
-          make test JANK_SRC=$HOME/jank/compiler+runtime
+          make test JANK_SRC="$HOME/jank/compiler+runtime"
 
       - name: Build standalone app
         run: |
@@ -589,7 +589,7 @@ jobs:
           echo "=== Memory status ==="
           free -h
           echo "=== Running full standalone build ==="
-          time make sdf-standalone JANK_SRC=$HOME/jank/compiler+runtime
+          time make sdf-standalone JANK_SRC="$HOME/jank/compiler+runtime"
           echo "=== Build complete at $(date) ==="
 
       - name: Upload Linux tarball artifact

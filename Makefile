@@ -543,6 +543,20 @@ ios-clean:
 	rm -rf SdfViewerMobile/temp_build
 	@echo "iOS artifacts cleaned"
 
+# Clean iOS JIT build directories (use after jank header changes)
+.PHONY: ios-jit-clean
+ios-jit-clean:
+	@echo "Cleaning iOS JIT build artifacts..."
+	rm -rf SdfViewerMobile/build-iphonesimulator-jit
+	rm -rf SdfViewerMobile/build-iphoneos-jit
+	rm -rf ~/Library/Developer/Xcode/DerivedData/SdfViewerMobile-JIT-*
+	rm -rf $(JANK_DIR)/build-ios-sim-jit
+	rm -rf $(JANK_DIR)/build-ios-device-jit
+	rm -f SdfViewerMobile/jank-resources/incremental.pch
+	rm -f SdfViewerMobile/jank-resources/incremental-device.pch
+	@echo "iOS JIT artifacts cleaned"
+	@echo "Run 'make ios-jit-sim-run' or 'make ios-jit-device-run' to rebuild"
+
 # Build jank for iOS (AOT compilation) - generates C++ and cross-compiles
 ios-jank: ios-runtime ios-core-libs $(IOS_GENERATED_OBJ)
 	@echo "jank iOS build complete!"
@@ -892,6 +906,9 @@ ios-jit-sim-aot: build-sdf-deps-standalone
 .PHONY: ios-jit-sim-core
 ios-jit-sim-core: ios-jit-sim
 	@echo "Building JIT-only core libs for simulator..."
+	@# Clean old generated files to avoid stale ABI issues
+	@rm -rf SdfViewerMobile/build-iphonesimulator-jit/obj 2>/dev/null || true
+	@rm -rf SdfViewerMobile/build-iphonesimulator-jit/generated 2>/dev/null || true
 	@./SdfViewerMobile/build_ios_jank_jit.sh simulator
 
 # Create libjank_aot.a from locally generated object files
@@ -900,6 +917,9 @@ ios-jit-sim-core: ios-jit-sim
 .PHONY: ios-jit-sim-core-libs
 ios-jit-sim-core-libs: ios-jit-sim-core
 	@echo "Creating libjank_aot.a from locally generated object files..."
+	@# Clean old libs to avoid stale ABI issues
+	@rm -f SdfViewerMobile/build-iphonesimulator-jit/libjank_aot.a 2>/dev/null || true
+	@rm -f SdfViewerMobile/build-iphonesimulator-jit/libfolly.a 2>/dev/null || true
 	@if [ ! -f "SdfViewerMobile/build-iphonesimulator-jit/libjank.a" ]; then \
 		echo "ERROR: JIT-only libraries not found!"; \
 		echo "Run 'make ios-jit-sim-core' first."; \
@@ -990,8 +1010,12 @@ ios-jit-sim-project: ios-jit-sim-core-libs ios-jit-sync-sources
 .PHONY: ios-jit-sim-build
 ios-jit-sim-build: ios-jit-sync-sources ios-jit-pch ios-jit-sim-project
 	@echo "Building iOS JIT app for simulator..."
-	@# Clean Xcode's cached object files for jank_aot_init to ensure fresh rebuild
+	@# Clean Xcode's cached object files that might depend on jank headers
+	@# This ensures changes to rtti.hpp, prelude.hpp, etc. are picked up
 	@rm -rf ~/Library/Developer/Xcode/DerivedData/SdfViewerMobile-JIT-Sim-*/Build/Intermediates.noindex/SdfViewerMobile-JIT-Sim.build/Debug-iphonesimulator/SdfViewerMobile-JIT-Sim.build/Objects-normal/arm64/jank_aot_init.* 2>/dev/null || true
+	@rm -rf ~/Library/Developer/Xcode/DerivedData/SdfViewerMobile-JIT-Sim-*/Build/Intermediates.noindex/SdfViewerMobile-JIT-Sim.build/Debug-iphonesimulator/SdfViewerMobile-JIT-Sim.build/Objects-normal/arm64/sdf_viewer_ios.* 2>/dev/null || true
+	@# Touch main source file to trigger rebuild if headers changed
+	@touch SdfViewerMobile/sdf_viewer_ios.mm 2>/dev/null || true
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile-JIT-Sim.xcodeproj \
 		-scheme SdfViewerMobile-JIT-Sim \
@@ -1018,6 +1042,9 @@ ios-jit-sim-run: ios-jit-sim-build ios-compile-server-sim
 .PHONY: ios-jit-device-core
 ios-jit-device-core:
 	@echo "Building JIT core libs for device (ninja handles incrementality)..."
+	@# Clean old generated files to avoid stale ABI issues
+	@rm -rf SdfViewerMobile/build-iphoneos-jit/obj 2>/dev/null || true
+	@rm -rf SdfViewerMobile/build-iphoneos-jit/generated 2>/dev/null || true
 	@./SdfViewerMobile/build_ios_jank_jit.sh device
 
 # Copy JIT device libraries (no app modules - uses remote compile server)
@@ -1025,6 +1052,9 @@ ios-jit-device-core:
 .PHONY: ios-jit-device-core-libs
 ios-jit-device-core-libs: ios-jit-device-core
 	@echo "Device JIT libraries already in place from ios-bundle..."
+	@# Clean old libs to avoid stale ABI issues
+	@rm -f SdfViewerMobile/build-iphoneos-jit/libjank_aot.a 2>/dev/null || true
+	@rm -f SdfViewerMobile/build-iphoneos-jit/libfolly.a 2>/dev/null || true
 	@# ios-bundle already creates libjank_aot.a with core libs + JIT init
 	@# Just need to copy libfolly.a and create libllvm_merged.a
 	@if [ -f "$(JANK_SRC)/build-ios-jit-device/libfolly.a" ]; then \
@@ -1056,8 +1086,12 @@ ios-jit-device-project: ios-jit-device-core-libs ios-jit-sync-sources
 ios-jit-device-build: ios-jit-sync-sources ios-jit-pch-device ios-jit-device-project
 	@echo "Building iOS JIT app for device..."
 	@echo "(If signing fails, open Xcode first: open SdfViewerMobile/SdfViewerMobile-JIT-Device.xcodeproj)"
-	@# Clean Xcode's cached object files for jank_aot_init to ensure fresh rebuild
+	@# Clean Xcode's cached object files that might depend on jank headers
+	@# This ensures changes to rtti.hpp, prelude.hpp, etc. are picked up
 	@rm -rf ~/Library/Developer/Xcode/DerivedData/SdfViewerMobile-JIT-Device-*/Build/Intermediates.noindex/SdfViewerMobile-JIT-Device.build/Debug-iphoneos/SdfViewerMobile-JIT-Device.build/Objects-normal/arm64/jank_aot_init.* 2>/dev/null || true
+	@rm -rf ~/Library/Developer/Xcode/DerivedData/SdfViewerMobile-JIT-Device-*/Build/Intermediates.noindex/SdfViewerMobile-JIT-Device.build/Debug-iphoneos/SdfViewerMobile-JIT-Device.build/Objects-normal/arm64/sdf_viewer_ios.* 2>/dev/null || true
+	@# Touch main source file to trigger rebuild if headers changed
+	@touch SdfViewerMobile/sdf_viewer_ios.mm 2>/dev/null || true
 	cd SdfViewerMobile && xcodebuild \
 		-project SdfViewerMobile-JIT-Device.xcodeproj \
 		-scheme SdfViewerMobile-JIT-Device \
