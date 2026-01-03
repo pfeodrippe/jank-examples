@@ -1051,12 +1051,26 @@ ios-jit-device-core:
 # Note: ios-bundle puts everything in SdfViewerMobile/build-iphoneos-jit/ already
 .PHONY: ios-jit-device-core-libs
 ios-jit-device-core-libs: ios-jit-device-core
-	@echo "Device JIT libraries already in place from ios-bundle..."
+	@echo "Creating libjank_aot.a from locally generated object files..."
 	@# Clean old libs to avoid stale ABI issues
 	@rm -f SdfViewerMobile/build-iphoneos-jit/libjank_aot.a 2>/dev/null || true
 	@rm -f SdfViewerMobile/build-iphoneos-jit/libfolly.a 2>/dev/null || true
-	@# ios-bundle already creates libjank_aot.a with core libs + JIT init
-	@# Just need to copy libfolly.a and create libllvm_merged.a
+	@if [ ! -f "SdfViewerMobile/build-iphoneos-jit/libjank.a" ]; then \
+		echo "ERROR: JIT-only libraries not found!"; \
+		echo "Run 'make ios-jit-device-core' first."; \
+		exit 1; \
+	fi
+	@# Create libjank_aot.a from locally generated core libs + nREPL server + jank_aot_init.o
+	@ar -crs SdfViewerMobile/build-iphoneos-jit/libjank_aot.a \
+		SdfViewerMobile/build-iphoneos-jit/obj/clojure_core_generated.o \
+		SdfViewerMobile/build-iphoneos-jit/obj/clojure_set_generated.o \
+		SdfViewerMobile/build-iphoneos-jit/obj/clojure_string_generated.o \
+		SdfViewerMobile/build-iphoneos-jit/obj/clojure_walk_generated.o \
+		SdfViewerMobile/build-iphoneos-jit/obj/clojure_template_generated.o \
+		SdfViewerMobile/build-iphoneos-jit/obj/clojure_test_generated.o \
+		SdfViewerMobile/build-iphoneos-jit/obj/jank_nrepl_server_server_generated.o \
+		SdfViewerMobile/build-iphoneos-jit/obj/jank_aot_init.o
+	@# Copy libfolly.a from jank build
 	@if [ -f "$(JANK_SRC)/build-ios-jit-device/libfolly.a" ]; then \
 		cp $(JANK_SRC)/build-ios-jit-device/libfolly.a SdfViewerMobile/build-iphoneos-jit/; \
 	elif [ -f "$(JANK_SRC)/build-ios-device-jit/libfolly.a" ]; then \

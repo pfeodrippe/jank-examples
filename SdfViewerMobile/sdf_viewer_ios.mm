@@ -26,6 +26,7 @@
 #include <gc.h>
 #include <jank/runtime/context.hpp>
 #include <jank/runtime/core.hpp>
+#include <jank/runtime/core/meta.hpp>
 #include <jank/runtime/behavior/callable.hpp>
 #include <jank/runtime/module/loader.hpp>
 #include <jank/error.hpp>
@@ -362,8 +363,7 @@ static bool init_jank_runtime_impl() {
 
 // Call the jank-exported -main function (actual implementation)
 static void call_jank_main_impl() {
-    // TEMPORARILY COMMENTED OUT FOR DEBUGGING - LET EXCEPTIONS CRASH TO SEE FULL STACK IN XCODE
-    // try {
+    try {
         // Enable verbose JIT logging to see what functions are being compiled
         std::cout << "[jank] Enabling verbose JIT logging..." << std::endl;
         // Note: You may need to set an environment variable or jank option for this
@@ -399,7 +399,6 @@ static void call_jank_main_impl() {
         // Call it using dynamic_call (no args)
         std::cout << "[jank] Calling vybe.sdf.ios/-main..." << std::endl;
         jank::runtime::dynamic_call(var.expect_ok()->deref());
-    /* TEMPORARILY COMMENTED OUT FOR DEBUGGING
     } catch (jtl::ref<jank::error::base> const& e) {
         // Enhanced error display with stack traces!
         std::cerr << "\n";
@@ -448,6 +447,9 @@ static void call_jank_main_impl() {
             e->trace->print();
         }
 
+        // Print jank execution trace
+        std::cerr << jank::runtime::debug_trace_dump();
+
         std::cerr << "╚══════════════════════════════════════════════════════════════\n";
         std::cerr << "\n";
     } catch (jtl::immutable_string const& e) {
@@ -456,6 +458,7 @@ static void call_jank_main_impl() {
         std::cerr << "║ jank Error (string exception)\n";
         std::cerr << "╠══════════════════════════════════════════════════════════════\n";
         std::cerr << "║ " << e << "\n";
+        std::cerr << jank::runtime::debug_trace_dump();
         std::cerr << "╚══════════════════════════════════════════════════════════════\n";
         std::cerr << "\n";
     } catch (const std::exception& e) {
@@ -501,6 +504,10 @@ static void call_jank_main_impl() {
             std::cerr << "║ " << frame_str << "\n";
         }
         free(strs);
+
+        // Print jank execution trace
+        std::cerr << jank::runtime::debug_trace_dump();
+
         std::cerr << "╚══════════════════════════════════════════════════════════════\n";
         std::cerr << "\n";
     } catch (...) {
@@ -510,10 +517,10 @@ static void call_jank_main_impl() {
         std::cerr << "╠══════════════════════════════════════════════════════════════\n";
         std::cerr << "║ An unknown exception was thrown.\n";
         std::cerr << "║ This could be a non-standard exception type.\n";
+        std::cerr << jank::runtime::debug_trace_dump();
         std::cerr << "╚══════════════════════════════════════════════════════════════\n";
         std::cerr << "\n";
     }
-    END OF COMMENTED OUT CATCH BLOCKS */
 }
 
 // Call jank main - runs on main thread for UIKit compatibility

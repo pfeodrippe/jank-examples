@@ -73,19 +73,21 @@
   (let [cam (state/get-camera)
         edit (state/get-edit-mode)
         objs (state/get-objects)
-        io (imgui/GetIO)
-        fps (cpp/.-Framerate io)]
+        ;; TODO: re-enable fps access once JIT nil issue is fixed
+        ;; io (imgui/GetIO)
+        ;; fps (or (cpp/.-Framerate io) 0.0)
+        fps 60.0]
     (imgui/SetNextWindowPos (imgui-h/ImVec2. (cpp/float. 10.0) (cpp/float. 10.0))
                             imgui-h/ImGuiCond_FirstUseEver)
     (imgui/Begin "SDF Debug")
-    (imgui/Text #cpp "FPS: %.1f" fps)
+    (imgui/Text #cpp "FPS: %.1f" (cpp/float. fps))
     (imgui/Text (str "Greeting: " (greeting/get-greeting)))
     (imgui/Text (str "Version: " (greeting/get-version)))
     ;; SDF compute status with detailed breakdown
     (let [mesh-visible (sdfx/get_mesh_preview_visible)
           mesh-solid (sdfx/get_mesh_render_solid)
           mesh-initialized (sdfx/get_mesh_pipeline_initialized)
-          mesh-has-indices (> (sdfx/get_mesh_preview_triangle_count) 0)
+          mesh-has-indices (> (or (sdfx/get_mesh_preview_triangle_count) 0) 0)
           compute-skipped (and mesh-visible mesh-solid mesh-initialized mesh-has-indices)]
       (if compute-skipped
         (imgui/TextColored (imgui-h/ImVec4. (cpp/float. 0.0) (cpp/float. 1.0) (cpp/float. 0.0) (cpp/float. 1.0))
@@ -100,12 +102,12 @@
           (when-not mesh-has-indices (imgui/Text "  - no triangles")))))
     (imgui/Separator)
     (imgui/Text #cpp "Camera _20:")
-    (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (:distance cam)))
-    (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (:angle-x cam)))
-    (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (:angle-y cam)))
+    (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (or (:distance cam) 0.0)))
+    (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (or (:angle-x cam) 0.0)))
+    (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (or (:angle-y cam) 0.0)))
     (imgui/Separator)
     (imgui/Text #cpp "Edit Mode: %s" (if (:enabled edit) "ON" "OFF"))
-    (imgui/Text #cpp "Selected: %d" (cpp/int. (:selected-object edit)))
+    (imgui/Text #cpp "Selected: %d" (cpp/int. (or (:selected-object edit) -1)))
     (imgui/Separator)
     (imgui/Text #cpp "Objects: %d" (cpp/int. (count objs)))
     (imgui/Separator)
@@ -123,7 +125,7 @@
     (imgui/SliderFloat "Mesh Scale" (cpp/unbox *mesh-scale) (cpp/float. 0.1) (cpp/float. 3.0))
     (sdfx/set_mesh_scale (u/p->v *mesh-scale))
     ;; Resolution controls (step size scales with resolution)
-    (let [res (sdfx/get_mesh_preview_resolution)
+    (let [res (or (sdfx/get_mesh_preview_resolution) 64)
           step (cond
                  (< res 64) 8
                  (< res 128) 16
@@ -137,8 +139,8 @@
       (when (imgui/Button "+")
         (sdfx/set_mesh_preview_resolution (cpp/int. (+ res step)))))
     ;; Show current mesh stats
-    (let [verts (sdfx/get_mesh_preview_vertex_count)
-          tris (sdfx/get_mesh_preview_triangle_count)]
+    (let [verts (or (sdfx/get_mesh_preview_vertex_count) 0)
+          tris (or (sdfx/get_mesh_preview_triangle_count) 0)]
       (imgui/Text #cpp "  Verts: %d  Tris: %d" (cpp/int. verts) (cpp/int. tris)))
     ;; Mesh algorithm selection
     (imgui/Checkbox "Dual Contouring" (cpp/unbox *use-dual-contouring))
@@ -171,7 +173,7 @@
     (sdfx/set_mesh_use_vertex_colors (cpp/bool. (u/p->v *export-colors)))
     (imgui/Checkbox "Include UVs" (cpp/unbox *export-uvs))
     ;; GPU-based scene export using current resolution
-    (let [res (sdfx/get_mesh_preview_resolution)
+    (let [res (or (sdfx/get_mesh_preview_resolution) 64)
           inc-colors (u/p->v *export-colors)
           inc-uvs (u/p->v *export-uvs)]
       (when (imgui/Button "Export GLB")

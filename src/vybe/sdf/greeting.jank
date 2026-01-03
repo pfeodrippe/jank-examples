@@ -3,12 +3,16 @@
 ;; Simple namespace to test automatic module detection
 ;; This returns text that will be displayed in the ImGui panel
 
+;; Cache strings at load time to prevent JIT memory corruption
+(def ^:private greeting-str "Hello from vybe.sdf.greeting!!")
+(def ^:private version-str "v0.1.0-auto-detected")
+
 (defn get-greeting
   "Returns a greeting message to verify the module was loaded."
   []
-  "Hello from vybe.sdf.greeting!!")
+  greeting-str)
 
 (defn get-version
   "Returns a version string."
   []
-  "v0.1.0-auto-detected")
+  version-str)
