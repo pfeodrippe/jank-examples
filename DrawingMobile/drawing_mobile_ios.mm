@@ -270,38 +270,108 @@ struct ColorPreset {
     const char* name;
 };
 
-// Procreate-style color presets
-static const ColorPreset COLOR_PRESETS[] = {
-    {0.15f, 0.45f, 0.75f, "Blue"},       // Nice blue crayon (default)
-    {0.85f, 0.25f, 0.25f, "Red"},        // Red
-    {0.25f, 0.75f, 0.35f, "Green"},      // Green
-    {0.95f, 0.75f, 0.15f, "Yellow"},     // Yellow/Gold
-    {0.65f, 0.25f, 0.85f, "Purple"},     // Purple
-    {0.95f, 0.55f, 0.15f, "Orange"},     // Orange
-    {0.15f, 0.15f, 0.15f, "Black"},      // Near-black
-    {0.55f, 0.35f, 0.25f, "Brown"},      // Brown
-    {0.95f, 0.55f, 0.65f, "Pink"},       // Pink
-    {0.25f, 0.75f, 0.85f, "Cyan"},       // Cyan/Teal
+// =============================================================================
+// Color Picker - Grid-based color selection panel
+// =============================================================================
+
+// HSV to RGB conversion helper
+static void hsvToRgb(float h, float s, float v, float& r, float& g, float& b) {
+    if (s <= 0.0f) { r = g = b = v; return; }
+    float hh = h;
+    if (hh >= 360.0f) hh = 0.0f;
+    hh /= 60.0f;
+    int i = (int)hh;
+    float ff = hh - i;
+    float p = v * (1.0f - s);
+    float q = v * (1.0f - (s * ff));
+    float t = v * (1.0f - (s * (1.0f - ff)));
+    switch(i) {
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        default: r = v; g = p; b = q; break;
+    }
+}
+
+// Color picker configuration
+static const int COLOR_GRID_COLS = 6;
+static const int COLOR_GRID_ROWS = 5;
+static const float COLOR_SWATCH_SIZE = 50.0f;
+static const float COLOR_SWATCH_GAP = 6.0f;
+static const float COLOR_PICKER_PADDING = 12.0f;
+
+struct ColorPickerState {
+    bool isOpen;
+    float x, y;              // Panel position (top-left)
+    float width, height;     // Panel size
+    float currentR, currentG, currentB;  // Current selected color
 };
-static const int NUM_COLOR_PRESETS = sizeof(COLOR_PRESETS) / sizeof(COLOR_PRESETS[0]);
+
+// Generate color grid (hue varies by column, brightness by row)
+static void getGridColor(int col, int row, float& r, float& g, float& b) {
+    if (row == COLOR_GRID_ROWS - 1) {
+        // Bottom row: grayscale
+        float gray = (float)col / (COLOR_GRID_COLS - 1);
+        r = g = b = gray;
+    } else {
+        // Color rows: vary hue by column, saturation/brightness by row
+        float hue = (float)col / COLOR_GRID_COLS * 360.0f;
+        float sat = 0.85f;
+        float val = 1.0f - (float)row / (COLOR_GRID_ROWS - 1) * 0.6f;  // 1.0 to 0.4
+        hsvToRgb(hue, sat, val, r, g, b);
+    }
+}
 
 struct ColorButtonConfig {
-    float x, y;           // Position (center)
+    float x, y;           // Position (top-left)
     float size;           // Diameter
-    int currentColorIndex;
 };
 
 // Check if point is inside color button
 static bool isPointInColorButton(const ColorButtonConfig& btn, float px, float py) {
-    float dx = px - (btn.x + btn.size / 2.0f);
-    float dy = py - (btn.y + btn.size / 2.0f);
+    float cx = btn.x + btn.size / 2.0f;
+    float cy = btn.y + btn.size / 2.0f;
+    float dx = px - cx;
+    float dy = py - cy;
     return (dx*dx + dy*dy) <= (btn.size/2.0f * btn.size/2.0f);
 }
 
-// Draw color picker button (shows current color)
-static void drawColorButton(const ColorButtonConfig& btn) {
-    const ColorPreset& color = COLOR_PRESETS[btn.currentColorIndex];
+// Check if point is inside color picker panel
+static bool isPointInColorPicker(const ColorPickerState& picker, float px, float py) {
+    return picker.isOpen &&
+           px >= picker.x && px <= picker.x + picker.width &&
+           py >= picker.y && py <= picker.y + picker.height;
+}
 
+// Get which color swatch was tapped (-1 if none)
+static int getSwatchAtPoint(const ColorPickerState& picker, float px, float py) {
+    if (!picker.isOpen) return -1;
+
+    float gridX = picker.x + COLOR_PICKER_PADDING;
+    float gridY = picker.y + COLOR_PICKER_PADDING;
+
+    float relX = px - gridX;
+    float relY = py - gridY;
+
+    if (relX < 0 || relY < 0) return -1;
+
+    int col = (int)(relX / (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP));
+    int row = (int)(relY / (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP));
+
+    if (col >= COLOR_GRID_COLS || row >= COLOR_GRID_ROWS) return -1;
+
+    // Check if actually inside the swatch (not in gap)
+    float swatchLocalX = relX - col * (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP);
+    float swatchLocalY = relY - row * (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP);
+    if (swatchLocalX > COLOR_SWATCH_SIZE || swatchLocalY > COLOR_SWATCH_SIZE) return -1;
+
+    return row * COLOR_GRID_COLS + col;
+}
+
+// Draw color picker button (shows current color)
+static void drawColorButton(const ColorButtonConfig& btn, const ColorPickerState& picker) {
     // Outer ring (white)
     metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
                               1.0f, 1.0f, 1.0f, 1.0f, btn.size / 2.0f);
@@ -310,7 +380,33 @@ static void drawColorButton(const ColorButtonConfig& btn) {
     float innerMargin = 4.0f;
     float innerSize = btn.size - innerMargin * 2;
     metal_stamp_queue_ui_rect(btn.x + innerMargin, btn.y + innerMargin, innerSize, innerSize,
-                              color.r, color.g, color.b, 1.0f, innerSize / 2.0f);
+                              picker.currentR, picker.currentG, picker.currentB, 1.0f, innerSize / 2.0f);
+}
+
+// Draw color picker panel
+static void drawColorPicker(const ColorPickerState& picker) {
+    if (!picker.isOpen) return;
+
+    // Panel background (dark semi-transparent)
+    metal_stamp_queue_ui_rect(picker.x, picker.y, picker.width, picker.height,
+                              0.15f, 0.15f, 0.15f, 0.95f, 12.0f);
+
+    // Draw color grid
+    float gridX = picker.x + COLOR_PICKER_PADDING;
+    float gridY = picker.y + COLOR_PICKER_PADDING;
+
+    for (int row = 0; row < COLOR_GRID_ROWS; row++) {
+        for (int col = 0; col < COLOR_GRID_COLS; col++) {
+            float r, g, b;
+            getGridColor(col, row, r, g, b);
+
+            float swatchX = gridX + col * (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP);
+            float swatchY = gridY + row * (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP);
+
+            metal_stamp_queue_ui_rect(swatchX, swatchY, COLOR_SWATCH_SIZE, COLOR_SWATCH_SIZE,
+                                      r, g, b, 1.0f, 6.0f);
+        }
+    }
 }
 
 // Check if point is inside slider track area
@@ -411,23 +507,38 @@ static int metal_test_main() {
     };
 
     // =============================================================================
-    // Initialize Color Button (positioned below sliders)
+    // Initialize Color Button and Picker
     // =============================================================================
 
     const float COLOR_BUTTON_SIZE = 70.0f;
     ColorButtonConfig colorButton = {
         .x = SLIDER_MARGIN - (COLOR_BUTTON_SIZE - SLIDER_WIDTH) / 2.0f,  // Center under sliders
         .y = opacitySlider.y + opacitySlider.height + SLIDER_SPACING,
-        .size = COLOR_BUTTON_SIZE,
-        .currentColorIndex = 0  // Start with blue
+        .size = COLOR_BUTTON_SIZE
     };
+
+    // Calculate color picker panel size
+    float pickerWidth = COLOR_GRID_COLS * (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP) - COLOR_SWATCH_GAP + COLOR_PICKER_PADDING * 2;
+    float pickerHeight = COLOR_GRID_ROWS * (COLOR_SWATCH_SIZE + COLOR_SWATCH_GAP) - COLOR_SWATCH_GAP + COLOR_PICKER_PADDING * 2;
+
+    ColorPickerState colorPicker = {
+        .isOpen = false,
+        .x = colorButton.x + colorButton.size + 20.0f,  // Position to right of button
+        .y = colorButton.y - pickerHeight / 2.0f + colorButton.size / 2.0f,  // Center vertically with button
+        .width = pickerWidth,
+        .height = pickerHeight,
+        .currentR = 0.15f,  // Start with blue
+        .currentG = 0.45f,
+        .currentB = 0.75f
+    };
+
+    // Ensure picker stays on screen
+    if (colorPicker.y < 10.0f) colorPicker.y = 10.0f;
+    if (colorPicker.y + pickerHeight > height - 10.0f) colorPicker.y = height - pickerHeight - 10.0f;
 
     // Calculate initial brush values from slider positions
     float brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
     float brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
-
-    // Get current color from presets
-    const ColorPreset& initialColor = COLOR_PRESETS[colorButton.currentColorIndex];
 
     // Set brush settings - Huntsman Crayon with pressure dynamics
     metal_stamp_set_brush_type(1);  // Crayon brush!
@@ -436,7 +547,7 @@ static int metal_test_main() {
     metal_stamp_set_brush_opacity(brushOpacity);
     metal_stamp_set_brush_spacing(0.06f);  // Tight spacing for smooth strokes
     metal_stamp_set_brush_grain_scale(1.8f);  // Visible paper grain
-    metal_stamp_set_brush_color(initialColor.r, initialColor.g, initialColor.b, 1.0f);
+    metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
 
     // Pressure dynamics - Apple Pencil / touch pressure affects stroke
     metal_stamp_set_brush_size_pressure(0.8f);    // Pressure strongly affects size
@@ -501,12 +612,25 @@ static int metal_test_main() {
                         brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
                         metal_stamp_set_brush_opacity(brushOpacity);
                         std::cout << "Opacity slider: " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    } else if (isPointInColorPicker(colorPicker, x, y)) {
+                        // Check if tapped a color swatch
+                        int swatchIdx = getSwatchAtPoint(colorPicker, x, y);
+                        if (swatchIdx >= 0) {
+                            int col = swatchIdx % COLOR_GRID_COLS;
+                            int row = swatchIdx / COLOR_GRID_COLS;
+                            getGridColor(col, row, colorPicker.currentR, colorPicker.currentG, colorPicker.currentB);
+                            metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
+                            colorPicker.isOpen = false;  // Close picker after selection
+                            std::cout << "Color selected from picker" << std::endl;
+                        }
                     } else if (isPointInColorButton(colorButton, x, y)) {
-                        // Cycle to next color preset
-                        colorButton.currentColorIndex = (colorButton.currentColorIndex + 1) % NUM_COLOR_PRESETS;
-                        const ColorPreset& newColor = COLOR_PRESETS[colorButton.currentColorIndex];
-                        metal_stamp_set_brush_color(newColor.r, newColor.g, newColor.b, 1.0f);
-                        std::cout << "Color changed to: " << newColor.name << std::endl;
+                        // Toggle color picker panel
+                        colorPicker.isOpen = !colorPicker.isOpen;
+                        std::cout << "Color picker " << (colorPicker.isOpen ? "opened" : "closed") << std::endl;
+                    } else if (colorPicker.isOpen) {
+                        // Tap outside picker closes it
+                        colorPicker.isOpen = false;
+                        std::cout << "Color picker closed (tap outside)" << std::endl;
                     } else {
                         // Regular drawing
                         std::cout << "Touch down: " << x << ", " << y << " (pressure: " << pressure << ")" << std::endl;
@@ -614,12 +738,25 @@ static int metal_test_main() {
                         brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
                         metal_stamp_set_brush_opacity(brushOpacity);
                         std::cout << "Opacity slider (pen): " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    } else if (isPointInColorPicker(colorPicker, x, y)) {
+                        // Check if tapped a color swatch (pen)
+                        int swatchIdx = getSwatchAtPoint(colorPicker, x, y);
+                        if (swatchIdx >= 0) {
+                            int col = swatchIdx % COLOR_GRID_COLS;
+                            int row = swatchIdx / COLOR_GRID_COLS;
+                            getGridColor(col, row, colorPicker.currentR, colorPicker.currentG, colorPicker.currentB);
+                            metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
+                            colorPicker.isOpen = false;
+                            std::cout << "Color selected from picker (pen)" << std::endl;
+                        }
                     } else if (isPointInColorButton(colorButton, x, y)) {
-                        // Cycle to next color preset (pen)
-                        colorButton.currentColorIndex = (colorButton.currentColorIndex + 1) % NUM_COLOR_PRESETS;
-                        const ColorPreset& newColor = COLOR_PRESETS[colorButton.currentColorIndex];
-                        metal_stamp_set_brush_color(newColor.r, newColor.g, newColor.b, 1.0f);
-                        std::cout << "Color changed to (pen): " << newColor.name << std::endl;
+                        // Toggle color picker panel (pen)
+                        colorPicker.isOpen = !colorPicker.isOpen;
+                        std::cout << "Color picker " << (colorPicker.isOpen ? "opened" : "closed") << " (pen)" << std::endl;
+                    } else if (colorPicker.isOpen) {
+                        // Tap outside picker closes it (pen)
+                        colorPicker.isOpen = false;
+                        std::cout << "Color picker closed (tap outside, pen)" << std::endl;
                     } else {
                         // Drawing with Apple Pencil
                         metal_stamp_begin_stroke(x, y, pen_pressure);
@@ -718,7 +855,9 @@ static int metal_test_main() {
         // Opacity slider - gray/white tint
         drawVerticalSlider(opacitySlider, height, 0.6f, 0.6f, 0.6f, "Opacity");
         // Color picker button
-        drawColorButton(colorButton);
+        drawColorButton(colorButton, colorPicker);
+        // Color picker panel (if open)
+        drawColorPicker(colorPicker);
 
         // Present with UI overlay
         metal_stamp_present();
