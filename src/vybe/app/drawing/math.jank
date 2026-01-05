@@ -1,0 +1,200 @@
+;; Bezier math and stroke tessellation
+;; ALL IN JANK - converts strokes to triangles for GPU
+
+(ns vybe.app.drawing.math
+  (:require [vybe.app.drawing.core :as core]
+            ["cmath" :as cmath :scope ""]))
+
+;; =============================================================================
+;; Vector math helpers
+;; =============================================================================
+
+(defn v+ [[x1 y1] [x2 y2]]
+  [(+ x1 x2) (+ y1 y2)])
+
+(defn v- [[x1 y1] [x2 y2]]
+  [(- x1 x2) (- y1 y2)])
+
+(defn v* [[x y] s]
+  [(* x s) (* y s)])
+
+(defn v-len [[x y]]
+  (cmath/sqrt (+ (* x x) (* y y))))
+
+(defn v-normalize [[x y]]
+  (let [len (v-len [x y])]
+    (if (> len 0.0001)
+      [(/ x len) (/ y len)]
+      [1.0 0.0])))  ;; Return a default direction instead of [0 0]
+
+(defn v-perp [[x y]]
+  "Perpendicular vector (90 degrees CCW)"
+  [(- y) x])
+
+;; =============================================================================
+;; Catmull-Rom to Bezier conversion
+;; =============================================================================
+
+(defn catmull-rom->bezier
+  "Convert 4 Catmull-Rom control points to cubic Bezier control points.
+   Returns [p1 c1 c2 p2] where p1,p2 are endpoints and c1,c2 are control points."
+  [p0 p1 p2 p3]
+  (let [alpha (/ 1.0 6.0)
+        c1 (v+ p1 (v* (v- p2 p0) alpha))
+        c2 (v- p2 (v* (v- p3 p1) alpha))]
+    [p1 c1 c2 p2]))
+
+;; =============================================================================
+;; Bezier curve evaluation
+;; =============================================================================
+
+(defn bezier-point
+  "Evaluate cubic Bezier at parameter t (0-1)."
+  [[x0 y0] [x1 y1] [x2 y2] [x3 y3] t]
+  (let [t2 (* t t)
+        t3 (* t2 t)
+        mt (- 1.0 t)
+        mt2 (* mt mt)
+        mt3 (* mt2 mt)
+        b0 mt3
+        b1 (* 3.0 mt2 t)
+        b2 (* 3.0 mt t2)
+        b3 t3]
+    [(+ (* b0 x0) (* b1 x1) (* b2 x2) (* b3 x3))
+     (+ (* b0 y0) (* b1 y1) (* b2 y2) (* b3 y3))]))
+
+(defn bezier-tangent
+  "Evaluate tangent of cubic Bezier at parameter t."
+  [[x0 y0] [x1 y1] [x2 y2] [x3 y3] t]
+  (let [t2 (* t t)
+        mt (- 1.0 t)
+        mt2 (* mt mt)
+        d0 (* -3.0 mt2)
+        d1 (- (* 3.0 mt2) (* 6.0 mt t))
+        d2 (- (* 6.0 mt t) (* 3.0 t2))
+        d3 (* 3.0 t2)]
+    (v-normalize
+     [(+ (* d0 x0) (* d1 x1) (* d2 x2) (* d3 x3))
+      (+ (* d0 y0) (* d1 y1) (* d2 y2) (* d3 y3))])))
+
+;; =============================================================================
+;; Stroke to curve segments (using loop/recur to avoid lazy seq issues)
+;; =============================================================================
+
+(defn points->beziers
+  "Convert stroke points to Bezier curve segments."
+  [points]
+  (let [n (count points)]
+    (if (< n 2)
+      []
+      (let [pts (mapv (fn [p] [(:x p) (:y p)]) points)
+            pressures (mapv :pressure points)]
+        (if (= n 2)
+          ;; Just two points - make a straight line segment
+          (let [[p0 p1] pts
+                mid (v* (v+ p0 p1) 0.5)]
+            [{:p0 p0 :p1 mid :p2 mid :p3 p1
+              :w0 (nth pressures 0) :w1 (nth pressures 1)}])
+          ;; Multiple points - use loop/recur
+          (loop [i 0
+                 result []]
+            (if (>= i (dec n))
+              result
+              (let [i0 (max 0 (dec i))
+                    i1 i
+                    i2 (inc i)
+                    i3 (min (dec n) (+ i 2))
+                    [p1 c1 c2 p2] (catmull-rom->bezier
+                                   (nth pts i0) (nth pts i1) (nth pts i2) (nth pts i3))]
+                (recur (inc i)
+                       (conj result
+                             {:p0 p1 :p1 c1 :p2 c2 :p3 p2
+                              :w0 (nth pressures i1) :w1 (nth pressures i2)}))))))))))
+
+;; =============================================================================
+;; Bezier to triangles (tessellation)
+;; =============================================================================
+
+(defn subdivide-bezier
+  "Subdivide a Bezier segment into n points with widths."
+  [{:keys [p0 p1 p2 p3 w0 w1]} n]
+  (loop [i 0
+         result []]
+    (if (> i n)
+      result
+      (let [t (/ (float i) (float n))
+            pos (bezier-point p0 p1 p2 p3 t)
+            tangent (bezier-tangent p0 p1 p2 p3 t)
+            perp (v-perp tangent)
+            width (core/lerp w0 w1 t)]
+        (recur (inc i)
+               (conj result {:pos pos :perp perp :width width}))))))
+
+(defn ribbon->triangles
+  "Convert a ribbon to triangle vertices."
+  [ribbon base-width [r g b a]]
+  (let [n (count ribbon)]
+    (if (< n 2)
+      []
+      (loop [i 0
+             result []]
+        (if (>= i (dec n))
+          result
+          (let [pt1 (nth ribbon i)
+                pt2 (nth ribbon (inc i))
+                {pos1 :pos perp1 :perp w1 :width} pt1
+                {pos2 :pos perp2 :perp w2 :width} pt2
+                half-w1 (* 0.5 base-width w1)
+                half-w2 (* 0.5 base-width w2)
+                tl (v+ pos1 (v* perp1 half-w1))
+                bl (v- pos1 (v* perp1 half-w1))
+                tr (v+ pos2 (v* perp2 half-w2))
+                br (v- pos2 (v* perp2 half-w2))]
+            (recur (inc i)
+                   (-> result
+                       (conj {:x (first tl) :y (second tl) :r r :g g :b b :a a})
+                       (conj {:x (first bl) :y (second bl) :r r :g g :b b :a a})
+                       (conj {:x (first tr) :y (second tr) :r r :g g :b b :a a})
+                       (conj {:x (first tr) :y (second tr) :r r :g g :b b :a a})
+                       (conj {:x (first bl) :y (second bl) :r r :g g :b b :a a})
+                       (conj {:x (first br) :y (second br) :r r :g g :b b :a a})))))))))
+
+;; =============================================================================
+;; Main stroke->triangles function
+;; =============================================================================
+
+(defn stroke->triangles
+  "Convert a stroke to GPU-ready triangle vertices."
+  [stroke]
+  (let [points (:points stroke)]
+    (if (< (count points) 2)
+      []
+      (let [beziers (points->beziers points)
+            [r g b a] (:color stroke)
+            base-width (:width stroke)
+            subdivisions 8]
+        (if (empty? beziers)
+          []
+          ;; Subdivide each bezier and collect all ribbon points
+          (let [ribbon (loop [bez-idx 0
+                              all-points []]
+                         (if (>= bez-idx (count beziers))
+                           all-points
+                           (let [bez (nth beziers bez-idx)
+                                 sub-points (subdivide-bezier bez subdivisions)]
+                             (recur (inc bez-idx)
+                                    (into all-points sub-points)))))]
+            (ribbon->triangles ribbon base-width [r g b a])))))))
+
+(defn strokes->triangles
+  "Convert multiple strokes to triangle vertices."
+  [strokes]
+  (if (empty? strokes)
+    []
+    (loop [i 0
+           result []]
+      (if (>= i (count strokes))
+        result
+        (let [triangles (stroke->triangles (nth strokes i))]
+          (recur (inc i)
+                 (into result triangles)))))))

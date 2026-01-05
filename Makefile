@@ -69,6 +69,7 @@ help:
 	@echo "  make sdf              - Run SDF Vulkan viewer (dev mode)"
 	@echo "  make sdf-clean        - Run SDF viewer with fresh cache"
 	@echo "  make sdf-standalone   - Build standalone SDF viewer app"
+	@echo "  make drawing          - Run Drawing Canvas app (Looom-like)"
 	@echo "  make integrated       - Run integrated demo (Raylib+ImGui+Jolt+Flecs)"
 	@echo "  make imgui            - Run ImGui demo"
 	@echo "  make jolt             - Run Jolt physics demo"
@@ -348,6 +349,11 @@ sdf-clean: clean-cache build-sdf-deps
 # NOTE: This is the SLOW integrated server - use ios-compile-server instead
 sdf-ios-server: clean-cache build-sdf-deps
 	./bin/run_sdf.sh --ios-compile-server 5570 --ios-resource-dir $(PWD)/SdfViewerMobile/jank-resources
+
+# Drawing canvas app (Phase 1)
+.PHONY: drawing
+drawing:
+	./bin/run_drawing.sh
 
 # List vybe modules transitively used by vybe.sdf.ios
 .PHONY: check-jank-modules

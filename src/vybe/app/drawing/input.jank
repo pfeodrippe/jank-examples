@@ -1,0 +1,61 @@
+;; Input handling for drawing app
+;; ALL IN JANK - processes events from native layer
+
+(ns vybe.app.drawing.input
+  (:require
+   ["vybe/app/drawing/native/drawing_canvas.hpp" :as canvas :scope "dc"]
+   [vybe.app.drawing.state :as state]))
+
+;; =============================================================================
+;; Event type constants
+;; =============================================================================
+
+(def +event-down+ 0)
+(def +event-move+ 1)
+(def +event-up+ 2)
+
+;; =============================================================================
+;; Process input events from native layer
+;; =============================================================================
+
+(defn process-events!
+  "Process all pending input events. Call once per frame."
+  []
+  (let [count (canvas/get_event_count)]
+    (dotimes [i count]
+      (let [event-type (canvas/get_event_type i)
+            x (canvas/get_event_x i)
+            y (canvas/get_event_y i)
+            pressure (canvas/get_event_pressure i)]
+        (case event-type
+          0 (state/start-drawing! x y pressure)   ; down
+          1 (state/add-drawing-point! x y pressure) ; move
+          2 (state/end-drawing!)                   ; up
+          nil)))))
+
+;; =============================================================================
+;; Coordinate utilities
+;; =============================================================================
+
+(defn screen->canvas
+  "Convert screen coordinates to canvas coordinates.
+   (For now, 1:1 mapping, but can add pan/zoom later)"
+  [x y]
+  [x y])
+
+(defn canvas->screen
+  "Convert canvas coordinates to screen coordinates."
+  [x y]
+  [x y])
+
+;; =============================================================================
+;; Pressure simulation for devices without pressure
+;; =============================================================================
+
+(defn velocity->pressure
+  "Convert velocity to simulated pressure.
+   Fast movement = thin line, slow movement = thick line."
+  [velocity max-velocity]
+  (let [normalized (min 1.0 (/ velocity max-velocity))]
+    ;; Invert: fast = thin (low pressure)
+    (- 1.0 (* normalized 0.7))))

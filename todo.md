@@ -45,15 +45,17 @@
     - [x] device
   - [x] emacs nrepl
     - [x] build in ci
-- [ ] ios device projects
+- [x] ios device projects
   - [x] aot sim
   - [x] aot device
-  - [ ] jit sim
-  - [ ] jit device
+  - [x] jit sim
+  - [x] jit device
 - [ ] ipad simple animation app
   - [ ] loom-like control
   - [ ] but with shaders
   - [ ] export
+  - [ ] 3d support
+  - [ ] macos (nREPL?) integration
 - [ ] dynamic dependencies (e.g. using clang-repl) at runtime (without using precompiled shared objs)
 - [ ] add jolt to sdf project
 - [ ] ios

@@ -1,0 +1,153 @@
+;; Core data structures for drawing app
+;; ALL IN JANK - no C++ here!
+
+(ns vybe.app.drawing.core
+  (:require ["cmath" :as cmath :scope ""]
+            ["vybe/app/drawing/native/drawing_canvas.hpp" :as canvas :scope "dc"]))
+
+;; =============================================================================
+;; Simple ID generator (jank doesn't have random-uuid)
+;; =============================================================================
+
+(defonce *id-counter (atom 0))
+
+(defn next-id
+  "Generate a unique ID."
+  []
+  (swap! *id-counter inc))
+
+;; =============================================================================
+;; Stroke Point - a single sample from touch/pencil input
+;; =============================================================================
+
+(defn make-point
+  "Create a stroke point from input coordinates and pressure."
+  [x y pressure timestamp]
+  {:x x
+   :y y
+   :pressure pressure  ; 0.0-1.0, affects stroke width
+   :timestamp timestamp})
+
+;; =============================================================================
+;; Stroke - a complete drawn stroke (sequence of points)
+;; =============================================================================
+
+(defn make-stroke
+  "Create a new empty stroke with the given color and width."
+  [color width]
+  {:id (next-id)
+   :points []
+   :color color      ; [r g b a]
+   :width width      ; base width in pixels
+   :fill? false})    ; line mode (not fill)
+
+(defn add-point-to-stroke
+  "Add a point to a stroke, returning updated stroke."
+  [stroke point]
+  (update stroke :points conj point))
+
+(defn stroke-point-count
+  "Get number of points in a stroke."
+  [stroke]
+  (count (:points stroke)))
+
+;; =============================================================================
+;; Frame - a single animation frame containing strokes
+;; =============================================================================
+
+(defn make-frame
+  "Create an empty frame."
+  []
+  {:id (next-id)
+   :strokes []})
+
+(defn add-stroke-to-frame
+  "Add a completed stroke to a frame."
+  [frame stroke]
+  (update frame :strokes conj stroke))
+
+(defn frame-stroke-count
+  "Get number of strokes in a frame."
+  [frame]
+  (count (:strokes frame)))
+
+;; =============================================================================
+;; Thread - a layer with its own timeline (Looom concept)
+;; =============================================================================
+
+(defn make-thread
+  "Create a new thread with default settings."
+  [name color]
+  {:id (next-id)
+   :name name
+   :frames [(make-frame)]  ; Start with one empty frame
+   :current-frame 0
+   :fps 8.0               ; Frames per second
+   :color color           ; [r g b a] - thread color
+   :line-width 4.0        ; Default stroke width
+   :opacity 1.0
+   :visible? true
+   :playing? false
+   :play-mode :forward})  ; :forward :backward :pingpong :random
+
+(defn thread-frame-count
+  "Get number of frames in a thread."
+  [thread]
+  (count (:frames thread)))
+
+(defn get-current-frame
+  "Get the current frame from a thread."
+  [thread]
+  (get (:frames thread) (:current-frame thread)))
+
+(defn update-current-frame
+  "Update the current frame in a thread."
+  [thread f & args]
+  (let [idx (:current-frame thread)]
+    (apply update-in thread [:frames idx] f args)))
+
+;; =============================================================================
+;; Weave - a complete project (collection of threads)
+;; =============================================================================
+
+(defn make-weave
+  "Create a new weave (project) with one thread."
+  [name]
+  {:id (next-id)
+   :name name
+   :threads [(make-thread "Thread 1" [0.2 0.2 0.2 1.0])]  ; Dark gray default
+   :active-thread 0
+   :bg-color [0.95 0.95 0.92 1.0]  ; Off-white paper
+   :global-speed 1.0})
+
+(defn get-active-thread
+  "Get the currently active thread from a weave."
+  [weave]
+  (get (:threads weave) (:active-thread weave)))
+
+(defn update-active-thread
+  "Update the active thread in a weave."
+  [weave f & args]
+  (let [idx (:active-thread weave)]
+    (apply update-in weave [:threads idx] f args)))
+
+;; =============================================================================
+;; Utility functions
+;; =============================================================================
+
+(defn point-distance
+  "Calculate distance between two points."
+  [p1 p2]
+  (let [dx (- (:x p2) (:x p1))
+        dy (- (:y p2) (:y p1))]
+    (cmath/sqrt (+ (* dx dx) (* dy dy)))))
+
+(defn lerp
+  "Linear interpolation between a and b."
+  [a b t]
+  (+ a (* (- b a) t)))
+
+(defn clamp
+  "Clamp value between min and max."
+  [v min-v max-v]
+  (max min-v (min max-v v)))

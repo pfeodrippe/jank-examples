@@ -1,0 +1,137 @@
+;; State management for drawing app
+;; ALL IN JANK - using atoms for mutable state
+
+(ns vybe.app.drawing.state
+  (:require [vybe.app.drawing.core :as core]
+            ["vybe/app/drawing/native/drawing_canvas.hpp" :as canvas :scope "dc"]))
+
+;; =============================================================================
+;; Global state atoms
+;; =============================================================================
+
+;; The current weave (project)
+(defonce *weave (atom (core/make-weave "Untitled")))
+
+;; Current stroke being drawn ({} empty map when not drawing)
+(defonce *current-stroke (atom {}))
+
+;; Are we currently drawing?
+(defonce *drawing? (atom false))
+
+;; Undo/redo history
+(defonce *history (atom []))
+(defonce *history-index (atom -1))
+
+;; =============================================================================
+;; Weave accessors
+;; =============================================================================
+
+(defn get-weave []
+  @*weave)
+
+(defn get-active-thread []
+  (core/get-active-thread @*weave))
+
+(defn get-current-frame []
+  (core/get-current-frame (get-active-thread)))
+
+(defn get-bg-color []
+  (:bg-color @*weave))
+
+(defn get-thread-color []
+  (:color (get-active-thread)))
+
+(defn get-line-width []
+  (:line-width (get-active-thread)))
+
+;; =============================================================================
+;; Drawing state
+;; =============================================================================
+
+(defn drawing? []
+  @*drawing?)
+
+(defn start-drawing! [x y pressure]
+  (let [thread (get-active-thread)
+        stroke (core/make-stroke (:color thread) (:line-width thread))
+        point (core/make-point x y pressure (canvas/get_time_ms))]
+    (reset! *current-stroke (core/add-point-to-stroke stroke point))
+    (reset! *drawing? true)))
+
+(defn add-drawing-point! [x y pressure]
+  (when @*drawing?
+    (let [point (core/make-point x y pressure (canvas/get_time_ms))]
+      (swap! *current-stroke core/add-point-to-stroke point))))
+
+(defn end-drawing! []
+  (when @*drawing?
+    (let [stroke @*current-stroke]
+      ;; Only add stroke if it has enough points
+      (when (> (core/stroke-point-count stroke) 1)
+        (swap! *weave core/update-active-thread
+               core/update-current-frame
+               core/add-stroke-to-frame stroke))
+      (reset! *current-stroke {})
+      (reset! *drawing? false))))
+
+(defn get-current-stroke []
+  @*current-stroke)
+
+;; =============================================================================
+;; All strokes for rendering (current frame + in-progress stroke)
+;; =============================================================================
+
+(defn get-all-strokes-to-render []
+  "Get all strokes that need to be rendered this frame."
+  (let [frame-strokes (:strokes (get-current-frame))
+        current @*current-stroke]
+    (if (empty? current)
+      frame-strokes
+      (conj frame-strokes current))))
+
+;; =============================================================================
+;; Thread/frame manipulation
+;; =============================================================================
+
+(defn set-thread-color! [color]
+  (swap! *weave core/update-active-thread assoc :color color))
+
+(defn set-line-width! [width]
+  (swap! *weave core/update-active-thread assoc :line-width width))
+
+(defn add-frame! []
+  (swap! *weave core/update-active-thread
+         (fn [thread]
+           (let [new-frame (core/make-frame)
+                 frames (:frames thread)
+                 idx (inc (:current-frame thread))]
+             (-> thread
+                 (update :frames #(vec (concat (take idx %) [new-frame] (drop idx %))))
+                 (assoc :current-frame idx))))))
+
+(defn next-frame! []
+  (swap! *weave core/update-active-thread
+         (fn [thread]
+           (let [max-idx (dec (count (:frames thread)))
+                 new-idx (min max-idx (inc (:current-frame thread)))]
+             (assoc thread :current-frame new-idx)))))
+
+(defn prev-frame! []
+  (swap! *weave core/update-active-thread
+         (fn [thread]
+           (let [new-idx (max 0 (dec (:current-frame thread)))]
+             (assoc thread :current-frame new-idx)))))
+
+;; =============================================================================
+;; Clear/reset
+;; =============================================================================
+
+(defn clear-current-frame! []
+  (swap! *weave core/update-active-thread
+         core/update-current-frame
+         assoc :strokes []))
+
+(defn new-weave! [name]
+  (reset! *weave (core/make-weave name))
+  (reset! *current-stroke {})
+  (reset! *drawing? false))
