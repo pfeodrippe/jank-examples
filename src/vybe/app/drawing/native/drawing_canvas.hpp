@@ -55,6 +55,10 @@ struct CanvasState {
     int height = 768;
     bool running = true;
 
+    // Offscreen canvas texture (for caching finished strokes)
+    SDL_Texture* canvas_texture = nullptr;
+    bool canvas_dirty = true;  // Need to clear on first use
+
     // Vertex buffer (CPU-side, we'll render triangles via SDL)
     std::vector<Vertex2D> vertices;
 
@@ -64,6 +68,12 @@ struct CanvasState {
 
     // Background color
     float bgColor[4] = {0.95f, 0.95f, 0.92f, 1.0f};  // Off-white paper color
+
+    // Frame timing (for performance measurement)
+    uint64_t frame_start_time = 0;
+    uint64_t last_frame_time = 0;  // Time for last complete frame (ns)
+    double avg_frame_time = 0.0;   // Rolling average (ms)
+    int frame_count = 0;
 
     bool initialized = false;
 };
@@ -120,6 +130,19 @@ inline bool init(int width, int height, const char* title) {
     // Enable blending for transparency
     SDL_SetRenderDrawBlendMode(s->renderer, SDL_BLENDMODE_BLEND);
 
+    // Create offscreen canvas texture for caching finished strokes
+    s->canvas_texture = SDL_CreateTexture(s->renderer,
+        SDL_PIXELFORMAT_RGBA8888,
+        SDL_TEXTUREACCESS_TARGET,
+        width, height);
+    if (!s->canvas_texture) {
+        std::cerr << "[drawing_canvas] Failed to create canvas texture: " << SDL_GetError() << std::endl;
+        // Non-fatal, we can still render without caching
+    } else {
+        SDL_SetTextureBlendMode(s->canvas_texture, SDL_BLENDMODE_BLEND);
+        s->canvas_dirty = true;
+    }
+
     // Reserve space for vertices
     s->vertices.reserve(MAX_VERTICES);
 
@@ -136,6 +159,9 @@ inline void cleanup() {
     auto* s = get_state();
     if (!s) return;
 
+    if (s->canvas_texture) {
+        SDL_DestroyTexture(s->canvas_texture);
+    }
     if (s->renderer) {
         SDL_DestroyRenderer(s->renderer);
     }
@@ -348,6 +374,94 @@ inline void set_bg_color(float r, float g, float b, float a) {
 }
 
 // =============================================================================
+// Canvas Texture (for caching finished strokes)
+// =============================================================================
+
+// Clear the canvas texture to background color
+inline void clear_canvas() {
+    auto* s = get_state();
+    if (!s || !s->canvas_texture) return;
+
+    SDL_SetRenderTarget(s->renderer, s->canvas_texture);
+    SDL_SetRenderDrawColor(s->renderer,
+                           (Uint8)(s->bgColor[0] * 255),
+                           (Uint8)(s->bgColor[1] * 255),
+                           (Uint8)(s->bgColor[2] * 255),
+                           (Uint8)(s->bgColor[3] * 255));
+    SDL_RenderClear(s->renderer);
+    SDL_SetRenderTarget(s->renderer, nullptr);
+    s->canvas_dirty = false;
+}
+
+// Start rendering to canvas texture (for finished strokes)
+inline void begin_canvas_render() {
+    auto* s = get_state();
+    if (!s || !s->canvas_texture) return;
+
+    // Clear on first use
+    if (s->canvas_dirty) {
+        clear_canvas();
+    }
+
+    SDL_SetRenderTarget(s->renderer, s->canvas_texture);
+}
+
+// Stop rendering to canvas texture
+inline void end_canvas_render() {
+    auto* s = get_state();
+    if (!s) return;
+
+    SDL_SetRenderTarget(s->renderer, nullptr);
+}
+
+// Render vertices to current target (screen or texture)
+inline void render_vertices() {
+    auto* s = get_state();
+    if (!s || !s->renderer || s->vertices.empty()) return;
+
+    // Convert our vertices to SDL_Vertex format
+    std::vector<SDL_Vertex> sdl_verts;
+    sdl_verts.reserve(s->vertices.size());
+
+    for (const auto& v : s->vertices) {
+        SDL_Vertex sv;
+        sv.position.x = v.x;
+        sv.position.y = v.y;
+        sv.color.r = v.r;
+        sv.color.g = v.g;
+        sv.color.b = v.b;
+        sv.color.a = v.a;
+        sv.tex_coord.x = 0;
+        sv.tex_coord.y = 0;
+        sdl_verts.push_back(sv);
+    }
+
+    // Render triangles
+    SDL_RenderGeometry(s->renderer, nullptr,
+                      sdl_verts.data(), (int)sdl_verts.size(),
+                      nullptr, 0);
+}
+
+// Draw the cached canvas texture to screen
+inline void draw_canvas() {
+    auto* s = get_state();
+    if (!s || !s->canvas_texture) return;
+
+    // Clear canvas on first use if needed
+    if (s->canvas_dirty) {
+        clear_canvas();
+    }
+
+    SDL_RenderTexture(s->renderer, s->canvas_texture, nullptr, nullptr);
+}
+
+// Check if canvas texture is available
+inline bool has_canvas_texture() {
+    auto* s = get_state();
+    return s && s->canvas_texture != nullptr;
+}
+
+// =============================================================================
 // Rendering
 // =============================================================================
 
@@ -398,6 +512,92 @@ inline void end_frame() {
 
     // Present
     SDL_RenderPresent(s->renderer);
+}
+
+// =============================================================================
+// Screenshot
+// =============================================================================
+
+inline bool take_screenshot(const char* filename) {
+    auto* s = get_state();
+    if (!s || !s->renderer) return false;
+
+    // SDL3: SDL_RenderReadPixels returns an SDL_Surface* directly
+    SDL_Surface* surface = SDL_RenderReadPixels(s->renderer, nullptr);
+    if (!surface) {
+        std::cerr << "[drawing_canvas] Failed to read pixels: " << SDL_GetError() << std::endl;
+        return false;
+    }
+
+    // Save as BMP (SDL3 built-in)
+    bool success = SDL_SaveBMP(surface, filename);
+
+    if (!success) {
+        std::cerr << "[drawing_canvas] Failed to save screenshot: " << SDL_GetError() << std::endl;
+    } else {
+        std::cout << "[drawing_canvas] Screenshot saved: " << filename << std::endl;
+    }
+
+    SDL_DestroySurface(surface);
+    return success;
+}
+
+// Get current timestamp string for filenames
+inline int64_t get_timestamp() {
+    return SDL_GetTicks();
+}
+
+// =============================================================================
+// Frame Timing (for performance measurement)
+// =============================================================================
+
+inline void start_frame_timing() {
+    auto* s = get_state();
+    if (!s) return;
+    s->frame_start_time = SDL_GetPerformanceCounter();
+}
+
+inline void end_frame_timing() {
+    auto* s = get_state();
+    if (!s) return;
+
+    uint64_t end_time = SDL_GetPerformanceCounter();
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    s->last_frame_time = end_time - s->frame_start_time;
+
+    // Calculate frame time in milliseconds
+    double frame_ms = (double)s->last_frame_time * 1000.0 / (double)freq;
+
+    // Update rolling average (exponential moving average)
+    if (s->frame_count == 0) {
+        s->avg_frame_time = frame_ms;
+    } else {
+        s->avg_frame_time = s->avg_frame_time * 0.95 + frame_ms * 0.05;
+    }
+    s->frame_count++;
+}
+
+inline double get_last_frame_ms() {
+    auto* s = get_state();
+    if (!s) return 0.0;
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    return (double)s->last_frame_time * 1000.0 / (double)freq;
+}
+
+inline double get_avg_frame_ms() {
+    auto* s = get_state();
+    return s ? s->avg_frame_time : 0.0;
+}
+
+inline double get_fps() {
+    auto* s = get_state();
+    if (!s || s->avg_frame_time <= 0.0) return 0.0;
+    return 1000.0 / s->avg_frame_time;
+}
+
+inline int get_vertex_count() {
+    auto* s = get_state();
+    return s ? (int)s->vertices.size() : 0;
 }
 
 } // namespace dc

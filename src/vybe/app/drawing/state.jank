@@ -15,12 +15,51 @@
 ;; Current stroke being drawn ({} empty map when not drawing)
 (defonce *current-stroke (atom {}))
 
+;; Cached triangles for current stroke (for incremental rendering)
+(defonce *current-stroke-triangles (atom []))
+
+;; Number of points already tessellated in current stroke
+(defonce *current-stroke-tessellated-count (atom 0))
+
 ;; Are we currently drawing?
 (defonce *drawing? (atom false))
 
 ;; Undo/redo history
 (defonce *history (atom []))
 (defonce *history-index (atom -1))
+
+;; =============================================================================
+;; Canvas texture state (for performance - caching finished strokes)
+;; =============================================================================
+
+;; When true, the canvas texture needs to be re-rendered from scratch
+(defonce *canvas-needs-rebuild (atom true))
+
+;; Stroke that was just completed (needs to be rendered to texture)
+(defonce *just-completed-stroke (atom {}))
+
+(defn mark-canvas-dirty! []
+  "Mark that canvas texture needs full rebuild (e.g., after undo, frame change)."
+  (reset! *canvas-needs-rebuild true))
+
+(defn clear-canvas-dirty! []
+  "Clear the rebuild flag after rebuilding."
+  (reset! *canvas-needs-rebuild false))
+
+(defn canvas-needs-rebuild? []
+  @*canvas-needs-rebuild)
+
+(defn get-just-completed-stroke []
+  "Get the stroke that was just completed (for incremental rendering)."
+  @*just-completed-stroke)
+
+(defn clear-just-completed-stroke! []
+  "Clear the just-completed stroke after rendering it."
+  (reset! *just-completed-stroke {}))
+
+(defn has-just-completed-stroke? []
+  "Check if there's a stroke waiting to be rendered to texture."
+  (not (empty? @*just-completed-stroke)))
 
 ;; =============================================================================
 ;; Weave accessors
@@ -56,12 +95,47 @@
         stroke (core/make-stroke (:color thread) (:line-width thread))
         point (core/make-point x y pressure (canvas/get_time_ms))]
     (reset! *current-stroke (core/add-point-to-stroke stroke point))
+    (reset! *current-stroke-triangles [])
+    (reset! *current-stroke-tessellated-count 0)
     (reset! *drawing? true)))
+
+;; Maximum distance between points before we interpolate
+(def +max-point-distance+ 15.0)
+
+(defn interpolate-point
+  "Interpolate between two points at parameter t (0-1)."
+  [p1 p2 t]
+  {:x (core/lerp (:x p1) (:x p2) t)
+   :y (core/lerp (:y p1) (:y p2) t)
+   :pressure (core/lerp (:pressure p1) (:pressure p2) t)
+   :timestamp (int (core/lerp (:timestamp p1) (:timestamp p2) t))})
 
 (defn add-drawing-point! [x y pressure]
   (when @*drawing?
-    (let [point (core/make-point x y pressure (canvas/get_time_ms))]
-      (swap! *current-stroke core/add-point-to-stroke point))))
+    (let [current @*current-stroke
+          points (:points current)
+          new-point (core/make-point x y pressure (canvas/get_time_ms))]
+      (if (empty? points)
+        ;; First point - just add it
+        (swap! *current-stroke core/add-point-to-stroke new-point)
+        ;; Check distance from last point
+        (let [last-pt (last points)
+              dist (core/point-distance last-pt new-point)]
+          (if (> dist +max-point-distance+)
+            ;; Too far - add interpolated points
+            (let [n (int (/ dist +max-point-distance+))]
+              (loop [i 1
+                     stroke current]
+                (if (> i n)
+                  ;; Add final point
+                  (reset! *current-stroke (core/add-point-to-stroke stroke new-point))
+                  ;; Add interpolated point
+                  (let [t (/ (float i) (float (inc n)))
+                        interp-pt (interpolate-point last-pt new-point t)]
+                    (recur (inc i)
+                           (core/add-point-to-stroke stroke interp-pt))))))
+            ;; Normal distance - just add
+            (swap! *current-stroke core/add-point-to-stroke new-point)))))))
 
 (defn end-drawing! []
   (when @*drawing?
@@ -70,12 +144,25 @@
       (when (> (core/stroke-point-count stroke) 1)
         (swap! *weave core/update-active-thread
                core/update-current-frame
-               core/add-stroke-to-frame stroke))
+               core/add-stroke-to-frame stroke)
+        ;; Store for incremental rendering (NOT full rebuild!)
+        (reset! *just-completed-stroke stroke))
       (reset! *current-stroke {})
       (reset! *drawing? false))))
 
 (defn get-current-stroke []
   @*current-stroke)
+
+(defn get-current-stroke-triangles []
+  @*current-stroke-triangles)
+
+(defn get-current-stroke-tessellated-count []
+  @*current-stroke-tessellated-count)
+
+(defn update-current-stroke-triangles! [new-triangles new-count]
+  "Update the cached triangles with new ones."
+  (swap! *current-stroke-triangles into new-triangles)
+  (reset! *current-stroke-tessellated-count new-count))
 
 ;; =============================================================================
 ;; All strokes for rendering (current frame + in-progress stroke)
@@ -122,6 +209,10 @@
            (let [new-idx (max 0 (dec (:current-frame thread)))]
              (assoc thread :current-frame new-idx)))))
 
+;; Get only the frame strokes (for rebuilding canvas texture)
+(defn get-frame-strokes []
+  (:strokes (get-current-frame)))
+
 ;; =============================================================================
 ;; Clear/reset
 ;; =============================================================================
@@ -129,9 +220,12 @@
 (defn clear-current-frame! []
   (swap! *weave core/update-active-thread
          core/update-current-frame
-         assoc :strokes []))
+         assoc :strokes [])
+  ;; Mark canvas dirty so it gets cleared
+  (mark-canvas-dirty!))
 
 (defn new-weave! [name]
   (reset! *weave (core/make-weave name))
   (reset! *current-stroke {})
-  (reset! *drawing? false))
+  (reset! *drawing? false)
+  (mark-canvas-dirty!))

@@ -163,6 +163,9 @@
 ;; Main stroke->triangles function
 ;; =============================================================================
 
+;; Lower subdivision count for better performance (4 instead of 8)
+(def +subdivisions+ 4)
+
 (defn stroke->triangles
   "Convert a stroke to GPU-ready triangle vertices."
   [stroke]
@@ -171,8 +174,7 @@
       []
       (let [beziers (points->beziers points)
             [r g b a] (:color stroke)
-            base-width (:width stroke)
-            subdivisions 8]
+            base-width (:width stroke)]
         (if (empty? beziers)
           []
           ;; Subdivide each bezier and collect all ribbon points
@@ -181,7 +183,7 @@
                          (if (>= bez-idx (count beziers))
                            all-points
                            (let [bez (nth beziers bez-idx)
-                                 sub-points (subdivide-bezier bez subdivisions)]
+                                 sub-points (subdivide-bezier bez +subdivisions+)]
                              (recur (inc bez-idx)
                                     (into all-points sub-points)))))]
             (ribbon->triangles ribbon base-width [r g b a])))))))
@@ -198,3 +200,54 @@
         (let [triangles (stroke->triangles (nth strokes i))]
           (recur (inc i)
                  (into result triangles)))))))
+
+;; =============================================================================
+;; Incremental tessellation (for current stroke performance)
+;; =============================================================================
+
+(defn tessellate-new-segments
+  "Tessellate only the new bezier segments since last tessellation.
+   Returns {:triangles [...] :new-count n} where new-count is the new tessellated count."
+  [stroke already-tessellated-count]
+  (let [points (:points stroke)
+        n (count points)]
+    (if (< n 2)
+      {:triangles [] :new-count 0}
+      (if (<= n (inc already-tessellated-count))
+        ;; No new segments to tessellate
+        {:triangles [] :new-count already-tessellated-count}
+        ;; Tessellate new segments only
+        (let [pts (mapv (fn [p] [(:x p) (:y p)]) points)
+              pressures (mapv :pressure points)
+              [r g b a] (:color stroke)
+              base-width (:width stroke)
+              ;; Start from the last tessellated point (need overlap for continuity)
+              start-idx (max 0 (dec already-tessellated-count))
+              ;; Build bezier segments for new points only
+              new-beziers (loop [i start-idx
+                                 result []]
+                            (if (>= i (dec n))
+                              result
+                              (let [i0 (max 0 (dec i))
+                                    i1 i
+                                    i2 (inc i)
+                                    i3 (min (dec n) (+ i 2))
+                                    [p1 c1 c2 p2] (catmull-rom->bezier
+                                                   (nth pts i0) (nth pts i1) (nth pts i2) (nth pts i3))]
+                                (recur (inc i)
+                                       (conj result
+                                             {:p0 p1 :p1 c1 :p2 c2 :p3 p2
+                                              :w0 (nth pressures i1) :w1 (nth pressures i2)})))))]
+          (if (empty? new-beziers)
+            {:triangles [] :new-count n}
+            ;; Subdivide new beziers and convert to triangles
+            (let [ribbon (loop [bez-idx 0
+                                all-points []]
+                           (if (>= bez-idx (count new-beziers))
+                             all-points
+                             (let [bez (nth new-beziers bez-idx)
+                                   sub-points (subdivide-bezier bez +subdivisions+)]
+                               (recur (inc bez-idx)
+                                      (into all-points sub-points)))))
+                  triangles (ribbon->triangles ribbon base-width [r g b a])]
+              {:triangles triangles :new-count n})))))))

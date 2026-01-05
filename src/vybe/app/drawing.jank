@@ -38,23 +38,89 @@
        (float (:r v1)) (float (:g v1)) (float (:b v1)) (float (:a v1))))))
 
 ;; =============================================================================
+;; Canvas texture management (for performance)
+;; =============================================================================
+
+(defn rebuild-canvas-texture!
+  "Rebuild canvas texture with all frame strokes (only when needed)."
+  []
+  (when (canvas/has_canvas_texture)
+    ;; Clear the canvas texture
+    (canvas/clear_canvas)
+
+    ;; Render all frame strokes to canvas texture
+    (let [strokes (state/get-frame-strokes)]
+      (when (seq strokes)
+        (canvas/begin_canvas_render)
+        (canvas/clear_vertices)
+        (let [triangles (math/strokes->triangles strokes)]
+          (render-stroke-triangles! triangles)
+          (canvas/render_vertices))
+        (canvas/end_canvas_render)))
+
+    ;; Mark as clean
+    (state/clear-canvas-dirty!)))
+
+(defn render-stroke-to-texture!
+  "Render a single stroke to the canvas texture (incremental caching)."
+  [stroke]
+  (when (and (canvas/has_canvas_texture) (not (empty? stroke)))
+    (canvas/begin_canvas_render)
+    (canvas/clear_vertices)
+    (let [triangles (math/strokes->triangles [stroke])]
+      (render-stroke-triangles! triangles)
+      (canvas/render_vertices))
+    (canvas/end_canvas_render)))
+
+(defn render-current-stroke!
+  "Render only the current in-progress stroke."
+  []
+  (let [current (state/get-current-stroke)]
+    (when-not (empty? current)
+      ;; Full tessellation for current stroke (simpler, reliable)
+      ;; Texture caching for finished strokes is where we save performance
+      (canvas/clear_vertices)
+      (let [triangles (math/stroke->triangles current)]
+        (render-stroke-triangles! triangles)
+        (canvas/render_vertices)))))
+
+;; =============================================================================
 ;; Main render function
 ;; =============================================================================
 
 (defn render-frame!
   "Render all strokes for the current frame."
   []
-  ;; Clear vertex buffer
-  (canvas/clear_vertices)
-
   ;; Set background color
   (let [[r g b a] (state/get-bg-color)]
     (canvas/set_bg_color (float r) (float g) (float b) (float a)))
 
-  ;; Get all strokes to render (frame strokes + in-progress stroke)
-  (let [strokes (state/get-all-strokes-to-render)
-        triangles (math/strokes->triangles strokes)]
-    (render-stroke-triangles! triangles)))
+  ;; Check if we need to rebuild the canvas texture (only for frame changes, undo, etc.)
+  (when (state/canvas-needs-rebuild?)
+    (rebuild-canvas-texture!))
+
+  ;; Check if there's a just-completed stroke to add incrementally
+  (when (state/has-just-completed-stroke?)
+    (render-stroke-to-texture! (state/get-just-completed-stroke))
+    (state/clear-just-completed-stroke!))
+
+  ;; Draw cached canvas texture (all finished strokes)
+  (when (canvas/has_canvas_texture)
+    (canvas/draw_canvas))
+
+  ;; Draw current stroke on top
+  (render-current-stroke!))
+
+;; =============================================================================
+;; Screenshot
+;; =============================================================================
+
+(defn screenshot!
+  "Take a screenshot and save to file. Returns true on success."
+  ([]
+   (screenshot! (str "/tmp/drawing_" (canvas/get_timestamp) ".bmp")))
+  ([filename]
+   (canvas/take_screenshot filename)))
 
 ;; =============================================================================
 ;; Main loop
@@ -63,6 +129,9 @@
 (defn run-frame!
   "Process one frame of the app."
   []
+  ;; Start timing
+  (canvas/start_frame_timing)
+
   ;; Poll and process input events
   (canvas/poll_events)
   (input/process-events!)
@@ -70,7 +139,22 @@
   ;; Render
   (canvas/begin_frame)
   (render-frame!)
-  (canvas/end_frame))
+  (canvas/end_frame)
+
+  ;; End timing
+  (canvas/end_frame_timing))
+
+;; =============================================================================
+;; Performance stats
+;; =============================================================================
+
+(defn get-frame-stats
+  "Get current frame performance stats."
+  []
+  {:last-frame-ms (canvas/get_last_frame_ms)
+   :avg-frame-ms (canvas/get_avg_frame_ms)
+   :fps (canvas/get_fps)
+   :vertex-count (canvas/get_vertex_count)})
 
 (defn run-app!
   "Main app loop."
