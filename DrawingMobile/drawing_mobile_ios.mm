@@ -271,6 +271,131 @@ struct ColorPreset {
 };
 
 // =============================================================================
+// Canvas Transform - Pan/Zoom/Rotate state
+// =============================================================================
+
+struct CanvasTransform {
+    float panX, panY;      // Pan offset in screen pixels
+    float scale;           // Zoom level (1.0 = 100%)
+    float rotation;        // Rotation in radians
+    float pivotX, pivotY;  // Transform pivot (usually screen center)
+};
+
+// =============================================================================
+// Two-Finger Gesture Tracking
+// =============================================================================
+
+struct TwoFingerGesture {
+    bool isActive;
+    SDL_FingerID finger0_id, finger1_id;
+
+    // Starting positions (normalized 0-1)
+    float finger0_startX, finger0_startY;
+    float finger1_startX, finger1_startY;
+
+    // Current positions (normalized 0-1)
+    float finger0_currX, finger0_currY;
+    float finger1_currX, finger1_currY;
+
+    // Canvas transform at gesture start (baseline)
+    float basePanX, basePanY;
+    float baseScale;
+    float baseRotation;
+};
+
+// Helper: Calculate distance between two points
+static float pointDistance(float x1, float y1, float x2, float y2) {
+    float dx = x2 - x1;
+    float dy = y2 - y1;
+    return sqrtf(dx * dx + dy * dy);
+}
+
+// Helper: Calculate angle between two points (radians)
+static float pointAngle(float x1, float y1, float x2, float y2) {
+    return atan2f(y2 - y1, x2 - x1);
+}
+
+// Convert screen coordinates to canvas coordinates (for drawing on transformed canvas)
+// This MUST match the shader's inverse transform exactly!
+static void screenToCanvas(float screenX, float screenY, const CanvasTransform& transform,
+                           int screenWidth, int screenHeight,
+                           float& canvasX, float& canvasY) {
+    // Apply inverse transform to get canvas position
+    // This matches the shader's canvas_blit_vertex exactly
+
+    // 1. Translate to pivot
+    float x = screenX - transform.pivotX;
+    float y = screenY - transform.pivotY;
+
+    // 2. Undo pan
+    x -= transform.panX;
+    y -= transform.panY;
+
+    // 3. Undo scale
+    x /= transform.scale;
+    y /= transform.scale;
+
+    // 4. Undo rotation
+    float c = cosf(-transform.rotation);
+    float s = sinf(-transform.rotation);
+    float rx = x * c - y * s;
+    float ry = x * s + y * c;
+
+    // 5. Translate back from pivot
+    canvasX = rx + transform.pivotX;
+    canvasY = ry + transform.pivotY;
+}
+
+// Update canvas transform from gesture
+static void updateTransformFromGesture(CanvasTransform& transform, const TwoFingerGesture& gesture,
+                                       int screenWidth, int screenHeight) {
+    if (!gesture.isActive) return;
+
+    // Calculate start and current vectors (in screen pixels)
+    float startDist = pointDistance(
+        gesture.finger0_startX * screenWidth, gesture.finger0_startY * screenHeight,
+        gesture.finger1_startX * screenWidth, gesture.finger1_startY * screenHeight
+    );
+    float currDist = pointDistance(
+        gesture.finger0_currX * screenWidth, gesture.finger0_currY * screenHeight,
+        gesture.finger1_currX * screenWidth, gesture.finger1_currY * screenHeight
+    );
+
+    // Scale: ratio of distances
+    float deltaScale = (startDist > 1.0f) ? (currDist / startDist) : 1.0f;
+    transform.scale = gesture.baseScale * deltaScale;
+
+    // Clamp scale
+    if (transform.scale < 0.1f) transform.scale = 0.1f;
+    if (transform.scale > 10.0f) transform.scale = 10.0f;
+
+    // Rotation: difference in angles
+    float startAngle = pointAngle(
+        gesture.finger0_startX, gesture.finger0_startY,
+        gesture.finger1_startX, gesture.finger1_startY
+    );
+    float currAngle = pointAngle(
+        gesture.finger0_currX, gesture.finger0_currY,
+        gesture.finger1_currX, gesture.finger1_currY
+    );
+    float deltaRotation = currAngle - startAngle;
+    transform.rotation = gesture.baseRotation + deltaRotation;
+
+    // Pan: center point displacement (in screen pixels)
+    float startCenterX = (gesture.finger0_startX + gesture.finger1_startX) / 2.0f * screenWidth;
+    float startCenterY = (gesture.finger0_startY + gesture.finger1_startY) / 2.0f * screenHeight;
+    float currCenterX = (gesture.finger0_currX + gesture.finger1_currX) / 2.0f * screenWidth;
+    float currCenterY = (gesture.finger0_currY + gesture.finger1_currY) / 2.0f * screenHeight;
+
+    transform.panX = gesture.basePanX + (currCenterX - startCenterX);
+    transform.panY = gesture.basePanY + (currCenterY - startCenterY);
+
+    // Update pivot to gesture center
+    transform.pivotX = currCenterX;
+    transform.pivotY = currCenterY;
+}
+
+// =============================================================================
 // Color Picker - Grid-based color selection panel
 // =============================================================================
 
@@ -561,6 +686,37 @@ static int metal_test_main() {
     // Clear canvas to white
     metal_stamp_clear_canvas(1.0f, 1.0f, 1.0f, 1.0f);
 
+    // =============================================================================
+    // Initialize Canvas Transform and Gesture State
+    // =============================================================================
+
+    CanvasTransform canvasTransform = {
+        .panX = 0.0f,
+        .panY = 0.0f,
+        .scale = 1.0f,
+        .rotation = 0.0f,
+        .pivotX = width / 2.0f,
+        .pivotY = height / 2.0f
+    };
+
+    TwoFingerGesture gesture = {
+        .isActive = false,
+        .finger0_id = 0,
+        .finger1_id = 0,
+        .finger0_startX = 0, .finger0_startY = 0,
+        .finger1_startX = 0, .finger1_startY = 0,
+        .finger0_currX = 0, .finger0_currY = 0,
+        .finger1_currX = 0, .finger1_currY = 0,
+        .basePanX = 0, .basePanY = 0,
+        .baseScale = 1.0f,
+        .baseRotation = 0.0f
+    };
+
+    // Track single finger for potential gesture start
+    bool hasFinger0 = false;
+    SDL_FingerID pendingFinger0_id = 0;
+    float pendingFinger0_x = 0, pendingFinger0_y = 0;
+
     // Track drawing state
     bool is_drawing = false;
     float last_x = 0, last_y = 0;
@@ -577,67 +733,111 @@ static int metal_test_main() {
                     break;
 
                 case SDL_EVENT_FINGER_DOWN: {
-                    // Convert normalized coords to screen pixels
+                    // Finger events: Used for UI interaction and two-finger gestures
+                    // Drawing is done via Apple Pencil (pen events) only
+
                     float x = event.tfinger.x * width;
                     float y = event.tfinger.y * height;
-                    float pressure = event.tfinger.pressure;
-                    if (pressure <= 0.0f) pressure = 1.0f;  // Default pressure
+                    SDL_FingerID fingerId = event.tfinger.fingerID;
 
-                    // Check if touch is on a slider (with expanded hit area)
-                    float sliderHitPadding = 30.0f;
-                    SliderConfig expandedSize = sizeSlider;
-                    expandedSize.x -= sliderHitPadding;
-                    expandedSize.width += sliderHitPadding * 2;
-                    expandedSize.y -= sliderHitPadding;
-                    expandedSize.height += sliderHitPadding * 2;
+                    // Check UI elements FIRST (before gesture tracking)
+                    bool handledByUI = false;
+                    if (!gesture.isActive) {
+                        float sliderHitPadding = 30.0f;
+                        SliderConfig expandedSize = sizeSlider;
+                        expandedSize.x -= sliderHitPadding;
+                        expandedSize.width += sliderHitPadding * 2;
+                        expandedSize.y -= sliderHitPadding;
+                        expandedSize.height += sliderHitPadding * 2;
 
-                    SliderConfig expandedOpacity = opacitySlider;
-                    expandedOpacity.x -= sliderHitPadding;
-                    expandedOpacity.width += sliderHitPadding * 2;
-                    expandedOpacity.y -= sliderHitPadding;
-                    expandedOpacity.height += sliderHitPadding * 2;
+                        SliderConfig expandedOpacity = opacitySlider;
+                        expandedOpacity.x -= sliderHitPadding;
+                        expandedOpacity.width += sliderHitPadding * 2;
+                        expandedOpacity.y -= sliderHitPadding;
+                        expandedOpacity.height += sliderHitPadding * 2;
 
-                    if (isPointInSlider(expandedSize, x, y)) {
-                        sizeSlider.isDragging = true;
-                        // Update value based on Y position
-                        float relY = (y - sizeSlider.y) / sizeSlider.height;
-                        sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
-                        brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
-                        metal_stamp_set_brush_size(brushSize);
-                        std::cout << "Size slider: " << (int)brushSize << "px" << std::endl;
-                    } else if (isPointInSlider(expandedOpacity, x, y)) {
-                        opacitySlider.isDragging = true;
-                        float relY = (y - opacitySlider.y) / opacitySlider.height;
-                        opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
-                        brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
-                        metal_stamp_set_brush_opacity(brushOpacity);
-                        std::cout << "Opacity slider: " << (int)(brushOpacity * 100) << "%" << std::endl;
-                    } else if (isPointInColorPicker(colorPicker, x, y)) {
-                        // Check if tapped a color swatch
-                        int swatchIdx = getSwatchAtPoint(colorPicker, x, y);
-                        if (swatchIdx >= 0) {
-                            int col = swatchIdx % COLOR_GRID_COLS;
-                            int row = swatchIdx / COLOR_GRID_COLS;
-                            getGridColor(col, row, colorPicker.currentR, colorPicker.currentG, colorPicker.currentB);
-                            metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
-                            colorPicker.isOpen = false;  // Close picker after selection
-                            std::cout << "Color selected from picker" << std::endl;
+                        if (isPointInSlider(expandedSize, x, y)) {
+                            sizeSlider.isDragging = true;
+                            float relY = (y - sizeSlider.y) / sizeSlider.height;
+                            sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                            brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
+                            metal_stamp_set_brush_size(brushSize);
+                            std::cout << "Size slider: " << (int)brushSize << "px" << std::endl;
+                            handledByUI = true;
+                        } else if (isPointInSlider(expandedOpacity, x, y)) {
+                            opacitySlider.isDragging = true;
+                            float relY = (y - opacitySlider.y) / opacitySlider.height;
+                            opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                            brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
+                            metal_stamp_set_brush_opacity(brushOpacity);
+                            std::cout << "Opacity slider: " << (int)(brushOpacity * 100) << "%" << std::endl;
+                            handledByUI = true;
+                        } else if (isPointInColorPicker(colorPicker, x, y)) {
+                            int swatchIdx = getSwatchAtPoint(colorPicker, x, y);
+                            if (swatchIdx >= 0) {
+                                int col = swatchIdx % COLOR_GRID_COLS;
+                                int row = swatchIdx / COLOR_GRID_COLS;
+                                getGridColor(col, row, colorPicker.currentR, colorPicker.currentG, colorPicker.currentB);
+                                metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
+                                colorPicker.isOpen = false;
+                                std::cout << "Color selected from picker" << std::endl;
+                            }
+                            handledByUI = true;
+                        } else if (isPointInColorButton(colorButton, x, y)) {
+                            colorPicker.isOpen = !colorPicker.isOpen;
+                            std::cout << "Color picker " << (colorPicker.isOpen ? "opened" : "closed") << std::endl;
+                            handledByUI = true;
+                        } else if (colorPicker.isOpen) {
+                            colorPicker.isOpen = false;
+                            std::cout << "Color picker closed (tap outside)" << std::endl;
+                            handledByUI = true;
                         }
-                    } else if (isPointInColorButton(colorButton, x, y)) {
-                        // Toggle color picker panel
-                        colorPicker.isOpen = !colorPicker.isOpen;
-                        std::cout << "Color picker " << (colorPicker.isOpen ? "opened" : "closed") << std::endl;
-                    } else if (colorPicker.isOpen) {
-                        // Tap outside picker closes it
-                        colorPicker.isOpen = false;
-                        std::cout << "Color picker closed (tap outside)" << std::endl;
-                    } else {
-                        // Regular drawing
-                        std::cout << "Touch down: " << x << ", " << y << " (pressure: " << pressure << ")" << std::endl;
-                        metal_stamp_begin_stroke(x, y, pressure);
-                        last_x = x;
-                        last_y = y;
-                        is_drawing = true;
+                    }
+
+                    // If not handled by UI, track for two-finger gesture OR single-finger drawing
+                    if (!handledByUI && !gesture.isActive) {
+                        if (!hasFinger0) {
+                            // First finger down - start drawing OR wait for second finger
+                            hasFinger0 = true;
+                            pendingFinger0_id = fingerId;
+                            pendingFinger0_x = event.tfinger.x;
+                            pendingFinger0_y = event.tfinger.y;
+
+                            // Start drawing with single finger (for simulator testing)
+                            // On real device, Apple Pencil uses PEN events instead
+                            float canvasX, canvasY;
+                            screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
+                            metal_stamp_begin_stroke(canvasX, canvasY, 1.0f);
+                            last_x = canvasX;
+                            last_y = canvasY;
+                            is_drawing = true;
+                            std::cout << "Finger drawing started at " << canvasX << ", " << canvasY << std::endl;
+                        } else if (pendingFinger0_id != fingerId) {
+                            // Second finger down - STOP drawing and start two-finger gesture!
+                            if (is_drawing) {
+                                metal_stamp_cancel_stroke();  // Cancel incomplete stroke
+                                is_drawing = false;
+                                std::cout << "Drawing cancelled - switching to gesture" << std::endl;
+                            }
+                            gesture.isActive = true;
+                            gesture.finger0_id = pendingFinger0_id;
+                            gesture.finger1_id = fingerId;
+                            gesture.finger0_startX = pendingFinger0_x;
+                            gesture.finger0_startY = pendingFinger0_y;
+                            gesture.finger1_startX = event.tfinger.x;
+                            gesture.finger1_startY = event.tfinger.y;
+                            gesture.finger0_currX = gesture.finger0_startX;
+                            gesture.finger0_currY = gesture.finger0_startY;
+                            gesture.finger1_currX = gesture.finger1_startX;
+                            gesture.finger1_currY = gesture.finger1_startY;
+                            // Store current transform as baseline
+                            gesture.basePanX = canvasTransform.panX;
+                            gesture.basePanY = canvasTransform.panY;
+                            gesture.baseScale = canvasTransform.scale;
+                            gesture.baseRotation = canvasTransform.rotation;
+                            std::cout << "Two-finger gesture started (scale: " << canvasTransform.scale
+                                      << ", rotation: " << canvasTransform.rotation << ")" << std::endl;
+                        }
                     }
                     break;
                 }
@@ -645,10 +845,44 @@ static int metal_test_main() {
                 case SDL_EVENT_FINGER_MOTION: {
                     float x = event.tfinger.x * width;
                     float y = event.tfinger.y * height;
-                    float pressure = event.tfinger.pressure;
-                    if (pressure <= 0.0f) pressure = 1.0f;
+                    SDL_FingerID fingerId = event.tfinger.fingerID;
 
-                    if (sizeSlider.isDragging) {
+                    // Handle two-finger gesture motion
+                    if (gesture.isActive) {
+                        // Update the moving finger's current position
+                        if (fingerId == gesture.finger0_id) {
+                            gesture.finger0_currX = event.tfinger.x;
+                            gesture.finger0_currY = event.tfinger.y;
+                        } else if (fingerId == gesture.finger1_id) {
+                            gesture.finger1_currX = event.tfinger.x;
+                            gesture.finger1_currY = event.tfinger.y;
+                        }
+                        // Update canvas transform from gesture
+                        updateTransformFromGesture(canvasTransform, gesture, width, height);
+                    }
+                    // Handle single-finger drawing (for simulator testing)
+                    else if (is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
+                        // Update pending finger position
+                        pendingFinger0_x = event.tfinger.x;
+                        pendingFinger0_y = event.tfinger.y;
+                        // Add stroke point with screen-to-canvas conversion
+                        float canvasX, canvasY;
+                        screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
+                        float dx = canvasX - last_x;
+                        float dy = canvasY - last_y;
+                        if (dx*dx + dy*dy > 1.0f) {
+                            metal_stamp_add_stroke_point(canvasX, canvasY, 1.0f);
+                            last_x = canvasX;
+                            last_y = canvasY;
+                        }
+                    }
+                    // Update pending finger position (in case it becomes part of gesture)
+                    else if (hasFinger0 && fingerId == pendingFinger0_id) {
+                        pendingFinger0_x = event.tfinger.x;
+                        pendingFinger0_y = event.tfinger.y;
+                    }
+                    // Handle UI slider dragging
+                    else if (sizeSlider.isDragging) {
                         float relY = (y - sizeSlider.y) / sizeSlider.height;
                         sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
                         brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
@@ -658,30 +892,42 @@ static int metal_test_main() {
                         opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
                         brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
                         metal_stamp_set_brush_opacity(brushOpacity);
-                    } else if (is_drawing) {
-                        // Only add point if moved more than 1 pixel (avoid spurious motion events)
-                        float dx = x - last_x;
-                        float dy = y - last_y;
-                        if (dx*dx + dy*dy > 1.0f) {
-                            metal_stamp_add_stroke_point(x, y, pressure);
-                            last_x = x;
-                            last_y = y;
-                        }
                     }
                     break;
                 }
 
                 case SDL_EVENT_FINGER_UP: {
-                    if (sizeSlider.isDragging) {
+                    SDL_FingerID fingerId = event.tfinger.fingerID;
+
+                    // Handle gesture finger release
+                    if (gesture.isActive) {
+                        if (fingerId == gesture.finger0_id || fingerId == gesture.finger1_id) {
+                            // One of the gesture fingers lifted - end gesture
+                            gesture.isActive = false;
+                            hasFinger0 = false;
+                            std::cout << "Two-finger gesture ended (scale: " << canvasTransform.scale
+                                      << ", rotation: " << (canvasTransform.rotation * 180.0f / M_PI) << "°"
+                                      << ", pan: " << canvasTransform.panX << ", " << canvasTransform.panY << ")" << std::endl;
+                        }
+                    }
+                    // Handle single-finger drawing end (for simulator testing)
+                    else if (is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
+                        std::cout << "Finger drawing ended" << std::endl;
+                        metal_stamp_end_stroke();
+                        is_drawing = false;
+                        hasFinger0 = false;
+                    }
+                    // Handle pending single finger release (non-drawing)
+                    else if (hasFinger0 && fingerId == pendingFinger0_id) {
+                        hasFinger0 = false;
+                    }
+                    // Handle UI slider release
+                    else if (sizeSlider.isDragging) {
                         sizeSlider.isDragging = false;
                         std::cout << "Size set to: " << (int)brushSize << "px" << std::endl;
                     } else if (opacitySlider.isDragging) {
                         opacitySlider.isDragging = false;
                         std::cout << "Opacity set to: " << (int)(brushOpacity * 100) << "%" << std::endl;
-                    } else if (is_drawing) {
-                        std::cout << "Touch up - ending stroke" << std::endl;
-                        metal_stamp_end_stroke();
-                        is_drawing = false;
                     }
                     break;
                 }
@@ -703,14 +949,14 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_PEN_DOWN: {
-                    float x = event.ptouch.x;
-                    float y = event.ptouch.y;
+                    float screenX = event.ptouch.x;
+                    float screenY = event.ptouch.y;
                     // pen_pressure should have been set by preceding axis events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
-                    std::cout << "Pen down: " << x << ", " << y << " (pressure: " << pen_pressure << ")" << std::endl;
+                    std::cout << "Pen down: " << screenX << ", " << screenY << " (pressure: " << pen_pressure << ")" << std::endl;
 
-                    // Check if touch is on a slider
+                    // Check if touch is on a slider (UI is in screen space, not canvas space)
                     float sliderHitPadding = 30.0f;
                     SliderConfig expandedSize = sizeSlider;
                     expandedSize.x -= sliderHitPadding;
@@ -724,23 +970,23 @@ static int metal_test_main() {
                     expandedOpacity.y -= sliderHitPadding;
                     expandedOpacity.height += sliderHitPadding * 2;
 
-                    if (isPointInSlider(expandedSize, x, y)) {
+                    if (isPointInSlider(expandedSize, screenX, screenY)) {
                         sizeSlider.isDragging = true;
-                        float relY = (y - sizeSlider.y) / sizeSlider.height;
+                        float relY = (screenY - sizeSlider.y) / sizeSlider.height;
                         sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
                         brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
                         metal_stamp_set_brush_size(brushSize);
                         std::cout << "Size slider (pen): " << (int)brushSize << "px" << std::endl;
-                    } else if (isPointInSlider(expandedOpacity, x, y)) {
+                    } else if (isPointInSlider(expandedOpacity, screenX, screenY)) {
                         opacitySlider.isDragging = true;
-                        float relY = (y - opacitySlider.y) / opacitySlider.height;
+                        float relY = (screenY - opacitySlider.y) / opacitySlider.height;
                         opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
                         brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
                         metal_stamp_set_brush_opacity(brushOpacity);
                         std::cout << "Opacity slider (pen): " << (int)(brushOpacity * 100) << "%" << std::endl;
-                    } else if (isPointInColorPicker(colorPicker, x, y)) {
+                    } else if (isPointInColorPicker(colorPicker, screenX, screenY)) {
                         // Check if tapped a color swatch (pen)
-                        int swatchIdx = getSwatchAtPoint(colorPicker, x, y);
+                        int swatchIdx = getSwatchAtPoint(colorPicker, screenX, screenY);
                         if (swatchIdx >= 0) {
                             int col = swatchIdx % COLOR_GRID_COLS;
                             int row = swatchIdx / COLOR_GRID_COLS;
@@ -749,7 +995,7 @@ static int metal_test_main() {
                             colorPicker.isOpen = false;
                             std::cout << "Color selected from picker (pen)" << std::endl;
                         }
-                    } else if (isPointInColorButton(colorButton, x, y)) {
+                    } else if (isPointInColorButton(colorButton, screenX, screenY)) {
                         // Toggle color picker panel (pen)
                         colorPicker.isOpen = !colorPicker.isOpen;
                         std::cout << "Color picker " << (colorPicker.isOpen ? "opened" : "closed") << " (pen)" << std::endl;
@@ -758,38 +1004,45 @@ static int metal_test_main() {
                         colorPicker.isOpen = false;
                         std::cout << "Color picker closed (tap outside, pen)" << std::endl;
                     } else {
-                        // Drawing with Apple Pencil
-                        metal_stamp_begin_stroke(x, y, pen_pressure);
-                        last_x = x;
-                        last_y = y;
+                        // Drawing with Apple Pencil - convert screen coords to canvas coords
+                        float canvasX, canvasY;
+                        screenToCanvas(screenX, screenY, canvasTransform, width, height, canvasX, canvasY);
+
+                        metal_stamp_begin_stroke(canvasX, canvasY, pen_pressure);
+                        last_x = canvasX;
+                        last_y = canvasY;
                         is_drawing = true;
                     }
                     break;
                 }
 
                 case SDL_EVENT_PEN_MOTION: {
-                    float x = event.pmotion.x;
-                    float y = event.pmotion.y;
+                    float screenX = event.pmotion.x;
+                    float screenY = event.pmotion.y;
                     // pen_pressure updated via SDL_EVENT_PEN_AXIS events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
                     if (sizeSlider.isDragging) {
-                        float relY = (y - sizeSlider.y) / sizeSlider.height;
+                        float relY = (screenY - sizeSlider.y) / sizeSlider.height;
                         sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
                         brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
                         metal_stamp_set_brush_size(brushSize);
                     } else if (opacitySlider.isDragging) {
-                        float relY = (y - opacitySlider.y) / opacitySlider.height;
+                        float relY = (screenY - opacitySlider.y) / opacitySlider.height;
                         opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
                         brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
                         metal_stamp_set_brush_opacity(brushOpacity);
                     } else if (is_drawing) {
-                        float dx = x - last_x;
-                        float dy = y - last_y;
+                        // Convert screen coords to canvas coords for drawing
+                        float canvasX, canvasY;
+                        screenToCanvas(screenX, screenY, canvasTransform, width, height, canvasX, canvasY);
+
+                        float dx = canvasX - last_x;
+                        float dy = canvasY - last_y;
                         if (dx*dx + dy*dy > 1.0f) {
-                            metal_stamp_add_stroke_point(x, y, pen_pressure);
-                            last_x = x;
-                            last_y = y;
+                            metal_stamp_add_stroke_point(canvasX, canvasY, pen_pressure);
+                            last_x = canvasX;
+                            last_y = canvasY;
                         }
                     }
                     break;
@@ -848,6 +1101,13 @@ static int metal_test_main() {
 
         // Render the current stroke (for real-time preview)
         metal_stamp_render_stroke();
+
+        // Apply canvas transform before presenting
+        metal_stamp_set_canvas_transform(
+            canvasTransform.panX, canvasTransform.panY,
+            canvasTransform.scale, canvasTransform.rotation,
+            canvasTransform.pivotX, canvasTransform.pivotY
+        );
 
         // Draw UI sliders (queued before present)
         // Size slider - blue tint

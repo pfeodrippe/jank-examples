@@ -195,6 +195,18 @@ public:
                        float corner_radius);
 
     // =========================================================================
+    // Canvas Transform (Pan/Zoom/Rotate)
+    // =========================================================================
+
+    // Set the canvas transform for rendering
+    // panX, panY: translation in screen pixels
+    // scale: zoom factor (1.0 = 100%)
+    // rotation: rotation in radians
+    // pivotX, pivotY: transform center point in screen pixels
+    void set_canvas_transform(float panX, float panY, float scale,
+                              float rotation, float pivotX, float pivotY);
+
+    // =========================================================================
     // Debug
     // =========================================================================
 
@@ -289,5 +301,9 @@ void metal_stamp_use_preset_splatter();
 void metal_stamp_queue_ui_rect(float x, float y, float width, float height,
                                float r, float g, float b, float a,
                                float corner_radius);
+
+// Canvas Transform (pan/zoom/rotate)
+void metal_stamp_set_canvas_transform(float panX, float panY, float scale,
+                                      float rotation, float pivotX, float pivotY);
 
 } // extern "C"

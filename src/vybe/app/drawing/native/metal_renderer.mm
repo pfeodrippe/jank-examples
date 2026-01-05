@@ -59,6 +59,7 @@ struct MSLStrokeUniforms {
 @property (nonatomic, strong) id<MTLRenderPipelineState> stampTexturePipeline; // With shape texture
 @property (nonatomic, strong) id<MTLRenderPipelineState> clearPipeline;
 @property (nonatomic, strong) id<MTLRenderPipelineState> uiRectPipeline;      // UI rectangle drawing
+@property (nonatomic, strong) id<MTLRenderPipelineState> canvasBlitPipeline; // Canvas blit with transform
 @property (nonatomic, assign) int currentBrushType;  // 0=Round, 1=Crayon, etc.
 @property (nonatomic, strong) id<MTLTexture> canvasTexture;
 @property (nonatomic, strong) id<MTLBuffer> pointBuffer;
@@ -116,6 +117,13 @@ struct MSLStrokeUniforms {
 - (void)drawQueuedUIRectsToTexture:(id<MTLTexture>)texture;
 - (void)clearUIQueue;
 
+// Canvas Transform
+- (void)setCanvasTransformPanX:(float)panX panY:(float)panY
+                         scale:(float)scale rotation:(float)rotation
+                        pivotX:(float)pivotX pivotY:(float)pivotY;
+- (void)drawCanvasToTexture:(id<MTLTexture>)targetTexture;
+- (BOOL)hasCanvasTransform;
+
 @end
 
 // UI Rect parameters (matches shader struct)
@@ -126,10 +134,20 @@ struct UIRectParams {
     float _padding[3];      // Align to 16 bytes
 };
 
+// Canvas transform uniforms (matches shader struct)
+struct CanvasTransformUniforms {
+    simd_float2 pan;           // Pan offset in screen pixels
+    float scale;               // Zoom level (1.0 = 100%)
+    float rotation;            // Rotation in radians
+    simd_float2 pivot;         // Transform pivot in pixels
+    simd_float2 viewportSize;  // Viewport size for aspect ratio
+};
+
 @implementation MetalStampRendererImpl {
     std::vector<MSLPoint> _points;
     simd_float4 _backgroundColor;
     std::vector<UIRectParams> _uiRects;  // UI rects to draw this frame
+    CanvasTransformUniforms _canvasTransform;  // Canvas pan/zoom/rotate
 }
 
 - (BOOL)initWithWindow:(SDL_Window*)window width:(int)w height:(int)h {
@@ -145,6 +163,13 @@ struct UIRectParams {
     self.currentShapeTexture = nil;
     self.currentGrainTexture = nil;
     _backgroundColor = simd_make_float4(0.95f, 0.95f, 0.92f, 1.0f);
+
+    // Initialize canvas transform to identity
+    _canvasTransform.pan = simd_make_float2(0.0f, 0.0f);
+    _canvasTransform.scale = 1.0f;
+    _canvasTransform.rotation = 0.0f;
+    _canvasTransform.pivot = simd_make_float2(0.0f, 0.0f);  // Will be set from drawable size
+    _canvasTransform.viewportSize = simd_make_float2(w, h);
 
     // Create Metal device
     self.device = MTLCreateSystemDefaultDevice();
@@ -485,6 +510,28 @@ struct UIRectParams {
         }
     } else {
         METAL_LOG("UI rect shaders not found in library (vertex=%p fragment=%p)", uiRectVertexFunc, uiRectFragmentFunc);
+    }
+
+    // Create canvas blit pipeline (for transformed canvas rendering)
+    id<MTLFunction> canvasBlitVertexFunc = [library newFunctionWithName:@"canvas_blit_vertex"];
+    id<MTLFunction> canvasBlitFragmentFunc = [library newFunctionWithName:@"canvas_blit_fragment"];
+    if (canvasBlitVertexFunc && canvasBlitFragmentFunc) {
+        MTLRenderPipelineDescriptor* canvasBlitPipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
+        canvasBlitPipelineDesc.vertexFunction = canvasBlitVertexFunc;
+        canvasBlitPipelineDesc.fragmentFunction = canvasBlitFragmentFunc;
+        canvasBlitPipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+        // No blending needed - canvas covers entire screen
+        canvasBlitPipelineDesc.colorAttachments[0].blendingEnabled = NO;
+
+        self.canvasBlitPipeline = [self.device newRenderPipelineStateWithDescriptor:canvasBlitPipelineDesc error:&error];
+        if (!self.canvasBlitPipeline) {
+            METAL_LOG("Failed to create canvas blit pipeline: %s", [[error localizedDescription] UTF8String]);
+        } else {
+            METAL_LOG("Created canvas blit pipeline");
+        }
+    } else {
+        METAL_LOG("Canvas blit shaders not found in library (vertex=%p fragment=%p)", canvasBlitVertexFunc, canvasBlitFragmentFunc);
     }
 
     METAL_LOG("Created render pipelines");
@@ -864,6 +911,64 @@ struct UIRectParams {
     _uiRects.clear();
 }
 
+// =============================================================================
+// Canvas Transform Methods
+// =============================================================================
+
+- (void)setCanvasTransformPanX:(float)panX panY:(float)panY
+                         scale:(float)scale rotation:(float)rotation
+                        pivotX:(float)pivotX pivotY:(float)pivotY {
+    _canvasTransform.pan = simd_make_float2(panX, panY);
+    _canvasTransform.scale = scale;
+    _canvasTransform.rotation = rotation;
+    // Pivot is in pixel coordinates (matches shader which works in pixel space)
+    _canvasTransform.pivot = simd_make_float2(pivotX, pivotY);
+    _canvasTransform.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
+}
+
+- (void)drawCanvasToTexture:(id<MTLTexture>)targetTexture {
+    if (!self.canvasBlitPipeline) {
+        // Fallback: use direct blit if pipeline not available
+        return;
+    }
+
+    // Update viewport size in case it changed
+    _canvasTransform.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
+
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+
+    MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+    passDesc.colorAttachments[0].texture = targetTexture;
+    passDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
+    passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+    passDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.3, 0.3, 0.3, 1.0);  // Gray background for out-of-bounds
+
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
+    [encoder setRenderPipelineState:self.canvasBlitPipeline];
+
+    // Set transform uniforms
+    [encoder setVertexBytes:&_canvasTransform length:sizeof(CanvasTransformUniforms) atIndex:0];
+
+    // Set canvas texture and sampler
+    [encoder setFragmentTexture:self.canvasTexture atIndex:0];
+    [encoder setFragmentSamplerState:self.textureSampler atIndex:0];
+
+    // Draw full-screen quad
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+
+    [encoder endEncoding];
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+}
+
+- (BOOL)hasCanvasTransform {
+    // Check if canvas has any transform applied
+    return _canvasTransform.scale != 1.0f ||
+           _canvasTransform.rotation != 0.0f ||
+           _canvasTransform.pan.x != 0.0f ||
+           _canvasTransform.pan.y != 0.0f;
+}
+
 @end
 
 // =============================================================================
@@ -1137,27 +1242,33 @@ void MetalStampRenderer::present() {
             return;
         }
 
-        id<MTLCommandBuffer> commandBuffer = [impl_.commandQueue commandBuffer];
+        // Check if we need to use transformed draw or direct blit
+        if ([impl_ hasCanvasTransform] && impl_.canvasBlitPipeline) {
+            // Use transformed canvas draw
+            [impl_ drawCanvasToTexture:drawable.texture];
+        } else {
+            // Use direct blit (no transform)
+            id<MTLCommandBuffer> commandBuffer = [impl_.commandQueue commandBuffer];
 
-        // Blit canvas texture to drawable - use actual texture size for proper Retina support
-        id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
-        NSUInteger srcWidth = impl_.canvasTexture.width;
-        NSUInteger srcHeight = impl_.canvasTexture.height;
-        [blitEncoder copyFromTexture:impl_.canvasTexture
-                         sourceSlice:0
-                         sourceLevel:0
-                        sourceOrigin:MTLOriginMake(0, 0, 0)
-                          sourceSize:MTLSizeMake(srcWidth, srcHeight, 1)
-                           toTexture:drawable.texture
-                    destinationSlice:0
-                    destinationLevel:0
-                   destinationOrigin:MTLOriginMake(0, 0, 0)];
-        [blitEncoder endEncoding];
+            id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+            NSUInteger srcWidth = impl_.canvasTexture.width;
+            NSUInteger srcHeight = impl_.canvasTexture.height;
+            [blitEncoder copyFromTexture:impl_.canvasTexture
+                             sourceSlice:0
+                             sourceLevel:0
+                            sourceOrigin:MTLOriginMake(0, 0, 0)
+                              sourceSize:MTLSizeMake(srcWidth, srcHeight, 1)
+                               toTexture:drawable.texture
+                        destinationSlice:0
+                        destinationLevel:0
+                       destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blitEncoder endEncoding];
 
-        [commandBuffer commit];
-        [commandBuffer waitUntilCompleted];
+            [commandBuffer commit];
+            [commandBuffer waitUntilCompleted];
+        }
 
-        // Draw UI overlays on drawable (after blit completes)
+        // Draw UI overlays on drawable (after canvas completes)
         [impl_ drawQueuedUIRectsToTexture:drawable.texture];
         [impl_ clearUIQueue];
 
@@ -1183,6 +1294,14 @@ void MetalStampRenderer::queue_ui_rect(float x, float y, float width, float heig
 
     simd_float4 color = simd_make_float4(r, g, b, a);
     [impl_ queueUIRect:x y:y width:width height:height color:color cornerRadius:corner_radius];
+}
+
+void MetalStampRenderer::set_canvas_transform(float panX, float panY, float scale,
+                                              float rotation, float pivotX, float pivotY) {
+    if (!is_ready()) return;
+
+    [impl_ setCanvasTransformPanX:panX panY:panY scale:scale rotation:rotation
+                          pivotX:pivotX pivotY:pivotY];
 }
 
 // =============================================================================
@@ -1310,6 +1429,12 @@ void metal_queue_ui_rect(float x, float y, float width, float height,
                          float r, float g, float b, float a,
                          float corner_radius) {
     if (g_metal_renderer) g_metal_renderer->queue_ui_rect(x, y, width, height, r, g, b, a, corner_radius);
+}
+
+// Canvas Transform
+void metal_set_canvas_transform(float panX, float panY, float scale,
+                                float rotation, float pivotX, float pivotY) {
+    if (g_metal_renderer) g_metal_renderer->set_canvas_transform(panX, panY, scale, rotation, pivotX, pivotY);
 }
 
 // Extended brush settings
@@ -1456,6 +1581,12 @@ METAL_EXPORT void metal_stamp_queue_ui_rect(float x, float y, float width, float
                                             float r, float g, float b, float a,
                                             float corner_radius) {
     metal_stamp::metal_queue_ui_rect(x, y, width, height, r, g, b, a, corner_radius);
+}
+
+// Canvas Transform
+METAL_EXPORT void metal_stamp_set_canvas_transform(float panX, float panY, float scale,
+                                                   float rotation, float pivotX, float pivotY) {
+    metal_stamp::metal_set_canvas_transform(panX, panY, scale, rotation, pivotX, pivotY);
 }
 
 // Extended brush settings

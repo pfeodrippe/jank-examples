@@ -381,6 +381,86 @@ fragment half4 clear_fragment(ClearVertex in [[stage_in]]) {
 }
 
 // =============================================================================
+// Canvas Blit Shader (with pan/zoom/rotate transform)
+// =============================================================================
+
+struct CanvasTransformUniforms {
+    float2 pan;           // Pan offset in pixels
+    float scale;          // Zoom level
+    float rotation;       // Rotation in radians
+    float2 pivot;         // Transform pivot in pixels
+    float2 viewportSize;  // Viewport size in pixels
+};
+
+struct CanvasBlitVertexOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex CanvasBlitVertexOut canvas_blit_vertex(
+    uint vid [[vertex_id]],
+    constant CanvasTransformUniforms& transform [[buffer(0)]]
+) {
+    // Full-screen quad corners (NDC)
+    float2 corners[4] = {
+        float2(-1, -1),  // BL
+        float2( 1, -1),  // BR
+        float2(-1,  1),  // TL
+        float2( 1,  1)   // TR
+    };
+
+    float2 pos = corners[vid];
+
+    // Convert NDC to screen pixel coordinates
+    // NDC (-1,-1) = bottom-left, (1,1) = top-right
+    // Screen (0,0) = top-left, (width,height) = bottom-right
+    float2 screenPos;
+    screenPos.x = (pos.x + 1.0) * 0.5 * transform.viewportSize.x;
+    screenPos.y = (1.0 - pos.y) * 0.5 * transform.viewportSize.y;
+
+    // Apply inverse transform to get canvas position
+    // 1. Translate to pivot
+    float2 p = screenPos - transform.pivot;
+
+    // 2. Undo pan
+    p = p - transform.pan;
+
+    // 3. Undo scale
+    p = p / transform.scale;
+
+    // 4. Undo rotation
+    float c = cos(-transform.rotation);
+    float s = sin(-transform.rotation);
+    p = float2(p.x * c - p.y * s, p.x * s + p.y * c);
+
+    // 5. Translate back from pivot
+    p = p + transform.pivot;
+
+    // Convert to UV (0 to 1)
+    float2 uv = p / transform.viewportSize;
+
+    CanvasBlitVertexOut out;
+    out.position = float4(corners[vid], 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+fragment half4 canvas_blit_fragment(
+    CanvasBlitVertexOut in [[stage_in]],
+    texture2d<float> canvasTexture [[texture(0)]],
+    sampler canvasSampler [[sampler(0)]]
+) {
+    // Check if UV is outside canvas bounds (show transparent/background)
+    if (in.uv.x < 0.0 || in.uv.x > 1.0 || in.uv.y < 0.0 || in.uv.y > 1.0) {
+        // Return a subtle gray for out-of-bounds (canvas edge)
+        return half4(0.3, 0.3, 0.3, 1.0);
+    }
+
+    float4 color = canvasTexture.sample(canvasSampler, in.uv);
+    return half4(color);
+}
+
+// =============================================================================
 // UI Rectangle Shader (for sliders and buttons)
 // =============================================================================
 
