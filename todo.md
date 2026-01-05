@@ -51,6 +51,8 @@
   - [x] jit sim
   - [x] jit device
 - [ ] ipad simple animation app
+  - [ ] gpu brush drawing
+    - [ ]
   - [ ] loom-like control
   - [ ] but with shaders
   - [ ] export

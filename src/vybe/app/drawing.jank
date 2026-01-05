@@ -1,6 +1,3 @@
-;; Drawing App - Main entry point
-;; Looom-inspired hand-drawn animation app
-
 (ns vybe.app.drawing
   (:require
    ["vybe/app/drawing/native/drawing_canvas.hpp" :as canvas :scope "dc"]
@@ -157,33 +154,36 @@
    :vertex-count (canvas/get_vertex_count)})
 
 (defn run-app!
-  "Main app loop."
-  []
-  (println "")
-  (println "========================================")
-  (println "   Drawing Canvas - Phase 1")
-  (println "========================================")
-  (println "")
+  "Main app loop. Optional nrepl-port defaults to 5580."
+  ([] (run-app! 5580))
+  ([nrepl-port]
+   (println "")
+   (println "========================================")
+   (println "   Drawing Canvas - Phase 1")
+   (println "========================================")
+   (println "")
 
-  ;; Start nREPL server for interactive testing
-  (server/start-server {:port 5580 :bind "0.0.0.0"})
-  (println "nREPL server started on port 5580")
+   ;; Start nREPL server for interactive testing
+   (server/start-server {:port nrepl-port :bind "0.0.0.0"})
+   (println (str "nREPL server started on port " nrepl-port))
 
-  ;; Initialize native canvas
-  (when (canvas/init 1024 768 "Drawing Canvas")
-    (println "Canvas initialized!")
-    (println "Draw with mouse or touch...")
-    (println "")
+   ;; Initialize native canvas
+   (when (canvas/init 1024 768 "Drawing Canvas")
+     (println "Canvas initialized!")
+     (println "Draw with mouse or touch...")
+     (println "")
 
-    ;; Main loop
-    (loop []
-      (when-not (canvas/should_close)
-        (run-frame!)
-        (recur)))
+     ;; Main loop
+     (loop []
+       (when-not (canvas/should_close)
+         (run-frame!)
+         (recur)))
 
-    ;; Cleanup
-    (canvas/cleanup)
-    (println "Canvas closed.")))
+     ;; Cleanup
+     (canvas/cleanup)
+     (println "Canvas closed."))))
 
-(defn -main []
-  (run-app!))
+(defn -main
+  "Entry point. Optional nrepl-port defaults to 5580 (desktop), use 5581 for iOS."
+  ([] (run-app!))
+  ([nrepl-port] (run-app! nrepl-port)))

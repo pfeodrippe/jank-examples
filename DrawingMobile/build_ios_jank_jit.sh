@@ -1,0 +1,58 @@
+#!/bin/bash
+# iOS JIT-only build script for DrawingMobile
+# Builds only core libs + nREPL support - app namespaces are loaded via remote compile server
+#
+# Usage: ./build_ios_jank_jit.sh <target>
+#   target: 'simulator' or 'device'
+
+set -e
+cd "$(dirname "$0")/.."
+
+# Require explicit target argument
+if [[ "$1" != "simulator" && "$1" != "device" ]]; then
+    echo "Error: You must specify a target: 'simulator' or 'device'"
+    echo "Usage: $0 <target>"
+    exit 1
+fi
+
+TARGET="$1"
+
+# Determine jank path (env var or default for local dev)
+JANK_SRC="${JANK_SRC:-/Users/pfeodrippe/dev/jank/compiler+runtime}"
+
+# Output directory (JIT mode uses different directories)
+# Build directory where libjank.a was built by 'make ios-jit-sim' or 'make ios-jit-device'
+if [[ "$TARGET" == "simulator" ]]; then
+    OUTPUT_DIR="DrawingMobile/build-iphonesimulator-jit"
+    BUILD_DIR="$JANK_SRC/build-ios-sim-jit"
+else
+    OUTPUT_DIR="DrawingMobile/build-iphoneos-jit"
+    BUILD_DIR="$JANK_SRC/build-ios-device-jit"
+fi
+
+echo "Building iOS JIT-only bundle for DrawingMobile..."
+echo "Output: $OUTPUT_DIR"
+echo ""
+
+# Build iOS JIT bundle using jank's ios-bundle --jit
+# This only compiles core libs + jank_aot_init.cpp for JIT mode
+# App namespaces will be loaded via remote compile server at runtime
+# --build-dir tells ios-bundle where to find the pre-built libjank.a
+# --skip-build avoids rebuilding since ios-jit-sim already built it
+"$JANK_SRC/bin/ios-bundle" \
+  --jit \
+  --skip-build \
+  --build-dir "$BUILD_DIR" \
+  --output-dir "$OUTPUT_DIR" \
+  "$TARGET"
+
+echo ""
+echo "JIT-only bundle complete!"
+echo "Libraries in: $OUTPUT_DIR"
+echo ""
+echo "Remember: App namespaces are NOT bundled."
+echo "They will be loaded from the remote compile server (macOS) at runtime."
+echo ""
+echo "Before loading app namespaces, start the compile server:"
+echo "  make drawing-ios-compile-server-sim    (for simulator)"
+echo "  make drawing-ios-compile-server-device (for device)"

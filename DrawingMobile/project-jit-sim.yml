@@ -1,0 +1,115 @@
+# XcodeGen project specification for Drawing Mobile - JIT Simulator
+# Generate with: ./generate-project.sh project-jit-sim.yml or via Makefile
+#
+# JIT MODE: App namespaces are loaded via remote compile server!
+# Only core libs (clojure.core, etc.) are bundled. No app modules.
+# Requires: compile-server running on macOS before loading app namespaces.
+#
+# Environment variables (set by generate-project.sh or Makefile):
+#   JANK_SRC - Path to jank compiler+runtime
+#              Default: /Users/pfeodrippe/dev/jank/compiler+runtime
+
+name: DrawingMobile-JIT-Sim
+
+include:
+  - config-common.yml
+
+settings:
+  base:
+    PRODUCT_NAME: DrawingMobile-JIT-Sim
+    GCC_PREPROCESSOR_DEFINITIONS:
+      - JANK_TARGET_IOS=1
+      - JANK_IOS_JIT=1
+      - IMMER_HAS_LIBGC=1
+      - IMMER_TAGGED_NODE=0
+
+targets:
+  DrawingMobile-JIT-Sim:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    templates: [CommonSources, JITResources]
+    sources:
+      # JIT-specific sources
+      - path: build-iphonesimulator-jit/generated/jank_aot_init.cpp
+        compilerFlags: ["-x", "c++"]
+      # PCH for simulator
+      - path: jank-resources/incremental.pch
+        buildPhase: resources
+      # .clang-format needed for native-source formatting
+      - path: jank-resources/.clang-format
+        buildPhase: resources
+    settings:
+      groups: [CommonCodeSign]
+      base:
+        INFOPLIST_FILE: Info.plist
+        TARGETED_DEVICE_FAMILY: "2"  # iPad only
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        CODE_SIGN_ENTITLEMENTS: jank-jit.entitlements
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
+        # All headers (groups don't merge arrays!)
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/../vendor/imgui
+          - $(PROJECT_DIR)/../vendor/imgui/backends
+          - $(PROJECT_DIR)/../vendor/flecs/distr
+          - $(PROJECT_DIR)/../vendor
+          - $(PROJECT_DIR)/Frameworks/include
+          - $(PROJECT_DIR)/Frameworks/include/SDL3
+          - ${JANK_SRC}/include/cpp
+          - ${JANK_SRC}/src/cpp
+          - ${JANK_SRC}/third-party/immer
+          - ${JANK_SRC}/third-party/bdwgc/include
+          - ${JANK_SRC}/third-party/boost-preprocessor/include
+          - ${JANK_SRC}/third-party/boost-multiprecision/include
+          - ${JANK_SRC}/third-party/folly
+          - ${JANK_SRC}/third-party/stduuid/include
+          # JIT-specific LLVM headers
+          - ${HOME}/dev/ios-llvm-build/ios-llvm-simulator/include
+          - ${JANK_SRC}/third-party/cppinterop/include
+        FRAMEWORK_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Frameworks
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/Frameworks"
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/build-iphonesimulator-jit
+        OTHER_LDFLAGS:
+          # Common frameworks
+          - "-framework Metal"
+          - "-framework MetalKit"
+          - "-framework QuartzCore"
+          - "-framework UIKit"
+          - "-framework Foundation"
+          - "-framework CoreGraphics"
+          - "-framework CoreVideo"
+          - "-framework AVFoundation"
+          - "-framework GameController"
+          - "-framework CoreHaptics"
+          - "-framework CoreMotion"
+          - "-framework IOSurface"
+          - "-framework IOKit"
+          - "-lc++"
+          # JIT libraries (core libs only, app loads via compile server)
+          - "-Wl,-force_load,$(PROJECT_DIR)/build-iphonesimulator-jit/libjank.a"
+          - "-ljankzip"
+          - "-lgc"
+          - "-lfolly"
+          - "-ljank_aot"
+          - "-lllvm_merged"
+          - "-lcurses"
+          - "-lz"
+
+schemes:
+  DrawingMobile-JIT-Sim:
+    build:
+      targets:
+        DrawingMobile-JIT-Sim: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

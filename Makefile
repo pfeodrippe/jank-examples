@@ -109,6 +109,17 @@ help:
 	@echo ""
 	@echo "  Typical usage: make ios-jit-device-run"
 	@echo "  Then connect nREPL to localhost:5559"
+	@echo ""
+	@echo "── Drawing Canvas iOS (SDL3+Metal 2D) ────────────────────────────────────"
+	@echo "  make drawing-ios-setup             - Download SDL3 for iOS"
+	@echo ""
+	@echo "  Simulator (port 5572):"
+	@echo "    make drawing-ios-jit-sim-run     - Build and run (auto-starts server)"
+	@echo ""
+	@echo "  Device (port 5573):"
+	@echo "    make drawing-ios-jit-device-run  - Build and run (auto-starts server)"
+	@echo ""
+	@echo "  nREPL: Simulator localhost:5580, Device localhost:5581 (via iproxy)"
 	@echo "═══════════════════════════════════════════════════════════════════════"
 
 # ============================================================================
@@ -1198,4 +1209,269 @@ ios-device-nrepl-proxy:
 
 # ============================================================================
 # End iOS JIT Device Targets
+# ============================================================================
+
+# ============================================================================
+# Drawing Mobile iOS Targets
+# ============================================================================
+
+.PHONY: drawing-ios-setup drawing-ios-jit-sim-run drawing-ios-jit-device-run \
+        drawing-ios-jit-sim-build drawing-ios-jit-device-build \
+        drawing-ios-compile-server-sim drawing-ios-compile-server-device \
+        drawing-ios-device-nrepl-proxy
+
+# Setup DrawingMobile dependencies (downloads SDL3, no Vulkan needed)
+drawing-ios-setup:
+	@echo "Setting up DrawingMobile iOS dependencies..."
+	cd DrawingMobile && ./setup_ios_deps.sh
+
+# Sync jank include headers to DrawingMobile iOS JIT bundle
+.PHONY: drawing-ios-jit-sync-includes
+drawing-ios-jit-sync-includes:
+	@echo "Syncing jank include headers to DrawingMobile iOS bundle..."
+	@# Create target directories
+	@mkdir -p DrawingMobile/jank-resources/include/gc
+	@mkdir -p DrawingMobile/jank-resources/include/immer
+	@mkdir -p DrawingMobile/jank-resources/include/folly
+	@mkdir -p DrawingMobile/jank-resources/include/boost
+	@mkdir -p DrawingMobile/jank-resources/include/jank
+	@mkdir -p DrawingMobile/jank-resources/include/jtl
+	@mkdir -p DrawingMobile/jank-resources/include/clojure
+	@# GC headers
+	@rsync -av --delete $(JANK_SRC)/third-party/bdwgc/include/gc/ DrawingMobile/jank-resources/include/gc/
+	@cp -f $(JANK_SRC)/third-party/bdwgc/include/gc.h DrawingMobile/jank-resources/include/
+	@cp -f $(JANK_SRC)/third-party/bdwgc/include/gc_cpp.h DrawingMobile/jank-resources/include/
+	@# immer headers
+	@rsync -av --delete $(JANK_SRC)/third-party/immer/immer/ DrawingMobile/jank-resources/include/immer/
+	@# folly headers
+	@rsync -av --delete $(JANK_SRC)/third-party/folly/folly/ DrawingMobile/jank-resources/include/folly/
+	@# boost headers
+	@rsync -av $(JANK_SRC)/third-party/boost-preprocessor/include/boost/ DrawingMobile/jank-resources/include/boost/
+	@rsync -av $(JANK_SRC)/third-party/boost-multiprecision/include/boost/ DrawingMobile/jank-resources/include/boost/
+	@# jank headers
+	@rsync -av --delete $(JANK_SRC)/include/cpp/jank/ DrawingMobile/jank-resources/include/jank/
+	@rsync -av --delete $(JANK_SRC)/include/cpp/jtl/ DrawingMobile/jank-resources/include/jtl/
+	@rsync -av --delete $(JANK_SRC)/include/cpp/clojure/ DrawingMobile/jank-resources/include/clojure/
+	@# Clang builtin headers (for JIT - stddef.h, stdarg.h, etc.)
+	@mkdir -p DrawingMobile/jank-resources/clang/include
+	@rsync -av --delete $(JANK_SRC)/build/llvm-install/usr/local/lib/clang/*/include/ DrawingMobile/jank-resources/clang/include/
+	@# libc++ headers from iOS SDK (required for JIT to find <new>, <memory>, etc.)
+	@mkdir -p DrawingMobile/jank-resources/include/c++/v1
+	@rsync -av --delete /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/usr/include/c++/v1/ DrawingMobile/jank-resources/include/c++/v1/
+	@echo "Includes synced!"
+
+# Sync jank source files to Drawing iOS JIT bundle
+.PHONY: drawing-ios-jit-sync-sources
+drawing-ios-jit-sync-sources:
+	@echo "Syncing jank source files to Drawing iOS bundle..."
+	@mkdir -p DrawingMobile/jank-resources/src/jank/vybe
+	rsync -av --delete src/vybe/ DrawingMobile/jank-resources/src/jank/vybe/
+	@echo "Sources synced!"
+	@if [ -f "$(JANK_SRC)/build-ios-sim-jit/.clang-format" ]; then \
+		cp $(JANK_SRC)/build-ios-sim-jit/.clang-format DrawingMobile/jank-resources/.clang-format; \
+	elif [ -f "$(JANK_SRC)/build/.clang-format" ]; then \
+		cp $(JANK_SRC)/build/.clang-format DrawingMobile/jank-resources/.clang-format; \
+	fi
+
+# Build JIT-only core libs for DrawingMobile simulator
+.PHONY: drawing-ios-jit-sim-core
+drawing-ios-jit-sim-core: ios-jit-sim
+	@echo "Building JIT-only core libs for DrawingMobile simulator..."
+	./DrawingMobile/build_ios_jank_jit.sh simulator
+
+# Build JIT-only core libs for DrawingMobile device
+.PHONY: drawing-ios-jit-device-core
+drawing-ios-jit-device-core: ios-jit-device
+	@echo "Building JIT-only core libs for DrawingMobile device..."
+	./DrawingMobile/build_ios_jank_jit.sh device
+
+# Create libjank_aot.a for DrawingMobile simulator
+.PHONY: drawing-ios-jit-sim-core-libs
+drawing-ios-jit-sim-core-libs: drawing-ios-jit-sim-core
+	@echo "Creating libjank_aot.a for DrawingMobile simulator..."
+	@if [ ! -f "DrawingMobile/build-iphonesimulator-jit/libjank.a" ]; then \
+		echo "ERROR: JIT-only libraries not found!"; \
+		echo "Run 'make drawing-ios-jit-sim-core' first."; \
+		exit 1; \
+	fi
+	@rm -f DrawingMobile/build-iphonesimulator-jit/libjank_aot.a
+	@if [ -d "DrawingMobile/build-iphonesimulator-jit/obj" ] && [ -n "$$(ls DrawingMobile/build-iphonesimulator-jit/obj/*.o 2>/dev/null)" ]; then \
+		ar rcs DrawingMobile/build-iphonesimulator-jit/libjank_aot.a \
+			DrawingMobile/build-iphonesimulator-jit/obj/*.o; \
+	else \
+		echo "No object files found, creating empty libjank_aot.a"; \
+		ar rcs DrawingMobile/build-iphonesimulator-jit/libjank_aot.a; \
+	fi
+	@# Copy dependent libs from jank build
+	@if [ -f "$(JANK_SRC)/build-ios-sim-jit/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-sim-jit/libfolly.a DrawingMobile/build-iphonesimulator-jit/; \
+	fi
+	@cp $(JANK_SRC)/build-ios-sim-jit/libjankzip.a DrawingMobile/build-iphonesimulator-jit/ 2>/dev/null || true
+	@cp $(JANK_SRC)/build-ios-sim-jit/libgc.a DrawingMobile/build-iphonesimulator-jit/ 2>/dev/null || true
+	@cp $(JANK_SRC)/build-ios-sim-jit/libcurses.a DrawingMobile/build-iphonesimulator-jit/ 2>/dev/null || true
+	@# Copy merged LLVM if available, or create it using libtool (like SdfViewerMobile)
+	@if [ -f "DrawingMobile/build-iphonesimulator-jit/libllvm_merged.a" ]; then \
+		echo "libllvm_merged.a already exists"; \
+	elif [ -f "$(JANK_SRC)/build-ios-sim-jit/libllvm_merged.a" ]; then \
+		cp $(JANK_SRC)/build-ios-sim-jit/libllvm_merged.a DrawingMobile/build-iphonesimulator-jit/; \
+	else \
+		echo "Merging LLVM libraries using libtool..."; \
+		libtool -static -o DrawingMobile/build-iphonesimulator-jit/libllvm_merged.a \
+			$$HOME/dev/ios-llvm-build/ios-llvm-simulator/lib/*.a 2>/dev/null || true; \
+	fi
+	@echo "DrawingMobile JIT libraries ready!"
+
+# Build PCH for DrawingMobile simulator
+.PHONY: drawing-ios-jit-pch
+drawing-ios-jit-pch: drawing-ios-jit-sync-includes
+	@echo "Building iOS JIT precompiled header for DrawingMobile (simulator)..."
+	./DrawingMobile/build-ios-pch.sh simulator
+
+# Build PCH for DrawingMobile device
+.PHONY: drawing-ios-jit-pch-device
+drawing-ios-jit-pch-device: drawing-ios-jit-sync-includes
+	@echo "Building iOS JIT precompiled header for DrawingMobile (device)..."
+	./DrawingMobile/build-ios-pch.sh device
+
+# Generate JIT Xcode project for DrawingMobile simulator
+.PHONY: drawing-ios-jit-sim-project
+drawing-ios-jit-sim-project: drawing-ios-jit-sim-core-libs drawing-ios-jit-sync-sources
+	@echo "Generating DrawingMobile JIT simulator Xcode project..."
+	cd DrawingMobile && ./generate-project.sh project-jit-sim.yml
+	@echo "Project generated: DrawingMobile/DrawingMobile-JIT-Sim.xcodeproj"
+
+# Build DrawingMobile JIT simulator app
+.PHONY: drawing-ios-jit-sim-build
+drawing-ios-jit-sim-build: drawing-ios-jit-sync-sources drawing-ios-jit-pch drawing-ios-jit-sim-project
+	@echo "Building DrawingMobile iOS JIT app for simulator..."
+	cd DrawingMobile && xcodebuild \
+		-project DrawingMobile-JIT-Sim.xcodeproj \
+		-scheme DrawingMobile-JIT-Sim \
+		-destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
+		-configuration Debug \
+		build 2>&1 | tee /tmp/drawing_ios_build.txt
+
+# Build and run DrawingMobile JIT simulator (auto-starts compile server)
+drawing-ios-jit-sim-run: drawing-ios-jit-sim-build drawing-ios-compile-server-sim
+	@echo "Launching simulator..."
+	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
+	@echo "Installing DrawingMobile..."
+	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name 'DrawingMobile-JIT-Sim.app' -type d 2>/dev/null | head -1)
+	@echo "Launching app..."
+	xcrun simctl launch 'iPad Pro 13-inch (M4)' com.vybe.DrawingMobile-JIT-Sim
+	@echo ""
+	@echo "DrawingMobile running in simulator!"
+	@echo "nREPL available at localhost:5580"
+
+# Compile server for DrawingMobile iOS Simulator JIT (port 5572)
+.PHONY: drawing-ios-compile-server-sim
+drawing-ios-compile-server-sim:
+	@echo "Starting DrawingMobile compile server for simulator (port 5572)..."
+	@-pkill -f "compile-server.*--port 5572" 2>/dev/null || true
+	@sleep 0.2
+	@cd $(JANK_SRC) && ./build/compile-server --target sim --port 5572 \
+		--module-path $(PWD)/DrawingMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
+		--jit-lib /opt/homebrew/lib/libSDL3.dylib \
+		-I $(PWD)/DrawingMobile/jank-resources/include \
+		-I $(PWD)/DrawingMobile/jank-resources/src/jank \
+		-I /opt/homebrew/include \
+		-I /opt/homebrew/include/SDL3 \
+		-I $(PWD) \
+		-I $(PWD)/vendor \
+		-I $(PWD)/vendor/imgui \
+		-I $(PWD)/vendor/imgui/backends \
+		-I $(PWD)/vendor/flecs/distr & \
+	echo "Waiting for compile server to be ready..."; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		sleep 0.5; \
+		if lsof -i :5572 >/dev/null 2>&1; then \
+			echo "Compile server ready on port 5572!"; \
+			break; \
+		fi; \
+	done
+
+# Generate JIT Xcode project for DrawingMobile device
+.PHONY: drawing-ios-jit-device-project
+drawing-ios-jit-device-project: drawing-ios-jit-device-core drawing-ios-jit-sync-sources
+	@echo "Generating DrawingMobile JIT device Xcode project..."
+	cd DrawingMobile && ./generate-project.sh project-jit-device.yml
+	@echo "Project generated: DrawingMobile/DrawingMobile-JIT-Device.xcodeproj"
+
+# Build DrawingMobile JIT device app
+.PHONY: drawing-ios-jit-device-build
+drawing-ios-jit-device-build: drawing-ios-jit-sync-sources drawing-ios-jit-pch-device drawing-ios-jit-device-project
+	@echo "Building DrawingMobile iOS JIT app for device..."
+	@echo "(If signing fails, open Xcode first: open DrawingMobile/DrawingMobile-JIT-Device.xcodeproj)"
+	cd DrawingMobile && xcodebuild \
+		-project DrawingMobile-JIT-Device.xcodeproj \
+		-scheme DrawingMobile-JIT-Device \
+		-destination 'generic/platform=iOS' \
+		-configuration Debug \
+		build 2>&1 | tee /tmp/drawing_ios_device_build.txt
+
+# Compile server for DrawingMobile iOS Device JIT (port 5573)
+.PHONY: drawing-ios-compile-server-device
+drawing-ios-compile-server-device:
+	@echo "Starting DrawingMobile compile server for device (port 5573)..."
+	@-pkill -f "compile-server.*--port 5573" 2>/dev/null || true
+	@sleep 0.2
+	@cd $(JANK_SRC) && ./build/compile-server --target device --port 5573 \
+		--module-path $(PWD)/DrawingMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
+		--jit-lib /opt/homebrew/lib/libSDL3.dylib \
+		-I $(PWD)/DrawingMobile/jank-resources/include \
+		-I $(PWD)/DrawingMobile/jank-resources/src/jank \
+		-I /opt/homebrew/include \
+		-I /opt/homebrew/include/SDL3 \
+		-I $(PWD) \
+		-I $(PWD)/vendor \
+		-I $(PWD)/vendor/imgui \
+		-I $(PWD)/vendor/imgui/backends \
+		-I $(PWD)/vendor/flecs/distr & \
+	echo "Waiting for compile server to be ready..."; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		sleep 0.5; \
+		if lsof -i :5573 >/dev/null 2>&1; then \
+			echo "Compile server ready on port 5573!"; \
+			break; \
+		fi; \
+	done
+
+# iproxy for DrawingMobile nREPL (Mac:5581 -> Device:5580)
+.PHONY: drawing-ios-device-nrepl-proxy
+drawing-ios-device-nrepl-proxy:
+	@if ! lsof -i :5581 >/dev/null 2>&1; then \
+		echo "Starting iproxy: Mac:5581 -> Device:5580 (background)"; \
+		iproxy 5581 5580 & \
+		sleep 0.5; \
+		echo "nREPL proxy started. Connect to localhost:5581"; \
+	else \
+		echo "iproxy already running on port 5581"; \
+	fi
+
+# Build and run DrawingMobile JIT device (auto-starts compile server + iproxy)
+drawing-ios-jit-device-run: drawing-ios-compile-server-device drawing-ios-device-nrepl-proxy drawing-ios-jit-device-build
+	@echo ""
+	@echo "Installing to connected device..."
+	@# Find the built app and install it
+	@APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name 'DrawingMobile-JIT-Device.app' -path '*Debug-iphoneos*' -type d 2>/dev/null | head -1); \
+	if [ -n "$$APP_PATH" ]; then \
+		echo "Installing: $$APP_PATH"; \
+		ios-deploy -b "$$APP_PATH" --debug 2>&1 || true; \
+	else \
+		echo "ERROR: Built app not found. Build may have failed."; \
+		echo "Check /tmp/drawing_ios_device_build.txt for errors."; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "================================================"
+	@echo "DrawingMobile JIT on Device"
+	@echo "================================================"
+	@echo "Compile server: port 5573"
+	@echo "nREPL proxy:    localhost:5581 -> device:5580"
+	@echo ""
+	@echo "Connect your nREPL client to localhost:5581"
+	@echo "================================================"
+
+# ============================================================================
+# End Drawing Mobile iOS Targets
 # ============================================================================

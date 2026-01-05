@@ -369,6 +369,112 @@ jobs:
           make ios-jit-sim-build JANK_SRC="$HOME/jank/compiler+runtime"
 
   # ============================================================================
+  # DrawingMobile iOS Build (SDL3 + Metal 2D drawing app)
+  # ============================================================================
+  build-drawing-ios-jit:
+    name: Build DrawingMobile iOS JIT Simulator
+    needs: [get-jank-commit, build-jank-macos]
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Clone jank (for source files)
+        run: |
+          git clone --depth 1 --recurse-submodules --branch ${{ env.JANK_REF }} https://github.com/${{ env.JANK_REPO }}.git ~/jank
+
+      - name: Install Homebrew deps
+        run: |
+          brew install cmake ninja double-conversion pkg-config llvm ccache boost openssl zlib doctest
+          brew install openssl@3 zstd sdl3 xcodegen
+
+      - name: Restore Clang/LLVM cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/llvm-install
+            ~/jank/compiler+runtime/build/llvm
+          key: clang-macos-arm64-${{ env.JANK_REF }}-v2
+
+      - name: Restore jank build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/jank/compiler+runtime/build/jank
+            ~/jank/compiler+runtime/build/jank-phase-1
+            ~/jank/compiler+runtime/build/CMakeCache.txt
+            ~/jank/compiler+runtime/build/CMakeFiles
+            ~/jank/compiler+runtime/build/*.a
+            ~/jank/compiler+runtime/build/*.ninja
+            ~/jank/compiler+runtime/build/lib
+            ~/jank/compiler+runtime/build/core-libs
+            ~/jank/compiler+runtime/build/classes
+          key: jank-build-macos-arm64-${{ needs.get-jank-commit.outputs.commit }}-v5
+
+      - name: Verify jank
+        run: |
+          ~/jank/compiler+runtime/build/jank check-health
+
+      # Cache DrawingMobile iOS frameworks (SDL3 only, no Vulkan)
+      - name: Cache DrawingMobile iOS Frameworks
+        id: cache-drawing-ios-frameworks
+        uses: actions/cache@v4
+        with:
+          path: DrawingMobile/Frameworks
+          key: drawing-ios-frameworks-v1
+
+      # Setup DrawingMobile dependencies (builds SDL3 for iOS)
+      - name: Setup DrawingMobile iOS Dependencies
+        if: steps.cache-drawing-ios-frameworks.outputs.cache-hit != 'true'
+        run: |
+          cd DrawingMobile && ./setup_ios_deps.sh
+
+      # Restore iOS LLVM cache (same as SdfViewerMobile)
+      - name: Restore iOS LLVM cache (simulator)
+        id: cache-ios-llvm
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/dev/ios-llvm-build/ios-llvm-simulator
+          key: ios-llvm-simulator-${{ env.JANK_REF }}-v1
+
+      # Build iOS LLVM if not cached
+      - name: Build iOS LLVM
+        if: steps.cache-ios-llvm.outputs.cache-hit != 'true'
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          cd ~/jank/compiler+runtime
+          sed -i '' 's/CLANG_MAX_SUPPORTED "19.1.x"/CLANG_MAX_SUPPORTED "22.x"/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/CLANG_VERSION_UPPER_BOUND 20.0.0/CLANG_VERSION_UPPER_BOUND 23.0.0/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLD_MAX_SUPPORTED "19.1.x"/LLD_MAX_SUPPORTED "22.x"/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLD_VERSION_UPPER_BOUND 20.0.0/LLD_VERSION_UPPER_BOUND 23.0.0/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLVM_MAX_SUPPORTED "19.1.x"/LLVM_MAX_SUPPORTED "22.x"/' third-party/cppinterop/CMakeLists.txt
+          sed -i '' 's/LLVM_VERSION_UPPER_BOUND 20.0.0/LLVM_VERSION_UPPER_BOUND 23.0.0/' third-party/cppinterop/CMakeLists.txt
+          ./bin/build-ios-llvm simulator
+
+      - name: Save iOS LLVM cache (simulator)
+        if: steps.cache-ios-llvm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/dev/ios-llvm-build/ios-llvm-simulator
+          key: ios-llvm-simulator-${{ env.JANK_REF }}-v1
+
+      # Build jank iOS JIT libraries
+      - name: Build jank iOS JIT libs
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          cd ~/jank/compiler+runtime
+          ./bin/build-ios build-ios-sim-jit Debug simulator jit
+
+      - name: Build DrawingMobile iOS JIT Simulator
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export PATH="$HOME/jank/compiler+runtime/build:$PATH"
+          make drawing-ios-jit-sim-build JANK_SRC="$HOME/jank/compiler+runtime"
+
+  # ============================================================================
   # Linux Pipeline (runs in parallel with macOS)
   # DISABLED: jank has a TLS symbol export issue on Linux with emulated TLS
   # See: https://github.com/pfeodrippe/jank-examples/issues/XXX
