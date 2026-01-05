@@ -261,6 +261,58 @@ struct SliderConfig {
     bool isDragging;
 };
 
+// =============================================================================
+// Color Picker Configuration
+// =============================================================================
+
+struct ColorPreset {
+    float r, g, b;
+    const char* name;
+};
+
+// Procreate-style color presets
+static const ColorPreset COLOR_PRESETS[] = {
+    {0.15f, 0.45f, 0.75f, "Blue"},       // Nice blue crayon (default)
+    {0.85f, 0.25f, 0.25f, "Red"},        // Red
+    {0.25f, 0.75f, 0.35f, "Green"},      // Green
+    {0.95f, 0.75f, 0.15f, "Yellow"},     // Yellow/Gold
+    {0.65f, 0.25f, 0.85f, "Purple"},     // Purple
+    {0.95f, 0.55f, 0.15f, "Orange"},     // Orange
+    {0.15f, 0.15f, 0.15f, "Black"},      // Near-black
+    {0.55f, 0.35f, 0.25f, "Brown"},      // Brown
+    {0.95f, 0.55f, 0.65f, "Pink"},       // Pink
+    {0.25f, 0.75f, 0.85f, "Cyan"},       // Cyan/Teal
+};
+static const int NUM_COLOR_PRESETS = sizeof(COLOR_PRESETS) / sizeof(COLOR_PRESETS[0]);
+
+struct ColorButtonConfig {
+    float x, y;           // Position (center)
+    float size;           // Diameter
+    int currentColorIndex;
+};
+
+// Check if point is inside color button
+static bool isPointInColorButton(const ColorButtonConfig& btn, float px, float py) {
+    float dx = px - (btn.x + btn.size / 2.0f);
+    float dy = py - (btn.y + btn.size / 2.0f);
+    return (dx*dx + dy*dy) <= (btn.size/2.0f * btn.size/2.0f);
+}
+
+// Draw color picker button (shows current color)
+static void drawColorButton(const ColorButtonConfig& btn) {
+    const ColorPreset& color = COLOR_PRESETS[btn.currentColorIndex];
+
+    // Outer ring (white)
+    metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
+                              1.0f, 1.0f, 1.0f, 1.0f, btn.size / 2.0f);
+
+    // Inner color circle
+    float innerMargin = 4.0f;
+    float innerSize = btn.size - innerMargin * 2;
+    metal_stamp_queue_ui_rect(btn.x + innerMargin, btn.y + innerMargin, innerSize, innerSize,
+                              color.r, color.g, color.b, 1.0f, innerSize / 2.0f);
+}
+
 // Check if point is inside slider track area
 static bool isPointInSlider(const SliderConfig& slider, float px, float py) {
     return px >= slider.x && px <= slider.x + slider.width &&
@@ -358,9 +410,24 @@ static int metal_test_main() {
         .isDragging = false
     };
 
+    // =============================================================================
+    // Initialize Color Button (positioned below sliders)
+    // =============================================================================
+
+    const float COLOR_BUTTON_SIZE = 70.0f;
+    ColorButtonConfig colorButton = {
+        .x = SLIDER_MARGIN - (COLOR_BUTTON_SIZE - SLIDER_WIDTH) / 2.0f,  // Center under sliders
+        .y = opacitySlider.y + opacitySlider.height + SLIDER_SPACING,
+        .size = COLOR_BUTTON_SIZE,
+        .currentColorIndex = 0  // Start with blue
+    };
+
     // Calculate initial brush values from slider positions
     float brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
     float brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
+
+    // Get current color from presets
+    const ColorPreset& initialColor = COLOR_PRESETS[colorButton.currentColorIndex];
 
     // Set brush settings - Huntsman Crayon with pressure dynamics
     metal_stamp_set_brush_type(1);  // Crayon brush!
@@ -369,7 +436,7 @@ static int metal_test_main() {
     metal_stamp_set_brush_opacity(brushOpacity);
     metal_stamp_set_brush_spacing(0.06f);  // Tight spacing for smooth strokes
     metal_stamp_set_brush_grain_scale(1.8f);  // Visible paper grain
-    metal_stamp_set_brush_color(0.15f, 0.45f, 0.75f, 1.0f);  // Nice blue crayon
+    metal_stamp_set_brush_color(initialColor.r, initialColor.g, initialColor.b, 1.0f);
 
     // Pressure dynamics - Apple Pencil / touch pressure affects stroke
     metal_stamp_set_brush_size_pressure(0.8f);    // Pressure strongly affects size
@@ -386,6 +453,7 @@ static int metal_test_main() {
     // Track drawing state
     bool is_drawing = false;
     float last_x = 0, last_y = 0;
+    float pen_pressure = 1.0f;  // Track Apple Pencil pressure from axis events
 
     // Main loop
     bool running = true;
@@ -433,6 +501,12 @@ static int metal_test_main() {
                         brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
                         metal_stamp_set_brush_opacity(brushOpacity);
                         std::cout << "Opacity slider: " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    } else if (isPointInColorButton(colorButton, x, y)) {
+                        // Cycle to next color preset
+                        colorButton.currentColorIndex = (colorButton.currentColorIndex + 1) % NUM_COLOR_PRESETS;
+                        const ColorPreset& newColor = COLOR_PRESETS[colorButton.currentColorIndex];
+                        metal_stamp_set_brush_color(newColor.r, newColor.g, newColor.b, 1.0f);
+                        std::cout << "Color changed to: " << newColor.name << std::endl;
                     } else {
                         // Regular drawing
                         std::cout << "Touch down: " << x << ", " << y << " (pressure: " << pressure << ")" << std::endl;
@@ -488,6 +562,118 @@ static int metal_test_main() {
                     break;
                 }
 
+                // =============================================================
+                // Apple Pencil / Stylus Events (SDL3 Pen API)
+                // =============================================================
+
+                case SDL_EVENT_PEN_AXIS: {
+                    // Track pressure from axis events
+                    if (event.paxis.axis == SDL_PEN_AXIS_PRESSURE) {
+                        pen_pressure = event.paxis.value;
+                        // Update pressure during active drawing
+                        if (is_drawing) {
+                            // Pressure is applied on next motion event
+                        }
+                    }
+                    break;
+                }
+
+                case SDL_EVENT_PEN_DOWN: {
+                    float x = event.ptouch.x;
+                    float y = event.ptouch.y;
+                    // pen_pressure should have been set by preceding axis events
+                    if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
+
+                    std::cout << "Pen down: " << x << ", " << y << " (pressure: " << pen_pressure << ")" << std::endl;
+
+                    // Check if touch is on a slider
+                    float sliderHitPadding = 30.0f;
+                    SliderConfig expandedSize = sizeSlider;
+                    expandedSize.x -= sliderHitPadding;
+                    expandedSize.width += sliderHitPadding * 2;
+                    expandedSize.y -= sliderHitPadding;
+                    expandedSize.height += sliderHitPadding * 2;
+
+                    SliderConfig expandedOpacity = opacitySlider;
+                    expandedOpacity.x -= sliderHitPadding;
+                    expandedOpacity.width += sliderHitPadding * 2;
+                    expandedOpacity.y -= sliderHitPadding;
+                    expandedOpacity.height += sliderHitPadding * 2;
+
+                    if (isPointInSlider(expandedSize, x, y)) {
+                        sizeSlider.isDragging = true;
+                        float relY = (y - sizeSlider.y) / sizeSlider.height;
+                        sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
+                        metal_stamp_set_brush_size(brushSize);
+                        std::cout << "Size slider (pen): " << (int)brushSize << "px" << std::endl;
+                    } else if (isPointInSlider(expandedOpacity, x, y)) {
+                        opacitySlider.isDragging = true;
+                        float relY = (y - opacitySlider.y) / opacitySlider.height;
+                        opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
+                        metal_stamp_set_brush_opacity(brushOpacity);
+                        std::cout << "Opacity slider (pen): " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    } else if (isPointInColorButton(colorButton, x, y)) {
+                        // Cycle to next color preset (pen)
+                        colorButton.currentColorIndex = (colorButton.currentColorIndex + 1) % NUM_COLOR_PRESETS;
+                        const ColorPreset& newColor = COLOR_PRESETS[colorButton.currentColorIndex];
+                        metal_stamp_set_brush_color(newColor.r, newColor.g, newColor.b, 1.0f);
+                        std::cout << "Color changed to (pen): " << newColor.name << std::endl;
+                    } else {
+                        // Drawing with Apple Pencil
+                        metal_stamp_begin_stroke(x, y, pen_pressure);
+                        last_x = x;
+                        last_y = y;
+                        is_drawing = true;
+                    }
+                    break;
+                }
+
+                case SDL_EVENT_PEN_MOTION: {
+                    float x = event.pmotion.x;
+                    float y = event.pmotion.y;
+                    // pen_pressure updated via SDL_EVENT_PEN_AXIS events
+                    if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
+
+                    if (sizeSlider.isDragging) {
+                        float relY = (y - sizeSlider.y) / sizeSlider.height;
+                        sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
+                        metal_stamp_set_brush_size(brushSize);
+                    } else if (opacitySlider.isDragging) {
+                        float relY = (y - opacitySlider.y) / opacitySlider.height;
+                        opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
+                        metal_stamp_set_brush_opacity(brushOpacity);
+                    } else if (is_drawing) {
+                        float dx = x - last_x;
+                        float dy = y - last_y;
+                        if (dx*dx + dy*dy > 1.0f) {
+                            metal_stamp_add_stroke_point(x, y, pen_pressure);
+                            last_x = x;
+                            last_y = y;
+                        }
+                    }
+                    break;
+                }
+
+                case SDL_EVENT_PEN_UP: {
+                    if (sizeSlider.isDragging) {
+                        sizeSlider.isDragging = false;
+                        std::cout << "Size set to (pen): " << (int)brushSize << "px" << std::endl;
+                    } else if (opacitySlider.isDragging) {
+                        opacitySlider.isDragging = false;
+                        std::cout << "Opacity set to (pen): " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    } else if (is_drawing) {
+                        std::cout << "Pen up - ending stroke" << std::endl;
+                        metal_stamp_end_stroke();
+                        is_drawing = false;
+                    }
+                    pen_pressure = 1.0f;  // Reset pressure
+                    break;
+                }
+
                 // NOTE: On iOS simulator, mouse events also fire alongside finger events
                 // but with different coordinates (pixels vs normalized). We only handle
                 // finger events to avoid duplicate strokes.
@@ -531,6 +717,8 @@ static int metal_test_main() {
         drawVerticalSlider(sizeSlider, height, 0.3f, 0.5f, 0.9f, "Size");
         // Opacity slider - gray/white tint
         drawVerticalSlider(opacitySlider, height, 0.6f, 0.6f, 0.6f, "Opacity");
+        // Color picker button
+        drawColorButton(colorButton);
 
         // Present with UI overlay
         metal_stamp_present();
