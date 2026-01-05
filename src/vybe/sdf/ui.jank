@@ -62,7 +62,20 @@
       (imgui-sdl/ImGui_ImplSDL3_NewFrame)
       (imgui/NewFrame)))
 
-  (eval ' (sdfx/engine_initialized))
+  (jc/native-source
+   '(let [cam (state/get-camera)
+          edit (state/get-edit-mode)
+          objs (state/get-objects)
+          ;; TODO: re-enable fps access once JIT nil issue is fixed
+          ;; io (imgui/GetIO)
+          ;; fps (or (cpp/.-Framerate io) 0.0)
+          fps 60.0]
+      (imgui/SetNextWindowPos (imgui-h/ImVec2. (cpp/float. 10.0) (cpp/float. 10.0))
+                              imgui-h/ImGuiCond_FirstUseEver)
+      (imgui/Begin "SDF Debug")
+      (imgui/Text #cpp "FPS: %.1f" (cpp/float. fps))
+      (imgui/End)
+      nil))
 
   ())
 
@@ -73,14 +86,12 @@
   (let [cam (state/get-camera)
         edit (state/get-edit-mode)
         objs (state/get-objects)
-        ;; TODO: re-enable fps access once JIT nil issue is fixed
-        ;; io (imgui/GetIO)
-        ;; fps (or (cpp/.-Framerate io) 0.0)
-        fps 60.0]
+        io (imgui/GetIO)
+        fps (cpp/.-Framerate io)]
     (imgui/SetNextWindowPos (imgui-h/ImVec2. (cpp/float. 10.0) (cpp/float. 10.0))
                             imgui-h/ImGuiCond_FirstUseEver)
     (imgui/Begin "SDF Debug")
-    (imgui/Text #cpp "FPS: %.1f" (cpp/float. fps))
+    (imgui/Text #cpp "FPS: %.1f" fps)
     (imgui/Text (str "Greeting: " (greeting/get-greeting)))
     (imgui/Text (str "Version: " (greeting/get-version)))
     ;; SDF compute status with detailed breakdown
@@ -101,7 +112,7 @@
           (when-not mesh-initialized (imgui/Text "  - pipeline not init"))
           (when-not mesh-has-indices (imgui/Text "  - no triangles")))))
     (imgui/Separator)
-    (imgui/Text #cpp "Camera _20:")
+    (imgui/Text #cpp "Camera _22:")
     (imgui/Text #cpp "  Distance: %.2f" (cpp/float. (or (:distance cam) 0.0)))
     (imgui/Text #cpp "  Angle X: %.2f" (cpp/float. (or (:angle-x cam) 0.0)))
     (imgui/Text #cpp "  Angle Y: %.2f" (cpp/float. (or (:angle-y cam) 0.0)))

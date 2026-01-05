@@ -109,3 +109,48 @@ make ios-jit-clean && make ios-jit-sim-run
 ## Result
 
 iOS JIT now works correctly! All 9 modules load and `-main` executes successfully, displaying the 3D hand in the simulator.
+
+---
+
+## Second Fix: nREPL Eval with `#cpp` Strings
+
+### Issue
+
+After module loading worked, evaluating functions via nREPL that use `#cpp` format strings (like `#cpp "FPS: %.1f"`) failed:
+
+```
+error: use of undeclared identifier 'vybe_sdf_ui_G__3874'
+```
+
+### Root Cause
+
+In `gen(analyze::expr::cpp_call_ref)`, nested function code was only emitted for `module` and `function` targets:
+
+```cpp
+// BEFORE (wrong):
+if((target == compilation_target::module || target == compilation_target::function)
+   && !expr->function_code.empty())
+```
+
+The compile server uses `target == eval`, so nested functions were being REFERENCED but never DECLARED.
+
+### Fix
+
+File: `/Users/pfeodrippe/dev/jank/compiler+runtime/src/cpp/jank/codegen/processor.cpp`
+Line: ~2006
+
+```cpp
+// AFTER (correct):
+/* Emit nested function code for all targets that generate C++ structs.
+ * This includes eval mode used by the iOS compile server, not just module/function. */
+if(!expr->function_code.empty())
+{
+  util::format_to(cpp_raw_buffer, "\n{}\n", expr->function_code);
+}
+```
+
+### Summary
+
+Two fixes were needed for iOS JIT:
+1. `wrap_constant_access`: Use `owner_target` instead of `target` for constant registry lookup
+2. `gen(cpp_call)`: Emit `function_code` for all targets, not just module/function
