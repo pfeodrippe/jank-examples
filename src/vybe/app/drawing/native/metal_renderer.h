@@ -185,6 +185,16 @@ public:
     void present();
 
     // =========================================================================
+    // UI Drawing
+    // =========================================================================
+
+    // Queue a rounded rectangle to be drawn as UI overlay
+    // Called before present(), drawn on top of canvas
+    void queue_ui_rect(float x, float y, float width, float height,
+                       float r, float g, float b, float a,
+                       float corner_radius);
+
+    // =========================================================================
     // Debug
     // =========================================================================
 
@@ -274,5 +284,10 @@ void metal_stamp_use_preset_round_soft();
 void metal_stamp_use_preset_round_hard();
 void metal_stamp_use_preset_square();
 void metal_stamp_use_preset_splatter();
+
+// UI Drawing
+void metal_stamp_queue_ui_rect(float x, float y, float width, float height,
+                               float r, float g, float b, float a,
+                               float corner_radius);
 
 } // extern "C"

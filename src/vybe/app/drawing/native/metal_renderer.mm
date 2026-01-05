@@ -58,6 +58,7 @@ struct MSLStrokeUniforms {
 @property (nonatomic, strong) id<MTLRenderPipelineState> markerPipeline;       // Marker brush
 @property (nonatomic, strong) id<MTLRenderPipelineState> stampTexturePipeline; // With shape texture
 @property (nonatomic, strong) id<MTLRenderPipelineState> clearPipeline;
+@property (nonatomic, strong) id<MTLRenderPipelineState> uiRectPipeline;      // UI rectangle drawing
 @property (nonatomic, assign) int currentBrushType;  // 0=Round, 1=Crayon, etc.
 @property (nonatomic, strong) id<MTLTexture> canvasTexture;
 @property (nonatomic, strong) id<MTLBuffer> pointBuffer;
@@ -109,11 +110,26 @@ struct MSLStrokeUniforms {
                   useShapeTexture:(BOOL)useShape useGrainTexture:(BOOL)useGrain;
 - (void)commitStrokeToCanvas;
 
+// UI Drawing
+- (void)queueUIRect:(float)x y:(float)y width:(float)w height:(float)h
+              color:(simd_float4)color cornerRadius:(float)radius;
+- (void)drawQueuedUIRectsToTexture:(id<MTLTexture>)texture;
+- (void)clearUIQueue;
+
 @end
+
+// UI Rect parameters (matches shader struct)
+struct UIRectParams {
+    simd_float4 rect;       // x, y, width, height in NDC
+    simd_float4 color;
+    float cornerRadius;
+    float _padding[3];      // Align to 16 bytes
+};
 
 @implementation MetalStampRendererImpl {
     std::vector<MSLPoint> _points;
     simd_float4 _backgroundColor;
+    std::vector<UIRectParams> _uiRects;  // UI rects to draw this frame
 }
 
 - (BOOL)initWithWindow:(SDL_Window*)window width:(int)w height:(int)h {
@@ -311,6 +327,49 @@ struct MSLStrokeUniforms {
                 fragment half4 clear_fragment(constant float4& color [[buffer(0)]]) {
                     return half4(color);
                 }
+
+                // UI Rectangle shader - takes rect bounds in NDC and color
+                struct UIRectParams {
+                    float4 rect;   // x, y, width, height in NDC
+                    float4 color;
+                    float cornerRadius;  // In NDC units
+                };
+
+                struct UIVertexOut {
+                    float4 position [[position]];
+                    float2 uv;
+                };
+
+                vertex UIVertexOut ui_rect_vertex(uint vid [[vertex_id]], constant UIRectParams& params [[buffer(0)]]) {
+                    // Quad corners: 0=BL, 1=BR, 2=TL, 3=TR
+                    float2 corners[4] = { float2(0,0), float2(1,0), float2(0,1), float2(1,1) };
+                    float2 uv = corners[vid];
+
+                    float2 pos = params.rect.xy + uv * params.rect.zw;
+
+                    UIVertexOut out;
+                    out.position = float4(pos, 0.0, 1.0);
+                    out.uv = uv;
+                    return out;
+                }
+
+                fragment half4 ui_rect_fragment(UIVertexOut in [[stage_in]], constant UIRectParams& params [[buffer(0)]]) {
+                    // Simple rounded rectangle SDF
+                    float2 size = params.rect.zw;
+                    float2 center = float2(0.5, 0.5);
+                    float2 p = in.uv - center;
+
+                    // Aspect-correct radius
+                    float r = params.cornerRadius / min(size.x, size.y);
+                    float2 q = abs(p) - (float2(0.5) - r);
+                    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+
+                    // Antialiased edge
+                    float aa = fwidth(d) * 1.5;
+                    float alpha = 1.0 - smoothstep(-aa, aa, d);
+
+                    return half4(half3(params.color.rgb), half(params.color.a * alpha));
+                }
             )";
 
             library = [self.device newLibraryWithSource:shaderSource
@@ -398,6 +457,34 @@ struct MSLStrokeUniforms {
         }
     } else {
         METAL_LOG("Marker shader not found in library, using fallback");
+    }
+
+    // Create UI rect pipeline
+    id<MTLFunction> uiRectVertexFunc = [library newFunctionWithName:@"ui_rect_vertex"];
+    id<MTLFunction> uiRectFragmentFunc = [library newFunctionWithName:@"ui_rect_fragment"];
+    if (uiRectVertexFunc && uiRectFragmentFunc) {
+        MTLRenderPipelineDescriptor* uiPipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
+        uiPipelineDesc.vertexFunction = uiRectVertexFunc;
+        uiPipelineDesc.fragmentFunction = uiRectFragmentFunc;
+        uiPipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+        // Enable alpha blending for UI
+        uiPipelineDesc.colorAttachments[0].blendingEnabled = YES;
+        uiPipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+        uiPipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+        uiPipelineDesc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        uiPipelineDesc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        uiPipelineDesc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        uiPipelineDesc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+
+        self.uiRectPipeline = [self.device newRenderPipelineStateWithDescriptor:uiPipelineDesc error:&error];
+        if (!self.uiRectPipeline) {
+            METAL_LOG("Failed to create UI rect pipeline: %s", [[error localizedDescription] UTF8String]);
+        } else {
+            METAL_LOG("Created UI rect pipeline");
+        }
+    } else {
+        METAL_LOG("UI rect shaders not found in library (vertex=%p fragment=%p)", uiRectVertexFunc, uiRectFragmentFunc);
     }
 
     METAL_LOG("Created render pipelines");
@@ -724,6 +811,59 @@ struct MSLStrokeUniforms {
     self.pointCount = 0;
 }
 
+// =============================================================================
+// UI Drawing Methods
+// =============================================================================
+
+- (void)queueUIRect:(float)x y:(float)y width:(float)w height:(float)h
+              color:(simd_float4)color cornerRadius:(float)radius {
+    // Convert screen coordinates to NDC
+    // Screen: (0,0) at top-left, (width, height) at bottom-right
+    // NDC: (-1,-1) at bottom-left, (1,1) at top-right
+    float ndcX = (x / self.drawableWidth) * 2.0f - 1.0f;
+    float ndcY = 1.0f - (y / self.drawableHeight) * 2.0f;  // Flip Y
+    float ndcW = (w / self.drawableWidth) * 2.0f;
+    float ndcH = (h / self.drawableHeight) * 2.0f;
+
+    // Convert corner radius to NDC (use average of width/height for aspect ratio)
+    float ndcRadius = (radius / ((self.drawableWidth + self.drawableHeight) / 2.0f)) * 2.0f;
+
+    UIRectParams params;
+    params.rect = simd_make_float4(ndcX, ndcY - ndcH, ndcW, ndcH);  // Adjust Y for top-left origin
+    params.color = color;
+    params.cornerRadius = ndcRadius;
+
+    _uiRects.push_back(params);
+}
+
+- (void)drawQueuedUIRectsToTexture:(id<MTLTexture>)texture {
+    if (_uiRects.empty() || !self.uiRectPipeline) return;
+
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+
+    MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+    passDesc.colorAttachments[0].texture = texture;
+    passDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;  // Preserve existing content
+    passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
+    [encoder setRenderPipelineState:self.uiRectPipeline];
+
+    for (const UIRectParams& params : _uiRects) {
+        [encoder setVertexBytes:&params length:sizeof(UIRectParams) atIndex:0];
+        [encoder setFragmentBytes:&params length:sizeof(UIRectParams) atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+    }
+
+    [encoder endEncoding];
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+}
+
+- (void)clearUIQueue {
+    _uiRects.clear();
+}
+
 @end
 
 // =============================================================================
@@ -1014,8 +1154,17 @@ void MetalStampRenderer::present() {
                    destinationOrigin:MTLOriginMake(0, 0, 0)];
         [blitEncoder endEncoding];
 
-        [commandBuffer presentDrawable:drawable];
         [commandBuffer commit];
+        [commandBuffer waitUntilCompleted];
+
+        // Draw UI overlays on drawable (after blit completes)
+        [impl_ drawQueuedUIRectsToTexture:drawable.texture];
+        [impl_ clearUIQueue];
+
+        // Present the drawable
+        id<MTLCommandBuffer> presentBuffer = [impl_.commandQueue commandBuffer];
+        [presentBuffer presentDrawable:drawable];
+        [presentBuffer commit];
     }
 }
 
@@ -1025,6 +1174,15 @@ int MetalStampRenderer::get_current_stroke_point_count() const {
 
 int MetalStampRenderer::get_points_rendered() const {
     return is_ready() ? impl_.pointsRendered : 0;
+}
+
+void MetalStampRenderer::queue_ui_rect(float x, float y, float width, float height,
+                                       float r, float g, float b, float a,
+                                       float corner_radius) {
+    if (!is_ready()) return;
+
+    simd_float4 color = simd_make_float4(r, g, b, a);
+    [impl_ queueUIRect:x y:y width:width height:height color:color cornerRadius:corner_radius];
 }
 
 // =============================================================================
@@ -1145,6 +1303,13 @@ void metal_render_stroke() {
 
 void metal_present() {
     if (g_metal_renderer) g_metal_renderer->present();
+}
+
+// UI Drawing
+void metal_queue_ui_rect(float x, float y, float width, float height,
+                         float r, float g, float b, float a,
+                         float corner_radius) {
+    if (g_metal_renderer) g_metal_renderer->queue_ui_rect(x, y, width, height, r, g, b, a, corner_radius);
 }
 
 // Extended brush settings
@@ -1284,6 +1449,13 @@ METAL_EXPORT void metal_stamp_render_stroke() {
 
 METAL_EXPORT void metal_stamp_present() {
     metal_stamp::metal_present();
+}
+
+// UI Drawing
+METAL_EXPORT void metal_stamp_queue_ui_rect(float x, float y, float width, float height,
+                                            float r, float g, float b, float a,
+                                            float corner_radius) {
+    metal_stamp::metal_queue_ui_rect(x, y, width, height, r, g, b, a, corner_radius);
 }
 
 // Extended brush settings

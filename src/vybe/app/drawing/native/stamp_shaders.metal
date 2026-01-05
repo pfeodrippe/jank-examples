@@ -379,3 +379,49 @@ vertex ClearVertex clear_vertex(
 fragment half4 clear_fragment(ClearVertex in [[stage_in]]) {
     return half4(in.color);
 }
+
+// =============================================================================
+// UI Rectangle Shader (for sliders and buttons)
+// =============================================================================
+
+struct UIRectParams {
+    float4 rect;       // x, y, width, height in NDC
+    float4 color;
+    float cornerRadius;  // In NDC units
+};
+
+struct UIVertexOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex UIVertexOut ui_rect_vertex(uint vid [[vertex_id]], constant UIRectParams& params [[buffer(0)]]) {
+    // Quad corners: 0=BL, 1=BR, 2=TL, 3=TR
+    float2 corners[4] = { float2(0,0), float2(1,0), float2(0,1), float2(1,1) };
+    float2 uv = corners[vid];
+
+    float2 pos = params.rect.xy + uv * params.rect.zw;
+
+    UIVertexOut out;
+    out.position = float4(pos, 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+fragment half4 ui_rect_fragment(UIVertexOut in [[stage_in]], constant UIRectParams& params [[buffer(0)]]) {
+    // Simple rounded rectangle SDF
+    float2 size = params.rect.zw;
+    float2 center = float2(0.5, 0.5);
+    float2 p = in.uv - center;
+
+    // Aspect-correct radius
+    float r = params.cornerRadius / min(size.x, size.y);
+    float2 q = abs(p) - (float2(0.5) - r);
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+
+    // Antialiased edge
+    float aa = fwidth(d) * 1.5;
+    float alpha = 1.0 - smoothstep(-aa, aa, d);
+
+    return half4(half3(params.color.rgb), half(params.color.a * alpha));
+}

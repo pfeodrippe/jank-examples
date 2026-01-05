@@ -12,6 +12,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <pthread.h>
+#include <algorithm>  // For std::max, std::min
 
 #include <SDL3/SDL.h>
 #include "../src/vybe/app/drawing/native/metal_renderer.h"
@@ -248,6 +249,54 @@ static void call_jank_main_impl() {
 
 #if METAL_TEST_MODE
 
+// =============================================================================
+// UI Slider Configuration
+// =============================================================================
+
+struct SliderConfig {
+    float x, y;           // Position (top-left)
+    float width, height;  // Size
+    float value;          // Current value (0.0 - 1.0)
+    float minVal, maxVal; // Value range
+    bool isDragging;
+};
+
+// Check if point is inside slider track area
+static bool isPointInSlider(const SliderConfig& slider, float px, float py) {
+    return px >= slider.x && px <= slider.x + slider.width &&
+           py >= slider.y && py <= slider.y + slider.height;
+}
+
+// Draw a vertical slider (Procreate-style)
+static void drawVerticalSlider(const SliderConfig& slider, int screenHeight,
+                               float r, float g, float b, const char* label) {
+    // Slider track background (dark semi-transparent)
+    metal_stamp_queue_ui_rect(slider.x, slider.y, slider.width, slider.height,
+                              0.2f, 0.2f, 0.2f, 0.7f, 10.0f);
+
+    // Filled portion (shows current value)
+    float fillHeight = slider.height * slider.value;
+    float fillY = slider.y + slider.height - fillHeight;
+    if (fillHeight > 0) {
+        metal_stamp_queue_ui_rect(slider.x, fillY, slider.width, fillHeight,
+                                  r, g, b, 0.9f, 10.0f);
+    }
+
+    // Slider knob/handle
+    float knobSize = slider.width * 1.3f;
+    float knobX = slider.x + slider.width / 2.0f - knobSize / 2.0f;
+    float knobY = fillY - knobSize / 2.0f;
+    metal_stamp_queue_ui_rect(knobX, knobY, knobSize, knobSize,
+                              1.0f, 1.0f, 1.0f, 1.0f, knobSize / 2.0f);
+
+    // Inner knob circle (colored)
+    float innerSize = knobSize * 0.7f;
+    float innerX = knobX + (knobSize - innerSize) / 2.0f;
+    float innerY = knobY + (knobSize - innerSize) / 2.0f;
+    metal_stamp_queue_ui_rect(innerX, innerY, innerSize, innerSize,
+                              r, g, b, 1.0f, innerSize / 2.0f);
+}
+
 static int metal_test_main() {
     std::cout << "========================================" << std::endl;
     std::cout << "   METAL TEST MODE - Pure C++ Rendering" << std::endl;
@@ -278,11 +327,46 @@ static int metal_test_main() {
     }
     std::cout << "Metal renderer initialized!" << std::endl;
 
+    // =============================================================================
+    // Initialize UI Sliders (Procreate-style vertical sliders on left edge)
+    // =============================================================================
+
+    const float SLIDER_WIDTH = 60.0f;
+    const float SLIDER_HEIGHT = 300.0f;
+    const float SLIDER_MARGIN = 40.0f;
+    const float SLIDER_SPACING = 30.0f;
+
+    SliderConfig sizeSlider = {
+        .x = SLIDER_MARGIN,
+        .y = height / 2.0f - SLIDER_HEIGHT - SLIDER_SPACING / 2.0f,
+        .width = SLIDER_WIDTH,
+        .height = SLIDER_HEIGHT,
+        .value = 0.25f,  // 25% = 50px brush (range 10-200)
+        .minVal = 10.0f,
+        .maxVal = 200.0f,
+        .isDragging = false
+    };
+
+    SliderConfig opacitySlider = {
+        .x = SLIDER_MARGIN,
+        .y = height / 2.0f + SLIDER_SPACING / 2.0f,
+        .width = SLIDER_WIDTH,
+        .height = SLIDER_HEIGHT,
+        .value = 0.9f,  // 90% opacity
+        .minVal = 0.0f,
+        .maxVal = 1.0f,
+        .isDragging = false
+    };
+
+    // Calculate initial brush values from slider positions
+    float brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
+    float brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
+
     // Set brush settings - Huntsman Crayon with pressure dynamics
     metal_stamp_set_brush_type(1);  // Crayon brush!
-    metal_stamp_set_brush_size(50.0f);  // Base size
+    metal_stamp_set_brush_size(brushSize);
     metal_stamp_set_brush_hardness(0.35f);  // Crayon hardness
-    metal_stamp_set_brush_opacity(0.9f);
+    metal_stamp_set_brush_opacity(brushOpacity);
     metal_stamp_set_brush_spacing(0.06f);  // Tight spacing for smooth strokes
     metal_stamp_set_brush_grain_scale(1.8f);  // Visible paper grain
     metal_stamp_set_brush_color(0.15f, 0.45f, 0.75f, 1.0f);  // Nice blue crayon
@@ -320,21 +404,63 @@ static int metal_test_main() {
                     float pressure = event.tfinger.pressure;
                     if (pressure <= 0.0f) pressure = 1.0f;  // Default pressure
 
-                    std::cout << "Touch down: " << x << ", " << y << " (pressure: " << pressure << ")" << std::endl;
-                    metal_stamp_begin_stroke(x, y, pressure);
-                    last_x = x;
-                    last_y = y;
-                    is_drawing = true;
+                    // Check if touch is on a slider (with expanded hit area)
+                    float sliderHitPadding = 30.0f;
+                    SliderConfig expandedSize = sizeSlider;
+                    expandedSize.x -= sliderHitPadding;
+                    expandedSize.width += sliderHitPadding * 2;
+                    expandedSize.y -= sliderHitPadding;
+                    expandedSize.height += sliderHitPadding * 2;
+
+                    SliderConfig expandedOpacity = opacitySlider;
+                    expandedOpacity.x -= sliderHitPadding;
+                    expandedOpacity.width += sliderHitPadding * 2;
+                    expandedOpacity.y -= sliderHitPadding;
+                    expandedOpacity.height += sliderHitPadding * 2;
+
+                    if (isPointInSlider(expandedSize, x, y)) {
+                        sizeSlider.isDragging = true;
+                        // Update value based on Y position
+                        float relY = (y - sizeSlider.y) / sizeSlider.height;
+                        sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
+                        metal_stamp_set_brush_size(brushSize);
+                        std::cout << "Size slider: " << (int)brushSize << "px" << std::endl;
+                    } else if (isPointInSlider(expandedOpacity, x, y)) {
+                        opacitySlider.isDragging = true;
+                        float relY = (y - opacitySlider.y) / opacitySlider.height;
+                        opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
+                        metal_stamp_set_brush_opacity(brushOpacity);
+                        std::cout << "Opacity slider: " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    } else {
+                        // Regular drawing
+                        std::cout << "Touch down: " << x << ", " << y << " (pressure: " << pressure << ")" << std::endl;
+                        metal_stamp_begin_stroke(x, y, pressure);
+                        last_x = x;
+                        last_y = y;
+                        is_drawing = true;
+                    }
                     break;
                 }
 
                 case SDL_EVENT_FINGER_MOTION: {
-                    if (is_drawing) {
-                        float x = event.tfinger.x * width;
-                        float y = event.tfinger.y * height;
-                        float pressure = event.tfinger.pressure;
-                        if (pressure <= 0.0f) pressure = 1.0f;
+                    float x = event.tfinger.x * width;
+                    float y = event.tfinger.y * height;
+                    float pressure = event.tfinger.pressure;
+                    if (pressure <= 0.0f) pressure = 1.0f;
 
+                    if (sizeSlider.isDragging) {
+                        float relY = (y - sizeSlider.y) / sizeSlider.height;
+                        sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
+                        metal_stamp_set_brush_size(brushSize);
+                    } else if (opacitySlider.isDragging) {
+                        float relY = (y - opacitySlider.y) / opacitySlider.height;
+                        opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
+                        brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
+                        metal_stamp_set_brush_opacity(brushOpacity);
+                    } else if (is_drawing) {
                         // Only add point if moved more than 1 pixel (avoid spurious motion events)
                         float dx = x - last_x;
                         float dy = y - last_y;
@@ -348,7 +474,13 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_FINGER_UP: {
-                    if (is_drawing) {
+                    if (sizeSlider.isDragging) {
+                        sizeSlider.isDragging = false;
+                        std::cout << "Size set to: " << (int)brushSize << "px" << std::endl;
+                    } else if (opacitySlider.isDragging) {
+                        opacitySlider.isDragging = false;
+                        std::cout << "Opacity set to: " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    } else if (is_drawing) {
                         std::cout << "Touch up - ending stroke" << std::endl;
                         metal_stamp_end_stroke();
                         is_drawing = false;
@@ -391,8 +523,16 @@ static int metal_test_main() {
             }
         }
 
-        // Render the current stroke (for real-time preview) and present
+        // Render the current stroke (for real-time preview)
         metal_stamp_render_stroke();
+
+        // Draw UI sliders (queued before present)
+        // Size slider - blue tint
+        drawVerticalSlider(sizeSlider, height, 0.3f, 0.5f, 0.9f, "Size");
+        // Opacity slider - gray/white tint
+        drawVerticalSlider(opacitySlider, height, 0.6f, 0.6f, 0.6f, "Opacity");
+
+        // Present with UI overlay
         metal_stamp_present();
 
         // Small delay to avoid busy-waiting
