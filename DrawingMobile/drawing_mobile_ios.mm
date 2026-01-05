@@ -278,14 +278,23 @@ static int metal_test_main() {
     }
     std::cout << "Metal renderer initialized!" << std::endl;
 
-    // Set brush settings - Crayon brush with visible texture
+    // Set brush settings - Huntsman Crayon with pressure dynamics
     metal_stamp_set_brush_type(1);  // Crayon brush!
-    metal_stamp_set_brush_size(40.0f);  // Bigger for more visible texture
-    metal_stamp_set_brush_hardness(0.4f);  // Medium hardness for crayon
-    metal_stamp_set_brush_opacity(0.85f);
-    metal_stamp_set_brush_spacing(0.08f);  // Tighter spacing
-    metal_stamp_set_brush_grain_scale(2.0f);  // More visible grain texture!
-    metal_stamp_set_brush_color(0.8f, 0.3f, 0.2f, 1.0f);  // Red-orange crayon
+    metal_stamp_set_brush_size(50.0f);  // Base size
+    metal_stamp_set_brush_hardness(0.35f);  // Crayon hardness
+    metal_stamp_set_brush_opacity(0.9f);
+    metal_stamp_set_brush_spacing(0.06f);  // Tight spacing for smooth strokes
+    metal_stamp_set_brush_grain_scale(1.8f);  // Visible paper grain
+    metal_stamp_set_brush_color(0.15f, 0.45f, 0.75f, 1.0f);  // Nice blue crayon
+
+    // Pressure dynamics - Apple Pencil / touch pressure affects stroke
+    metal_stamp_set_brush_size_pressure(0.8f);    // Pressure strongly affects size
+    metal_stamp_set_brush_opacity_pressure(0.3f); // Pressure slightly affects opacity
+
+    // Scatter and jitter for organic crayon feel
+    metal_stamp_set_brush_scatter(3.0f);          // Subtle scatter perpendicular to stroke
+    metal_stamp_set_brush_size_jitter(0.15f);     // Subtle size variation (15%)
+    metal_stamp_set_brush_opacity_jitter(0.1f);   // Subtle opacity variation (10%)
 
     // Clear canvas to white
     metal_stamp_clear_canvas(1.0f, 1.0f, 1.0f, 1.0f);

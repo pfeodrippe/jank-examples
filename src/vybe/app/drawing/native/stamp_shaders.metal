@@ -101,52 +101,75 @@ fragment half4 stamp_fragment(
 }
 
 // =============================================================================
-// Fragment Shader - Crayon/Pencil Effect
+// Fragment Shader - Huntsman Crayon Effect
 // =============================================================================
 
-// Creates a crayon-like texture effect using procedural noise
-// Simulates paper grain and waxy crayon texture
+// Professional crayon brush inspired by Procreate best practices
+// Features: rough organic edges, paper grain texture, wax buildup simulation
 fragment half4 stamp_fragment_crayon(
     PointVertexOutput in [[stage_in]],
     float2 pointCoord [[point_coord]],
     constant StrokeUniforms& uniforms [[buffer(1)]]
 ) {
-    // Circle mask with soft edge
     float2 centered = pointCoord - float2(0.5);
     float dist = length(centered) * 2.0;
 
-    // Crayon has slightly harder edges than watercolor but softer than marker
-    float inner_radius = 0.3 + uniforms.hardness * 0.5;
-    float outer_radius = 1.0;
-    float circleMask = 1.0 - smoothstep(inner_radius, outer_radius, dist);
+    // === PAPER GRAIN TEXTURE (Texturized mode - static behind stroke) ===
+    // Multi-octave noise for realistic paper grain
+    float2 grainCoord = pointCoord * 30.0;  // Scale for paper texture density
+    float paper1 = sin(grainCoord.x * 23.7 + grainCoord.y * 17.3) * 0.5 + 0.5;
+    float paper2 = sin(grainCoord.x * 41.1 + grainCoord.y * 31.7) * 0.5 + 0.5;
+    float paper3 = sin((grainCoord.x * 0.7 + grainCoord.y * 1.3) * 19.1) * 0.5 + 0.5;
+    float paper4 = sin((grainCoord.x * 1.1 - grainCoord.y * 0.9) * 29.3) * 0.5 + 0.5;
 
-    if (circleMask <= 0.0) {
+    // Combine for natural paper texture (different frequencies)
+    float paperGrain = paper1 * 0.35 + paper2 * 0.30 + paper3 * 0.20 + paper4 * 0.15;
+
+    // === ROUGH ORGANIC SHAPE (not perfectly circular) ===
+    // Add noise to the edge to create organic crayon shape
+    float2 edgeNoiseCoord = centered * 8.0;
+    float edgeNoise1 = sin(edgeNoiseCoord.x * 7.3 + edgeNoiseCoord.y * 11.7) * 0.08;
+    float edgeNoise2 = sin(edgeNoiseCoord.x * 13.1 + edgeNoiseCoord.y * 5.3) * 0.05;
+    float edgeDistortion = edgeNoise1 + edgeNoise2;
+
+    // Distorted distance for organic shape
+    float organicDist = dist + edgeDistortion;
+
+    // Crayon edge - not too hard, not too soft
+    float inner_radius = 0.2 + uniforms.hardness * 0.4;
+    float outer_radius = 0.85 + edgeDistortion * 0.5;  // Wobbly outer edge
+    float shapeMask = 1.0 - smoothstep(inner_radius, outer_radius, organicDist);
+
+    if (shapeMask <= 0.0) {
         discard_fragment();
     }
 
-    // Procedural grain using sin waves (simulates paper texture)
-    float2 noiseCoord = pointCoord * 20.0 + uniforms.grainOffset;
-    float grain1 = sin(noiseCoord.x * 17.3 + noiseCoord.y * 23.7) * 0.5 + 0.5;
-    float grain2 = sin(noiseCoord.x * 31.1 + noiseCoord.y * 11.3) * 0.5 + 0.5;
-    float grain3 = sin((noiseCoord.x + noiseCoord.y) * 13.7) * 0.5 + 0.5;
+    // === WAX BUILDUP SIMULATION ===
+    // Crayon deposits more wax in center, less at edges (paper shows through)
+    float waxDensity = 1.0 - smoothstep(0.0, 0.7, dist);
+    waxDensity = mix(0.6, 1.0, waxDensity);  // Minimum 60% coverage
 
-    // Combine grains for a more complex pattern
-    float grainValue = (grain1 * 0.4 + grain2 * 0.35 + grain3 * 0.25);
+    // === PAPER TOOTH INTERACTION ===
+    // Paper grain affects coverage - high points get more crayon
+    float grainStrength = uniforms.grainScale * 0.6;
+    float coverage = mix(1.0, paperGrain, grainStrength);
 
-    // Apply grain scale - higher scale = more visible texture
-    float textureStrength = uniforms.grainScale * 0.5;
-    float finalGrain = mix(1.0, grainValue, textureStrength);
+    // Edge breakup - crayon breaks up more at edges where paper shows through
+    float edgeBreakup = smoothstep(0.4, 0.9, dist);
+    float breakupNoise = paper1 * 0.4 + paper2 * 0.3;
+    coverage *= mix(1.0, 0.5 + breakupNoise, edgeBreakup * grainStrength);
 
-    // Edge variation - crayon is less consistent at edges
-    float edgeNoise = grain1 * 0.3;
-    float edgeFactor = smoothstep(0.3, 0.8, dist);
-    finalGrain *= mix(1.0, 0.7 + edgeNoise * 0.6, edgeFactor);
+    // === SUBTLE COLOR VARIATION (like real crayon) ===
+    // Slight darkness variation for more organic look
+    float colorVar = 1.0 - (paper3 * 0.08 * grainStrength);
 
-    // Combine everything
+    // === FINAL COMPOSITION ===
     float4 out_color = in.color;
-    out_color.a *= circleMask * finalGrain * uniforms.opacity * uniforms.flow;
+    out_color.rgb *= colorVar;  // Subtle color variation
+    out_color.a *= shapeMask * coverage * waxDensity * uniforms.opacity * uniforms.flow;
 
-    if (out_color.a <= 0.001) {
+    // Threshold to avoid too-faint pixels
+    if (out_color.a <= 0.008) {
         discard_fragment();
     }
 

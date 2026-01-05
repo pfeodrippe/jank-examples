@@ -116,6 +116,8 @@ public:
     void set_brush_scatter(float scatter);
     void set_brush_size_pressure(float amount);
     void set_brush_opacity_pressure(float amount);
+    void set_brush_size_jitter(float amount);
+    void set_brush_opacity_jitter(float amount);
 
     // Get current brush settings
     BrushSettings get_brush() const;
@@ -255,6 +257,8 @@ void metal_stamp_set_brush_rotation_jitter(float degrees);
 void metal_stamp_set_brush_scatter(float scatter);
 void metal_stamp_set_brush_size_pressure(float amount);
 void metal_stamp_set_brush_opacity_pressure(float amount);
+void metal_stamp_set_brush_size_jitter(float amount);
+void metal_stamp_set_brush_opacity_jitter(float amount);
 
 // Texture management
 int32_t metal_stamp_load_texture(const char* path);

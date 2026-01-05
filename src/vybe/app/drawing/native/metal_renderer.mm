@@ -91,9 +91,10 @@ struct MSLStrokeUniforms {
 // Coordinate conversion
 - (simd_float2)screenToNDC:(float)x y:(float)y;
 
-// Point interpolation
+// Point interpolation with jitter/scatter
 - (void)interpolateFrom:(simd_float2)from to:(simd_float2)to
-              pointSize:(float)size color:(simd_float4)color spacing:(float)spacing;
+              pointSize:(float)size color:(simd_float4)color spacing:(float)spacing
+                scatter:(float)scatter sizeJitter:(float)sizeJitter opacityJitter:(float)opacityJitter;
 
 // Texture management
 - (int32_t)loadTextureFromFile:(NSString*)path;
@@ -565,7 +566,8 @@ struct MSLStrokeUniforms {
 }
 
 - (void)interpolateFrom:(simd_float2)from to:(simd_float2)to
-              pointSize:(float)size color:(simd_float4)color spacing:(float)spacing {
+              pointSize:(float)size color:(simd_float4)color spacing:(float)spacing
+                scatter:(float)scatter sizeJitter:(float)sizeJitter opacityJitter:(float)opacityJitter {
     // Calculate distance in screen space
     float dx = (to.x - from.x) * self.width * 0.5f;
     float dy = (to.y - from.y) * self.height * 0.5f;
@@ -578,18 +580,47 @@ struct MSLStrokeUniforms {
     int numPoints = (int)(distance / stepSize);
     if (numPoints < 1) numPoints = 1;
 
+    // Direction perpendicular to stroke (for scatter)
+    float strokeLen = sqrtf(dx * dx + dy * dy);
+    float perpX = (strokeLen > 0.001f) ? -dy / strokeLen : 0.0f;
+    float perpY = (strokeLen > 0.001f) ? dx / strokeLen : 0.0f;
+
     // Interpolate points
     for (int i = 0; i < numPoints && _points.size() < metal_stamp::MAX_POINTS_PER_STROKE; i++) {
         float t = (float)i / (float)numPoints;
+
+        // Base position
         simd_float2 pos = simd_make_float2(
             from.x + (to.x - from.x) * t,
             from.y + (to.y - from.y) * t
         );
 
+        // Apply scatter (random offset perpendicular to stroke)
+        if (scatter > 0.0f) {
+            float scatterAmount = ((float)rand() / RAND_MAX - 0.5f) * 2.0f * scatter;
+            float scatterNDC = scatterAmount * size / self.width;  // Convert to NDC
+            pos.x += perpX * scatterNDC;
+            pos.y += perpY * scatterNDC;
+        }
+
+        // Apply size jitter
+        float finalSize = size;
+        if (sizeJitter > 0.0f) {
+            float jitter = 1.0f + ((float)rand() / RAND_MAX - 0.5f) * 2.0f * sizeJitter;
+            finalSize *= jitter;
+        }
+
+        // Apply opacity jitter
+        simd_float4 finalColor = color;
+        if (opacityJitter > 0.0f) {
+            float jitter = 1.0f - ((float)rand() / RAND_MAX) * opacityJitter;
+            finalColor.w *= jitter;
+        }
+
         MSLPoint point;
         point.position = pos;
-        point.size = size;
-        point.color = color;
+        point.size = finalSize;
+        point.color = finalColor;
         _points.push_back(point);
     }
 }
@@ -813,6 +844,14 @@ void MetalStampRenderer::set_brush_opacity_pressure(float amount) {
     brush_.opacity_pressure = amount;
 }
 
+void MetalStampRenderer::set_brush_size_jitter(float amount) {
+    brush_.size_jitter = amount;
+}
+
+void MetalStampRenderer::set_brush_opacity_jitter(float amount) {
+    brush_.opacity_jitter = amount;
+}
+
 int32_t MetalStampRenderer::load_texture(const char* path) {
     if (!is_ready()) return 0;
     NSString* nsPath = [NSString stringWithUTF8String:path];
@@ -857,10 +896,19 @@ void MetalStampRenderer::begin_stroke(float x, float y, float pressure) {
     impl_.isDrawing = YES;
     impl_.lastPoint = [impl_ screenToNDC:x y:y];
 
-    // Add initial point
-    simd_float4 color = simd_make_float4(brush_.r, brush_.g, brush_.b, brush_.a);
+    // Apply pressure dynamics
+    // size_pressure: 0 = constant size, 1 = full pressure variation
+    // opacity_pressure: 0 = constant opacity, 1 = full pressure variation
+    float sizeFactor = 1.0f - brush_.size_pressure + (brush_.size_pressure * pressure);
+    float opacityFactor = 1.0f - brush_.opacity_pressure + (brush_.opacity_pressure * pressure);
+
+    float effectiveSize = brush_.size * sizeFactor;
+    float effectiveAlpha = brush_.a * opacityFactor;
+
+    simd_float4 color = simd_make_float4(brush_.r, brush_.g, brush_.b, effectiveAlpha);
     [impl_ interpolateFrom:impl_.lastPoint to:impl_.lastPoint
-                 pointSize:brush_.size * pressure color:color spacing:brush_.spacing];
+                 pointSize:effectiveSize color:color spacing:brush_.spacing
+                   scatter:brush_.scatter sizeJitter:brush_.size_jitter opacityJitter:brush_.opacity_jitter];
 
     impl_.pointCount = 1;
 }
@@ -868,11 +916,19 @@ void MetalStampRenderer::begin_stroke(float x, float y, float pressure) {
 void MetalStampRenderer::add_stroke_point(float x, float y, float pressure) {
     if (!is_ready() || !impl_.isDrawing) return;
 
+    // Apply pressure dynamics
+    float sizeFactor = 1.0f - brush_.size_pressure + (brush_.size_pressure * pressure);
+    float opacityFactor = 1.0f - brush_.opacity_pressure + (brush_.opacity_pressure * pressure);
+
+    float effectiveSize = brush_.size * sizeFactor;
+    float effectiveAlpha = brush_.a * opacityFactor;
+
     simd_float2 newPoint = [impl_ screenToNDC:x y:y];
-    simd_float4 color = simd_make_float4(brush_.r, brush_.g, brush_.b, brush_.a);
+    simd_float4 color = simd_make_float4(brush_.r, brush_.g, brush_.b, effectiveAlpha);
 
     [impl_ interpolateFrom:impl_.lastPoint to:newPoint
-                 pointSize:brush_.size * pressure color:color spacing:brush_.spacing];
+                 pointSize:effectiveSize color:color spacing:brush_.spacing
+                   scatter:brush_.scatter sizeJitter:brush_.size_jitter opacityJitter:brush_.opacity_jitter];
 
     impl_.lastPoint = newPoint;
     impl_.pointCount++;
@@ -1112,6 +1168,14 @@ void metal_set_brush_opacity_pressure(float amount) {
     if (g_metal_renderer) g_metal_renderer->set_brush_opacity_pressure(amount);
 }
 
+void metal_set_brush_size_jitter(float amount) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_size_jitter(amount);
+}
+
+void metal_set_brush_opacity_jitter(float amount) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_opacity_jitter(amount);
+}
+
 // Texture management
 int32_t metal_load_texture(const char* path) {
     return g_metal_renderer ? g_metal_renderer->load_texture(path) : 0;
@@ -1241,6 +1305,14 @@ METAL_EXPORT void metal_stamp_set_brush_size_pressure(float amount) {
 
 METAL_EXPORT void metal_stamp_set_brush_opacity_pressure(float amount) {
     metal_stamp::metal_set_brush_opacity_pressure(amount);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_size_jitter(float amount) {
+    metal_stamp::metal_set_brush_size_jitter(amount);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_opacity_jitter(float amount) {
+    metal_stamp::metal_set_brush_opacity_jitter(amount);
 }
 
 // Texture management
