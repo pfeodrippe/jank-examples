@@ -380,7 +380,8 @@ static int metal_test_main() {
             }
         }
 
-        // Present the frame (strokes render to canvas at end_stroke)
+        // Render the current stroke (for real-time preview) and present
+        metal_stamp_render_stroke();
         metal_stamp_present();
 
         // Small delay to avoid busy-waiting

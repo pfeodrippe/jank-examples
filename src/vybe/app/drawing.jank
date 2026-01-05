@@ -12,20 +12,23 @@
 ;; =============================================================================
 
 (defn render-triangles!
-  "Send triangle vertices to the native rendering layer."
+  "Send triangle vertices to the native rendering layer.
+   Note: Uses explicit keyword lookups to avoid jank :keys destructuring issues."
   [triangles]
-  (doseq [{:keys [x1 y1 x2 y2 x3 y3 r g b a]} triangles]
-    (canvas/add_triangle
-     (float x1) (float y1)
-     (float x2) (float y2)
-     (float x3) (float y3)
-     (float r) (float g) (float b) (float a))))
+  (doseq [tri triangles]
+    (let [x1 (:x1 tri) y1 (:y1 tri)
+          x2 (:x2 tri) y2 (:y2 tri)
+          x3 (:x3 tri) y3 (:y3 tri)
+          r (:r tri) g (:g tri) b (:b tri) a (:a tri)]
+      (canvas/add_triangle
+       (float x1) (float y1)
+       (float x2) (float y2)
+       (float x3) (float y3)
+       (float r) (float g) (float b) (float a)))))
 
 (defn render-stroke-triangles!
   "Render stroke triangles (from math/stroke->triangles output)."
   [triangle-verts]
-  ;; triangle-verts is a flat vector of {:x :y :r :g :b :a} maps
-  ;; We need to group into triangles (3 vertices each)
   (doseq [tri (partition 3 triangle-verts)]
     (let [[v1 v2 v3] tri]
       (canvas/add_triangle
@@ -35,17 +38,16 @@
        (float (:r v1)) (float (:g v1)) (float (:b v1)) (float (:a v1))))))
 
 ;; =============================================================================
-;; Canvas texture management (for performance)
+;; Canvas texture management
+;; Note: Due to jank JIT limitation with duplicate inline C++ calls across functions,
+;; all canvas texture operations are consolidated here.
 ;; =============================================================================
 
 (defn rebuild-canvas-texture!
   "Rebuild canvas texture with all frame strokes (only when needed)."
   []
   (when (canvas/has_canvas_texture)
-    ;; Clear the canvas texture
     (canvas/clear_canvas)
-
-    ;; Render all frame strokes to canvas texture
     (let [strokes (state/get-frame-strokes)]
       (when (seq strokes)
         (canvas/begin_canvas_render)
@@ -54,64 +56,20 @@
           (render-stroke-triangles! triangles)
           (canvas/render_vertices))
         (canvas/end_canvas_render)))
-
-    ;; Mark as clean
     (state/clear-canvas-dirty!)))
 
-(defn render-stroke-to-texture!
-  "Render a single stroke to the canvas texture (incremental caching)."
-  [stroke]
-  (when (and (canvas/has_canvas_texture) (not (empty? stroke)))
-    (canvas/begin_canvas_render)
-    (canvas/clear_vertices)
-    (let [triangles (math/strokes->triangles [stroke])]
-      (render-stroke-triangles! triangles)
-      (canvas/render_vertices))
-    (canvas/end_canvas_render)))
-
-(defn render-current-stroke!
-  "Render only the current in-progress stroke."
-  []
-  (let [current (state/get-current-stroke)]
-    (when-not (empty? current)
-      (if (canvas/is_using_metal)
-        ;; Metal: render current stroke via GPU stamps
-        (canvas/metal_render_stroke)
-        ;; CPU fallback: Full tessellation for current stroke
-        (do
-          (canvas/clear_vertices)
-          (let [triangles (math/stroke->triangles current)]
-            (render-stroke-triangles! triangles)
-            (canvas/render_vertices)))))))
-
 ;; =============================================================================
-;; Main render function
+;; Main render function - Uses Metal GPU stamps
 ;; =============================================================================
 
 (defn render-frame!
-  "Render all strokes for the current frame using Metal GPU stamps."
+  "Render all strokes using Metal GPU stamps."
   []
-  ;; Set background color
   (let [[r g b a] (state/get-bg-color)]
     (canvas/set_bg_color (float r) (float g) (float b) (float a)))
-
-  ;; Metal GPU rendering - smooth Procreate-style strokes
-  ;; Metal canvas accumulates finished strokes via metal_end_stroke
-  ;; Render current in-progress stroke
+  ;; Metal renderer handles current stroke
   (canvas/metal_render_stroke)
-  ;; Present Metal canvas (composite to SDL)
   (canvas/metal_present))
-
-;; =============================================================================
-;; Screenshot
-;; =============================================================================
-
-(defn screenshot!
-  "Take a screenshot and save to file. Returns true on success."
-  ([]
-   (screenshot! (str "/tmp/drawing_" (canvas/get_timestamp) ".bmp")))
-  ([filename]
-   (canvas/take_screenshot filename)))
 
 ;; =============================================================================
 ;; Main loop
@@ -120,32 +78,13 @@
 (defn run-frame!
   "Process one frame of the app."
   []
-  ;; Start timing
   (canvas/start_frame_timing)
-
-  ;; Poll and process input events
   (canvas/poll_events)
   (input/process-events!)
-
-  ;; Render
   (canvas/begin_frame)
   (render-frame!)
   (canvas/end_frame)
-
-  ;; End timing
   (canvas/end_frame_timing))
-
-;; =============================================================================
-;; Performance stats
-;; =============================================================================
-
-(defn get-frame-stats
-  "Get current frame performance stats."
-  []
-  {:last-frame-ms (canvas/get_last_frame_ms)
-   :avg-frame-ms (canvas/get_avg_frame_ms)
-   :fps (canvas/get_fps)
-   :vertex-count (canvas/get_vertex_count)})
 
 (defn run-app!
   "Main app loop. Optional nrepl-port defaults to 5580."
@@ -157,18 +96,14 @@
    (println "========================================")
    (println "")
 
-   ;; Start nREPL server for interactive testing
    (server/start-server {:port nrepl-port :bind "0.0.0.0"})
    (println (str "nREPL server started on port " nrepl-port))
 
-   ;; Initialize native canvas
    (when (canvas/init 1024 768 "Drawing Canvas")
      (println "Canvas initialized!")
 
-     ;; Initialize Metal stamp renderer for smooth GPU-accelerated drawing
      (canvas/init_metal_renderer)
-     (println "Metal GPU stamp renderer initialized - Procreate-style smooth strokes!")
-     ;; Set default brush settings
+     (println "Metal GPU stamp renderer initialized!")
      (canvas/metal_set_brush_size 20.0)
      (canvas/metal_set_brush_hardness 0.3)
      (canvas/metal_set_brush_opacity 1.0)
@@ -177,17 +112,15 @@
      (println "Draw with mouse or touch...")
      (println "")
 
-     ;; Main loop
      (loop []
        (when-not (canvas/should_close)
          (run-frame!)
          (recur)))
 
-     ;; Cleanup
      (canvas/cleanup)
      (println "Canvas closed."))))
 
 (defn -main
-  "Entry point. Optional nrepl-port defaults to 5580 (desktop), use 5581 for iOS."
+  "Entry point."
   ([] (run-app!))
   ([nrepl-port] (run-app! nrepl-port)))

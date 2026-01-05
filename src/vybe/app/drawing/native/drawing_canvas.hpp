@@ -134,6 +134,9 @@ inline bool init(int width, int height, const char* title) {
     }
 
     // Create window
+    // Note: SDL_WINDOW_METAL is needed for direct Metal rendering but conflicts with SDL_CreateRenderer
+    // On iOS, we use Metal-only rendering in drawing_mobile_ios.mm which creates its own window
+    // On macOS desktop, we use SDL_Renderer for now (which uses Metal internally)
     s->window = SDL_CreateWindow(title, width, height,
                                   SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!s->window) {
@@ -250,12 +253,16 @@ inline int poll_events() {
                 break;
 
             // Mouse events
+            // SDL3 mouse coords are in POINTS (window coords), need to convert to render pixels
+            // Scale factor = render_size / window_size
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (event.button.button == SDL_BUTTON_LEFT && s->eventCount < MAX_EVENTS) {
+                    float scale_x = (float)s->render_width / (float)s->width;
+                    float scale_y = (float)s->render_height / (float)s->height;
                     s->events[s->eventCount++] = {
                         0,  // down
-                        event.button.x,
-                        event.button.y,
+                        event.button.x * scale_x,
+                        event.button.y * scale_y,
                         1.0f,  // Full pressure for mouse
                         false
                     };
@@ -264,10 +271,12 @@ inline int poll_events() {
 
             case SDL_EVENT_MOUSE_MOTION:
                 if ((event.motion.state & SDL_BUTTON_LMASK) && s->eventCount < MAX_EVENTS) {
+                    float scale_x = (float)s->render_width / (float)s->width;
+                    float scale_y = (float)s->render_height / (float)s->height;
                     s->events[s->eventCount++] = {
                         1,  // move
-                        event.motion.x,
-                        event.motion.y,
+                        event.motion.x * scale_x,
+                        event.motion.y * scale_y,
                         1.0f,
                         false
                     };
@@ -276,10 +285,12 @@ inline int poll_events() {
 
             case SDL_EVENT_MOUSE_BUTTON_UP:
                 if (event.button.button == SDL_BUTTON_LEFT && s->eventCount < MAX_EVENTS) {
+                    float scale_x = (float)s->render_width / (float)s->width;
+                    float scale_y = (float)s->render_height / (float)s->height;
                     s->events[s->eventCount++] = {
                         2,  // up
-                        event.button.x,
-                        event.button.y,
+                        event.button.x * scale_x,
+                        event.button.y * scale_y,
                         0.0f,
                         false
                     };
@@ -663,6 +674,11 @@ inline int get_vertex_count() {
 // =============================================================================
 // Metal Stamp Renderer - use extern "C" functions for JIT compatibility
 // =============================================================================
+
+// Simple test function to verify linking
+inline int test_metal_add(int a, int b) {
+    return metal_test_add(a, b);
+}
 
 // Initialize Metal stamp renderer
 inline bool init_metal_renderer() {

@@ -54,8 +54,10 @@ struct MSLStrokeUniforms {
 @property (nonatomic, strong) id<MTLBuffer> uniformBuffer;
 @property (nonatomic, assign) CAMetalLayer* metalLayer;
 
-@property (nonatomic, assign) int width;
-@property (nonatomic, assign) int height;
+@property (nonatomic, assign) int width;           // Point size (for input)
+@property (nonatomic, assign) int height;          // Point size (for input)
+@property (nonatomic, assign) int drawableWidth;   // Pixel size (for rendering)
+@property (nonatomic, assign) int drawableHeight;  // Pixel size (for rendering)
 @property (nonatomic, assign) BOOL isDrawing;
 @property (nonatomic, assign) simd_float2 lastPoint;
 @property (nonatomic, assign) int pointCount;
@@ -111,9 +113,17 @@ struct MSLStrokeUniforms {
 
     // Get the Metal layer from SDL window using SDL3 Metal API
     // SDL_Metal_GetLayer returns the CAMetalLayer for Metal-backed windows
-    self.metalLayer = (__bridge CAMetalLayer*)SDL_Metal_GetLayer(SDL_Metal_CreateView(window));
+    SDL_MetalView metalView = SDL_Metal_CreateView(window);
+    if (!metalView) {
+        METAL_LOG("Failed to create Metal view from SDL window: %s", SDL_GetError());
+        std::cerr << "[MetalRenderer] SDL_Metal_CreateView failed: " << SDL_GetError() << std::endl;
+        return NO;
+    }
+
+    self.metalLayer = (__bridge CAMetalLayer*)SDL_Metal_GetLayer(metalView);
     if (!self.metalLayer) {
-        METAL_LOG("Failed to get CAMetalLayer from SDL window");
+        METAL_LOG("Failed to get CAMetalLayer from Metal view");
+        std::cerr << "[MetalRenderer] SDL_Metal_GetLayer returned NULL" << std::endl;
         return NO;
     }
     METAL_LOG("Got Metal layer from SDL window");
@@ -121,6 +131,12 @@ struct MSLStrokeUniforms {
     self.metalLayer.device = self.device;
     self.metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     self.metalLayer.framebufferOnly = NO;  // Allow reading back
+
+    // Get actual drawable size (may differ from point size on Retina displays)
+    CGSize drawableSize = self.metalLayer.drawableSize;
+    self.drawableWidth = (int)drawableSize.width;
+    self.drawableHeight = (int)drawableSize.height;
+    METAL_LOG("Point size: %dx%d, Drawable size: %dx%d", w, h, self.drawableWidth, self.drawableHeight);
 
     // Create render pipelines
     if (![self createPipelines]) {
@@ -163,12 +179,32 @@ struct MSLStrokeUniforms {
 
     // Load shader library from default library (compiled from .metal files)
     id<MTLLibrary> library = [self.device newDefaultLibrary];
+    if (library) {
+        // Check if it actually has our functions
+        NSArray* funcNames = [library functionNames];
+        METAL_LOG("Default library has %lu functions: %s",
+                  (unsigned long)[funcNames count],
+                  [[funcNames description] UTF8String]);
+        if (![funcNames containsObject:@"stamp_vertex"]) {
+            METAL_LOG("Default library missing stamp_vertex, will compile from source");
+            library = nil;  // Force source compilation
+        }
+    } else {
+        METAL_LOG("No default library found");
+    }
+
     if (!library) {
         // Try loading from explicit path (for iOS JIT)
         NSString* shaderPath = [[NSBundle mainBundle] pathForResource:@"stamp_shaders"
                                                                ofType:@"metallib"];
+        METAL_LOG("Shader path: %s", shaderPath ? [shaderPath UTF8String] : "nil");
         if (shaderPath) {
             library = [self.device newLibraryWithFile:shaderPath error:&error];
+            if (library) {
+                METAL_LOG("Loaded shaders from metallib file");
+            } else {
+                METAL_LOG("Failed to load metallib: %s", [[error localizedDescription] UTF8String]);
+            }
         }
 
         if (!library) {
@@ -250,11 +286,15 @@ struct MSLStrokeUniforms {
     }
 
     // Create stamp pipeline (point rendering)
+    METAL_LOG("Looking for shader functions in library...");
     id<MTLFunction> vertexFunc = [library newFunctionWithName:@"stamp_vertex"];
     id<MTLFunction> fragmentFunc = [library newFunctionWithName:@"stamp_fragment"];
 
     if (!vertexFunc || !fragmentFunc) {
-        METAL_LOG("Failed to find shader functions");
+        NSArray* funcNames = [library functionNames];
+        METAL_LOG("Failed to find shader functions. Library has: %s",
+                  [[funcNames description] UTF8String]);
+        METAL_LOG("  vertexFunc=%p fragmentFunc=%p", vertexFunc, fragmentFunc);
         return NO;
     }
 
@@ -283,10 +323,11 @@ struct MSLStrokeUniforms {
 }
 
 - (BOOL)createCanvasTexture {
+    // Use drawable size for canvas texture (accounts for Retina scale)
     MTLTextureDescriptor* desc = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                     width:self.width
-                                    height:self.height
+                                     width:self.drawableWidth
+                                    height:self.drawableHeight
                                  mipmapped:NO];
     desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModePrivate;
@@ -300,7 +341,7 @@ struct MSLStrokeUniforms {
     // Clear to background color
     [self clearCanvasWithColor:_backgroundColor];
 
-    METAL_LOG("Created canvas texture (%dx%d)", self.width, self.height);
+    METAL_LOG("Created canvas texture (%dx%d)", self.drawableWidth, self.drawableHeight);
     return YES;
 }
 
@@ -310,10 +351,15 @@ struct MSLStrokeUniforms {
     self.width = w;
     self.height = h;
 
+    // Update drawable size from layer
+    CGSize drawableSize = self.metalLayer.drawableSize;
+    self.drawableWidth = (int)drawableSize.width;
+    self.drawableHeight = (int)drawableSize.height;
+
     // Recreate canvas texture
     [self createCanvasTexture];
 
-    METAL_LOG("Resized to %dx%d", w, h);
+    METAL_LOG("Resized to %dx%d (drawable: %dx%d)", w, h, self.drawableWidth, self.drawableHeight);
 }
 
 - (simd_float2)screenToNDC:(float)x y:(float)y {
@@ -378,9 +424,9 @@ struct MSLStrokeUniforms {
     // Update point buffer
     memcpy(self.pointBuffer.contents, _points.data(), sizeof(MSLPoint) * _points.size());
 
-    // Update uniforms
+    // Update uniforms - use drawable size for proper Retina support
     MSLStrokeUniforms uniforms;
-    uniforms.viewportSize = simd_make_float2(self.width, self.height);
+    uniforms.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
     uniforms.hardness = hardness;
     uniforms.opacity = opacity;
     memcpy(self.uniformBuffer.contents, &uniforms, sizeof(MSLStrokeUniforms));
@@ -597,13 +643,15 @@ void MetalStampRenderer::present() {
 
         id<MTLCommandBuffer> commandBuffer = [impl_.commandQueue commandBuffer];
 
-        // Blit canvas texture to drawable
+        // Blit canvas texture to drawable - use actual texture size for proper Retina support
         id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+        NSUInteger srcWidth = impl_.canvasTexture.width;
+        NSUInteger srcHeight = impl_.canvasTexture.height;
         [blitEncoder copyFromTexture:impl_.canvasTexture
                          sourceSlice:0
                          sourceLevel:0
                         sourceOrigin:MTLOriginMake(0, 0, 0)
-                          sourceSize:MTLSizeMake(impl_.width, impl_.height, 1)
+                          sourceSize:MTLSizeMake(srcWidth, srcHeight, 1)
                            toTexture:drawable.texture
                     destinationSlice:0
                     destinationLevel:0
@@ -629,19 +677,46 @@ int MetalStampRenderer::get_points_rendered() const {
 
 static MetalStampRenderer* g_metal_renderer = nullptr;
 
+// Debug: Log when dylib is loaded
+__attribute__((constructor))
+static void metal_dylib_init() {
+    printf("[metal_dylib_init] dylib loaded!\n");
+    fflush(stdout);
+}
+
+// Simple test function to verify linking works
+extern "C" __attribute__((visibility("default"))) __attribute__((used))
+int metal_test_add(int a, int b) {
+    printf("[metal_test_add] called with %d + %d\n", a, b);
+    fflush(stdout);
+    return a + b;
+}
+
 bool init_metal_renderer(void* sdl_window, int width, int height) {
+    std::cout << "[init_metal_renderer] ENTER" << std::endl;
+    std::cout.flush();
+
     if (g_metal_renderer) {
         std::cerr << "[MetalStampRenderer] Global renderer already initialized" << std::endl;
         return false;
     }
 
+    std::cout << "[init_metal_renderer] Creating MetalStampRenderer..." << std::endl;
+    std::cout.flush();
     g_metal_renderer = new MetalStampRenderer();
+
+    std::cout << "[init_metal_renderer] Calling init()..." << std::endl;
+    std::cout.flush();
     if (!g_metal_renderer->init(sdl_window, width, height)) {
+        std::cout << "[init_metal_renderer] init() FAILED" << std::endl;
+        std::cout.flush();
         delete g_metal_renderer;
         g_metal_renderer = nullptr;
         return false;
     }
 
+    std::cout << "[init_metal_renderer] SUCCESS" << std::endl;
+    std::cout.flush();
     return true;
 }
 
@@ -725,7 +800,12 @@ void metal_present() {
 extern "C" {
 
 METAL_EXPORT bool metal_stamp_init(void* sdl_window, int width, int height) {
-    return metal_stamp::init_metal_renderer(sdl_window, width, height);
+    std::cout << "[metal_stamp_init] ENTER sdl_window=" << sdl_window << " size=" << width << "x" << height << std::endl;
+    std::cout.flush();
+    bool result = metal_stamp::init_metal_renderer(sdl_window, width, height);
+    std::cout << "[metal_stamp_init] EXIT result=" << result << std::endl;
+    std::cout.flush();
+    return result;
 }
 
 METAL_EXPORT void metal_stamp_cleanup() {

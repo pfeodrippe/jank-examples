@@ -161,6 +161,9 @@ private:
 
 extern "C" {
 
+// Simple test function to verify linking works
+int metal_test_add(int a, int b);
+
 // Initialize the global Metal renderer
 bool metal_stamp_init(void* sdl_window, int width, int height);
 
