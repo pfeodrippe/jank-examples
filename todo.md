@@ -54,10 +54,11 @@
   - [ ] gpu brush drawing
     - [x] draw
     - [x] real-time drawing
-    - [ ] erase
-    - [ ] make it more sharp
     - [ ] brush
       - [ ] hunstsman crayon
+      - [ ] make it more sharp
+    - [ ] erase
+    - [ ] move with both hands
     - [ ] color
     - [ ] mix
   - [ ] loom-like control
@@ -65,6 +66,7 @@
   - [ ] export
   - [ ] 3d support (?)
   - [ ] macos (nREPL?) integration
+    - [ ] can check more frames
 - [ ] dynamic dependencies (e.g. using clang-repl) at runtime (without using precompiled shared objs)
 - [ ] add jolt to sdf project
 - [ ] ios

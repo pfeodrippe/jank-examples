@@ -30,6 +30,11 @@ struct StrokeUniforms {
     float2 viewportSize;   // Viewport dimensions
     float hardness;        // 0.0 = soft edge, 1.0 = hard edge
     float opacity;         // Overall stroke opacity
+    float flow;            // Paint flow rate
+    float grainScale;      // Grain texture scale
+    float2 grainOffset;    // For moving grain mode
+    int useShapeTexture;   // 0 = procedural, 1 = use texture
+    int useGrainTexture;   // 0 = no grain, 1 = use grain
 };
 
 // =============================================================================
@@ -58,11 +63,12 @@ vertex PointVertexOutput stamp_vertex(
 }
 
 // =============================================================================
-// Fragment Shader - Smooth Circular Stamp
+// Fragment Shader - Smooth Circular Stamp (Procedural)
 // =============================================================================
 
 // Creates a smooth circular brush stamp with soft edges.
 // Uses smoothstep for antialiased edges.
+// This is the default shader - procedural circle, no textures needed.
 fragment half4 stamp_fragment(
     PointVertexOutput in [[stage_in]],
     float2 pointCoord [[point_coord]],
@@ -87,9 +93,125 @@ fragment half4 stamp_fragment(
         discard_fragment();
     }
 
-    // Apply overall opacity
+    // Apply overall opacity and flow
     float4 out_color = in.color;
-    out_color.a *= alpha * uniforms.opacity;
+    out_color.a *= alpha * uniforms.opacity * uniforms.flow;
+
+    return half4(out_color);
+}
+
+// =============================================================================
+// Fragment Shader - Crayon/Pencil Effect
+// =============================================================================
+
+// Creates a crayon-like texture effect using procedural noise
+// Simulates paper grain and waxy crayon texture
+fragment half4 stamp_fragment_crayon(
+    PointVertexOutput in [[stage_in]],
+    float2 pointCoord [[point_coord]],
+    constant StrokeUniforms& uniforms [[buffer(1)]]
+) {
+    // Circle mask with soft edge
+    float2 centered = pointCoord - float2(0.5);
+    float dist = length(centered) * 2.0;
+
+    // Crayon has slightly harder edges than watercolor but softer than marker
+    float inner_radius = 0.3 + uniforms.hardness * 0.5;
+    float outer_radius = 1.0;
+    float circleMask = 1.0 - smoothstep(inner_radius, outer_radius, dist);
+
+    if (circleMask <= 0.0) {
+        discard_fragment();
+    }
+
+    // Procedural grain using sin waves (simulates paper texture)
+    float2 noiseCoord = pointCoord * 20.0 + uniforms.grainOffset;
+    float grain1 = sin(noiseCoord.x * 17.3 + noiseCoord.y * 23.7) * 0.5 + 0.5;
+    float grain2 = sin(noiseCoord.x * 31.1 + noiseCoord.y * 11.3) * 0.5 + 0.5;
+    float grain3 = sin((noiseCoord.x + noiseCoord.y) * 13.7) * 0.5 + 0.5;
+
+    // Combine grains for a more complex pattern
+    float grainValue = (grain1 * 0.4 + grain2 * 0.35 + grain3 * 0.25);
+
+    // Apply grain scale - higher scale = more visible texture
+    float textureStrength = uniforms.grainScale * 0.5;
+    float finalGrain = mix(1.0, grainValue, textureStrength);
+
+    // Edge variation - crayon is less consistent at edges
+    float edgeNoise = grain1 * 0.3;
+    float edgeFactor = smoothstep(0.3, 0.8, dist);
+    finalGrain *= mix(1.0, 0.7 + edgeNoise * 0.6, edgeFactor);
+
+    // Combine everything
+    float4 out_color = in.color;
+    out_color.a *= circleMask * finalGrain * uniforms.opacity * uniforms.flow;
+
+    if (out_color.a <= 0.001) {
+        discard_fragment();
+    }
+
+    return half4(out_color);
+}
+
+// =============================================================================
+// Fragment Shader - Watercolor Effect
+// =============================================================================
+
+// Creates a watercolor-like effect with wet edges
+fragment half4 stamp_fragment_watercolor(
+    PointVertexOutput in [[stage_in]],
+    float2 pointCoord [[point_coord]],
+    constant StrokeUniforms& uniforms [[buffer(1)]]
+) {
+    float2 centered = pointCoord - float2(0.5);
+    float dist = length(centered) * 2.0;
+
+    // Very soft center
+    float alpha = 1.0 - smoothstep(0.0, 0.9, dist);
+
+    // Wet edge effect - darker ring near edge
+    float edgeRing = smoothstep(0.5, 0.8, dist) * (1.0 - smoothstep(0.8, 1.0, dist));
+    alpha = max(alpha, edgeRing * 0.4);
+
+    if (alpha <= 0.0) {
+        discard_fragment();
+    }
+
+    // Watercolor variation
+    float2 noiseCoord = pointCoord * 15.0;
+    float variation = sin(noiseCoord.x * 7.3 + noiseCoord.y * 11.7) * 0.15 + 0.85;
+
+    float4 out_color = in.color;
+    out_color.a *= alpha * variation * uniforms.opacity * uniforms.flow * 0.5;  // Watercolor is more transparent
+
+    return half4(out_color);
+}
+
+// =============================================================================
+// Fragment Shader - Marker Effect
+// =============================================================================
+
+// Creates a marker-like effect with hard edges and slight streaking
+fragment half4 stamp_fragment_marker(
+    PointVertexOutput in [[stage_in]],
+    float2 pointCoord [[point_coord]],
+    constant StrokeUniforms& uniforms [[buffer(1)]]
+) {
+    float2 centered = pointCoord - float2(0.5);
+    float dist = length(centered) * 2.0;
+
+    // Very hard edge like a marker
+    float alpha = 1.0 - smoothstep(0.85, 0.95, dist);
+
+    if (alpha <= 0.0) {
+        discard_fragment();
+    }
+
+    // Slight streaking in one direction
+    float streak = sin(pointCoord.y * 30.0) * 0.05 + 0.95;
+
+    float4 out_color = in.color;
+    out_color.a *= alpha * streak * uniforms.opacity * uniforms.flow;
 
     return half4(out_color);
 }

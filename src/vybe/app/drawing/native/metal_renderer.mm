@@ -36,6 +36,11 @@ struct MSLStrokeUniforms {
     simd_float2 viewportSize;
     float hardness;
     float opacity;
+    float flow;
+    float grainScale;
+    simd_float2 grainOffset;  // For moving grain mode
+    int useShapeTexture;      // 0 = procedural, 1 = texture
+    int useGrainTexture;      // 0 = no grain, 1 = use grain
 };
 
 // =============================================================================
@@ -47,12 +52,24 @@ struct MSLStrokeUniforms {
 
 @property (nonatomic, strong) id<MTLDevice> device;
 @property (nonatomic, strong) id<MTLCommandQueue> commandQueue;
-@property (nonatomic, strong) id<MTLRenderPipelineState> stampPipeline;
+@property (nonatomic, strong) id<MTLRenderPipelineState> stampPipeline;        // Round brush
+@property (nonatomic, strong) id<MTLRenderPipelineState> crayonPipeline;       // Crayon brush
+@property (nonatomic, strong) id<MTLRenderPipelineState> watercolorPipeline;   // Watercolor brush
+@property (nonatomic, strong) id<MTLRenderPipelineState> markerPipeline;       // Marker brush
+@property (nonatomic, strong) id<MTLRenderPipelineState> stampTexturePipeline; // With shape texture
 @property (nonatomic, strong) id<MTLRenderPipelineState> clearPipeline;
+@property (nonatomic, assign) int currentBrushType;  // 0=Round, 1=Crayon, etc.
 @property (nonatomic, strong) id<MTLTexture> canvasTexture;
 @property (nonatomic, strong) id<MTLBuffer> pointBuffer;
 @property (nonatomic, strong) id<MTLBuffer> uniformBuffer;
+@property (nonatomic, strong) id<MTLSamplerState> textureSampler;
 @property (nonatomic, assign) CAMetalLayer* metalLayer;
+
+// Brush textures
+@property (nonatomic, strong) id<MTLTexture> currentShapeTexture;
+@property (nonatomic, strong) id<MTLTexture> currentGrainTexture;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber*, id<MTLTexture>>* loadedTextures;
+@property (nonatomic, assign) int32_t nextTextureId;
 
 @property (nonatomic, assign) int width;           // Point size (for input)
 @property (nonatomic, assign) int height;          // Point size (for input)
@@ -60,6 +77,7 @@ struct MSLStrokeUniforms {
 @property (nonatomic, assign) int drawableHeight;  // Pixel size (for rendering)
 @property (nonatomic, assign) BOOL isDrawing;
 @property (nonatomic, assign) simd_float2 lastPoint;
+@property (nonatomic, assign) simd_float2 grainOffset;  // Accumulated grain offset for moving mode
 @property (nonatomic, assign) int pointCount;
 @property (nonatomic, assign) int pointsRendered;
 
@@ -67,6 +85,7 @@ struct MSLStrokeUniforms {
 - (void)cleanup;
 - (BOOL)createPipelines;
 - (BOOL)createCanvasTexture;
+- (BOOL)createTextureSampler;
 - (void)resizeWithWidth:(int)w height:(int)h;
 
 // Coordinate conversion
@@ -76,9 +95,17 @@ struct MSLStrokeUniforms {
 - (void)interpolateFrom:(simd_float2)from to:(simd_float2)to
               pointSize:(float)size color:(simd_float4)color spacing:(float)spacing;
 
+// Texture management
+- (int32_t)loadTextureFromFile:(NSString*)path;
+- (int32_t)loadTextureFromData:(const uint8_t*)data width:(int)width height:(int)height;
+- (id<MTLTexture>)getTextureById:(int32_t)textureId;
+- (void)unloadTexture:(int32_t)textureId;
+
 // Rendering
 - (void)clearCanvasWithColor:(simd_float4)color;
-- (void)renderPointsWithHardness:(float)hardness opacity:(float)opacity;
+- (void)renderPointsWithHardness:(float)hardness opacity:(float)opacity
+                            flow:(float)flow grainScale:(float)grainScale
+                  useShapeTexture:(BOOL)useShape useGrainTexture:(BOOL)useGrain;
 - (void)commitStrokeToCanvas;
 
 @end
@@ -94,6 +121,12 @@ struct MSLStrokeUniforms {
     self.isDrawing = NO;
     self.pointCount = 0;
     self.pointsRendered = 0;
+    self.grainOffset = simd_make_float2(0.0f, 0.0f);
+    self.nextTextureId = 1;  // 0 is reserved for "no texture"
+    self.currentBrushType = 1;  // Default to Crayon brush!
+    self.loadedTextures = [NSMutableDictionary dictionary];
+    self.currentShapeTexture = nil;
+    self.currentGrainTexture = nil;
     _backgroundColor = simd_make_float4(0.95f, 0.95f, 0.92f, 1.0f);
 
     // Create Metal device
@@ -145,6 +178,11 @@ struct MSLStrokeUniforms {
 
     // Create canvas texture
     if (![self createCanvasTexture]) {
+        return NO;
+    }
+
+    // Create texture sampler for brush textures
+    if (![self createTextureSampler]) {
         return NO;
     }
 
@@ -318,6 +356,49 @@ struct MSLStrokeUniforms {
         return NO;
     }
 
+    // Create crayon pipeline
+    id<MTLFunction> crayonFragmentFunc = [library newFunctionWithName:@"stamp_fragment_crayon"];
+    if (crayonFragmentFunc) {
+        pipelineDesc.fragmentFunction = crayonFragmentFunc;
+        self.crayonPipeline = [self.device newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
+        if (!self.crayonPipeline) {
+            METAL_LOG("Failed to create crayon pipeline: %s", [[error localizedDescription] UTF8String]);
+            // Non-fatal, fall back to stamp pipeline
+        } else {
+            METAL_LOG("Created crayon pipeline");
+        }
+    } else {
+        METAL_LOG("Crayon shader not found in library, using fallback");
+    }
+
+    // Create watercolor pipeline
+    id<MTLFunction> watercolorFragmentFunc = [library newFunctionWithName:@"stamp_fragment_watercolor"];
+    if (watercolorFragmentFunc) {
+        pipelineDesc.fragmentFunction = watercolorFragmentFunc;
+        self.watercolorPipeline = [self.device newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
+        if (!self.watercolorPipeline) {
+            METAL_LOG("Failed to create watercolor pipeline: %s", [[error localizedDescription] UTF8String]);
+        } else {
+            METAL_LOG("Created watercolor pipeline");
+        }
+    } else {
+        METAL_LOG("Watercolor shader not found in library, using fallback");
+    }
+
+    // Create marker pipeline
+    id<MTLFunction> markerFragmentFunc = [library newFunctionWithName:@"stamp_fragment_marker"];
+    if (markerFragmentFunc) {
+        pipelineDesc.fragmentFunction = markerFragmentFunc;
+        self.markerPipeline = [self.device newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
+        if (!self.markerPipeline) {
+            METAL_LOG("Failed to create marker pipeline: %s", [[error localizedDescription] UTF8String]);
+        } else {
+            METAL_LOG("Created marker pipeline");
+        }
+    } else {
+        METAL_LOG("Marker shader not found in library, using fallback");
+    }
+
     METAL_LOG("Created render pipelines");
     return YES;
 }
@@ -343,6 +424,119 @@ struct MSLStrokeUniforms {
 
     METAL_LOG("Created canvas texture (%dx%d)", self.drawableWidth, self.drawableHeight);
     return YES;
+}
+
+- (BOOL)createTextureSampler {
+    MTLSamplerDescriptor* samplerDesc = [[MTLSamplerDescriptor alloc] init];
+    samplerDesc.minFilter = MTLSamplerMinMagFilterLinear;
+    samplerDesc.magFilter = MTLSamplerMinMagFilterLinear;
+    samplerDesc.sAddressMode = MTLSamplerAddressModeRepeat;  // For tiling grain textures
+    samplerDesc.tAddressMode = MTLSamplerAddressModeRepeat;
+
+    self.textureSampler = [self.device newSamplerStateWithDescriptor:samplerDesc];
+    if (!self.textureSampler) {
+        METAL_LOG("Failed to create texture sampler");
+        return NO;
+    }
+
+    METAL_LOG("Created texture sampler");
+    return YES;
+}
+
+- (int32_t)loadTextureFromFile:(NSString*)path {
+    // Load image from file
+    UIImage* image = [UIImage imageWithContentsOfFile:path];
+    if (!image) {
+        // Try loading from bundle
+        image = [UIImage imageNamed:path];
+    }
+    if (!image) {
+        METAL_LOG("Failed to load image from: %s", [path UTF8String]);
+        return 0;
+    }
+
+    CGImageRef cgImage = image.CGImage;
+    size_t width = CGImageGetWidth(cgImage);
+    size_t height = CGImageGetHeight(cgImage);
+
+    // Create texture
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                     width:width
+                                    height:height
+                                 mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+
+    id<MTLTexture> texture = [self.device newTextureWithDescriptor:desc];
+    if (!texture) {
+        METAL_LOG("Failed to create texture for: %s", [path UTF8String]);
+        return 0;
+    }
+
+    // Get image data
+    size_t bytesPerRow = 4 * width;
+    uint8_t* imageData = (uint8_t*)malloc(bytesPerRow * height);
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(
+        imageData, width, height, 8, bytesPerRow, colorSpace,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
+
+    CGContextRelease(context);
+    CGColorSpaceRelease(colorSpace);
+
+    // Upload to texture
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    [texture replaceRegion:region mipmapLevel:0 withBytes:imageData bytesPerRow:bytesPerRow];
+
+    free(imageData);
+
+    // Store and return ID
+    int32_t textureId = self.nextTextureId++;
+    self.loadedTextures[@(textureId)] = texture;
+
+    METAL_LOG("Loaded texture %d from: %s (%zux%zu)", textureId, [path UTF8String], width, height);
+    return textureId;
+}
+
+- (int32_t)loadTextureFromData:(const uint8_t*)data width:(int)width height:(int)height {
+    // Create texture for single-channel grayscale data
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+                                     width:width
+                                    height:height
+                                 mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+
+    id<MTLTexture> texture = [self.device newTextureWithDescriptor:desc];
+    if (!texture) {
+        METAL_LOG("Failed to create texture from data (%dx%d)", width, height);
+        return 0;
+    }
+
+    // Upload data
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    [texture replaceRegion:region mipmapLevel:0 withBytes:data bytesPerRow:width];
+
+    // Store and return ID
+    int32_t textureId = self.nextTextureId++;
+    self.loadedTextures[@(textureId)] = texture;
+
+    METAL_LOG("Loaded texture %d from data (%dx%d)", textureId, width, height);
+    return textureId;
+}
+
+- (id<MTLTexture>)getTextureById:(int32_t)textureId {
+    if (textureId == 0) return nil;
+    return self.loadedTextures[@(textureId)];
+}
+
+- (void)unloadTexture:(int32_t)textureId {
+    if (textureId == 0) return;
+    [self.loadedTextures removeObjectForKey:@(textureId)];
+    METAL_LOG("Unloaded texture %d", textureId);
 }
 
 - (void)resizeWithWidth:(int)w height:(int)h {
@@ -418,7 +612,9 @@ struct MSLStrokeUniforms {
     [commandBuffer waitUntilCompleted];
 }
 
-- (void)renderPointsWithHardness:(float)hardness opacity:(float)opacity {
+- (void)renderPointsWithHardness:(float)hardness opacity:(float)opacity
+                            flow:(float)flow grainScale:(float)grainScale
+                  useShapeTexture:(BOOL)useShape useGrainTexture:(BOOL)useGrain {
     if (_points.empty()) return;
 
     // Update point buffer
@@ -429,6 +625,11 @@ struct MSLStrokeUniforms {
     uniforms.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
     uniforms.hardness = hardness;
     uniforms.opacity = opacity;
+    uniforms.flow = flow;
+    uniforms.grainScale = grainScale;
+    uniforms.grainOffset = self.grainOffset;
+    uniforms.useShapeTexture = useShape ? 1 : 0;
+    uniforms.useGrainTexture = useGrain ? 1 : 0;
     memcpy(self.uniformBuffer.contents, &uniforms, sizeof(MSLStrokeUniforms));
 
     // Render to canvas texture
@@ -441,10 +642,36 @@ struct MSLStrokeUniforms {
 
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
 
-    [encoder setRenderPipelineState:self.stampPipeline];
+    // Select pipeline based on brush type
+    id<MTLRenderPipelineState> pipeline = self.stampPipeline;  // Default
+    switch (self.currentBrushType) {
+        case 0:  // Round
+            pipeline = self.stampPipeline;
+            break;
+        case 1:  // Crayon
+            pipeline = self.crayonPipeline ? self.crayonPipeline : self.stampPipeline;
+            break;
+        case 2:  // Watercolor
+            pipeline = self.watercolorPipeline ? self.watercolorPipeline : self.stampPipeline;
+            break;
+        case 3:  // Marker
+            pipeline = self.markerPipeline ? self.markerPipeline : self.stampPipeline;
+            break;
+    }
+    [encoder setRenderPipelineState:pipeline];
     [encoder setVertexBuffer:self.pointBuffer offset:0 atIndex:0];
     [encoder setVertexBuffer:self.uniformBuffer offset:0 atIndex:1];
     [encoder setFragmentBuffer:self.uniformBuffer offset:0 atIndex:1];
+
+    // Bind textures and sampler if available
+    if (useShape && self.currentShapeTexture) {
+        [encoder setFragmentTexture:self.currentShapeTexture atIndex:0];
+        [encoder setFragmentSamplerState:self.textureSampler atIndex:0];
+    }
+    if (useGrain && self.currentGrainTexture) {
+        [encoder setFragmentTexture:self.currentGrainTexture atIndex:1];
+        [encoder setFragmentSamplerState:self.textureSampler atIndex:1];
+    }
 
     // Draw points
     [encoder drawPrimitives:MTLPrimitiveTypePoint
@@ -528,6 +755,13 @@ void MetalStampRenderer::cleanup() {
     initialized_ = false;
 }
 
+void MetalStampRenderer::set_brush_type(BrushType type) {
+    brush_.type = type;
+    if (impl_) {
+        impl_.currentBrushType = static_cast<int>(type);
+    }
+}
+
 void MetalStampRenderer::set_brush_size(float size) {
     brush_.size = size;
 }
@@ -557,6 +791,64 @@ void MetalStampRenderer::set_brush(const BrushSettings& settings) {
 
 BrushSettings MetalStampRenderer::get_brush() const {
     return brush_;
+}
+
+void MetalStampRenderer::set_brush_rotation(float degrees) {
+    brush_.rotation = degrees;
+}
+
+void MetalStampRenderer::set_brush_rotation_jitter(float degrees) {
+    brush_.rotation_jitter = degrees;
+}
+
+void MetalStampRenderer::set_brush_scatter(float scatter) {
+    brush_.scatter = scatter;
+}
+
+void MetalStampRenderer::set_brush_size_pressure(float amount) {
+    brush_.size_pressure = amount;
+}
+
+void MetalStampRenderer::set_brush_opacity_pressure(float amount) {
+    brush_.opacity_pressure = amount;
+}
+
+int32_t MetalStampRenderer::load_texture(const char* path) {
+    if (!is_ready()) return 0;
+    NSString* nsPath = [NSString stringWithUTF8String:path];
+    return [impl_ loadTextureFromFile:nsPath];
+}
+
+int32_t MetalStampRenderer::load_texture_from_data(const uint8_t* data, int width, int height) {
+    if (!is_ready()) return 0;
+    return [impl_ loadTextureFromData:data width:width height:height];
+}
+
+void MetalStampRenderer::set_brush_shape_texture(int32_t texture_id) {
+    brush_.shape_texture_id = texture_id;
+    if (is_ready()) {
+        impl_.currentShapeTexture = [impl_ getTextureById:texture_id];
+    }
+}
+
+void MetalStampRenderer::set_brush_grain_texture(int32_t texture_id) {
+    brush_.grain_texture_id = texture_id;
+    if (is_ready()) {
+        impl_.currentGrainTexture = [impl_ getTextureById:texture_id];
+    }
+}
+
+void MetalStampRenderer::set_brush_grain_scale(float scale) {
+    brush_.grain_scale = scale;
+}
+
+void MetalStampRenderer::set_brush_grain_moving(bool moving) {
+    brush_.grain_moving = moving;
+}
+
+void MetalStampRenderer::unload_texture(int32_t texture_id) {
+    if (!is_ready()) return;
+    [impl_ unloadTexture:texture_id];
 }
 
 void MetalStampRenderer::begin_stroke(float x, float y, float pressure) {
@@ -590,7 +882,11 @@ void MetalStampRenderer::end_stroke() {
     if (!is_ready() || !impl_.isDrawing) return;
 
     // Render remaining points to canvas
-    [impl_ renderPointsWithHardness:brush_.hardness opacity:brush_.opacity];
+    BOOL useShape = brush_.shape_texture_id != 0 && impl_.currentShapeTexture != nil;
+    BOOL useGrain = brush_.grain_texture_id != 0 && impl_.currentGrainTexture != nil;
+    [impl_ renderPointsWithHardness:brush_.hardness opacity:brush_.opacity
+                               flow:brush_.flow grainScale:brush_.grain_scale
+                     useShapeTexture:useShape useGrainTexture:useGrain];
     [impl_ commitStrokeToCanvas];
 
     impl_.isDrawing = NO;
@@ -628,7 +924,11 @@ void MetalStampRenderer::render_current_stroke() {
     if (!is_ready() || !impl_.isDrawing) return;
 
     // Render current stroke points
-    [impl_ renderPointsWithHardness:brush_.hardness opacity:brush_.opacity];
+    BOOL useShape = brush_.shape_texture_id != 0 && impl_.currentShapeTexture != nil;
+    BOOL useGrain = brush_.grain_texture_id != 0 && impl_.currentGrainTexture != nil;
+    [impl_ renderPointsWithHardness:brush_.hardness opacity:brush_.opacity
+                               flow:brush_.flow grainScale:brush_.grain_scale
+                     useShapeTexture:useShape useGrainTexture:useGrain];
 }
 
 void MetalStampRenderer::present() {
@@ -737,6 +1037,10 @@ bool is_metal_available() {
 }
 
 // Brush functions
+void metal_set_brush_type(int32_t type) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_type(static_cast<metal_stamp::BrushType>(type));
+}
+
 void metal_set_brush_size(float size) {
     if (g_metal_renderer) g_metal_renderer->set_brush_size(size);
 }
@@ -787,6 +1091,56 @@ void metal_present() {
     if (g_metal_renderer) g_metal_renderer->present();
 }
 
+// Extended brush settings
+void metal_set_brush_rotation(float degrees) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_rotation(degrees);
+}
+
+void metal_set_brush_rotation_jitter(float degrees) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_rotation_jitter(degrees);
+}
+
+void metal_set_brush_scatter(float scatter) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_scatter(scatter);
+}
+
+void metal_set_brush_size_pressure(float amount) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_size_pressure(amount);
+}
+
+void metal_set_brush_opacity_pressure(float amount) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_opacity_pressure(amount);
+}
+
+// Texture management
+int32_t metal_load_texture(const char* path) {
+    return g_metal_renderer ? g_metal_renderer->load_texture(path) : 0;
+}
+
+int32_t metal_load_texture_data(const uint8_t* data, int width, int height) {
+    return g_metal_renderer ? g_metal_renderer->load_texture_from_data(data, width, height) : 0;
+}
+
+void metal_set_brush_shape_texture(int32_t texture_id) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_shape_texture(texture_id);
+}
+
+void metal_set_brush_grain_texture(int32_t texture_id) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_grain_texture(texture_id);
+}
+
+void metal_set_brush_grain_scale(float scale) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_grain_scale(scale);
+}
+
+void metal_set_brush_grain_moving(bool moving) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_grain_moving(moving);
+}
+
+void metal_unload_texture(int32_t texture_id) {
+    if (g_metal_renderer) g_metal_renderer->unload_texture(texture_id);
+}
+
 } // namespace metal_stamp
 
 // =============================================================================
@@ -814,6 +1168,10 @@ METAL_EXPORT void metal_stamp_cleanup() {
 
 METAL_EXPORT bool metal_stamp_is_available() {
     return metal_stamp::is_metal_available();
+}
+
+METAL_EXPORT void metal_stamp_set_brush_type(int32_t type) {
+    metal_stamp::metal_set_brush_type(type);
 }
 
 METAL_EXPORT void metal_stamp_set_brush_size(float size) {
@@ -862,6 +1220,88 @@ METAL_EXPORT void metal_stamp_render_stroke() {
 
 METAL_EXPORT void metal_stamp_present() {
     metal_stamp::metal_present();
+}
+
+// Extended brush settings
+METAL_EXPORT void metal_stamp_set_brush_rotation(float degrees) {
+    metal_stamp::metal_set_brush_rotation(degrees);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_rotation_jitter(float degrees) {
+    metal_stamp::metal_set_brush_rotation_jitter(degrees);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_scatter(float scatter) {
+    metal_stamp::metal_set_brush_scatter(scatter);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_size_pressure(float amount) {
+    metal_stamp::metal_set_brush_size_pressure(amount);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_opacity_pressure(float amount) {
+    metal_stamp::metal_set_brush_opacity_pressure(amount);
+}
+
+// Texture management
+METAL_EXPORT int32_t metal_stamp_load_texture(const char* path) {
+    return metal_stamp::metal_load_texture(path);
+}
+
+METAL_EXPORT int32_t metal_stamp_load_texture_data(const uint8_t* data, int width, int height) {
+    return metal_stamp::metal_load_texture_data(data, width, height);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_shape_texture(int32_t texture_id) {
+    metal_stamp::metal_set_brush_shape_texture(texture_id);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_grain_texture(int32_t texture_id) {
+    metal_stamp::metal_set_brush_grain_texture(texture_id);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_grain_scale(float scale) {
+    metal_stamp::metal_set_brush_grain_scale(scale);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_grain_moving(bool moving) {
+    metal_stamp::metal_set_brush_grain_moving(moving);
+}
+
+METAL_EXPORT void metal_stamp_unload_texture(int32_t texture_id) {
+    metal_stamp::metal_unload_texture(texture_id);
+}
+
+// Built-in brush presets (procedural, no textures needed)
+METAL_EXPORT void metal_stamp_use_preset_round_soft() {
+    metal_stamp::metal_set_brush_hardness(0.0f);
+    metal_stamp::metal_set_brush_spacing(0.1f);
+    metal_stamp::metal_set_brush_shape_texture(0);  // Procedural circle
+    metal_stamp::metal_set_brush_grain_texture(0);  // No grain
+}
+
+METAL_EXPORT void metal_stamp_use_preset_round_hard() {
+    metal_stamp::metal_set_brush_hardness(0.9f);
+    metal_stamp::metal_set_brush_spacing(0.1f);
+    metal_stamp::metal_set_brush_shape_texture(0);  // Procedural circle
+    metal_stamp::metal_set_brush_grain_texture(0);  // No grain
+}
+
+METAL_EXPORT void metal_stamp_use_preset_square() {
+    // For now, just a hard brush (square texture would need to be loaded)
+    metal_stamp::metal_set_brush_hardness(1.0f);
+    metal_stamp::metal_set_brush_spacing(0.1f);
+    metal_stamp::metal_set_brush_shape_texture(0);
+    metal_stamp::metal_set_brush_grain_texture(0);
+}
+
+METAL_EXPORT void metal_stamp_use_preset_splatter() {
+    metal_stamp::metal_set_brush_hardness(0.3f);
+    metal_stamp::metal_set_brush_spacing(0.3f);
+    metal_stamp::metal_set_brush_rotation_jitter(180.0f);  // Random rotation
+    metal_stamp::metal_set_brush_scatter(0.2f);            // Slight scatter
+    metal_stamp::metal_set_brush_shape_texture(0);
+    metal_stamp::metal_set_brush_grain_texture(0);
 }
 
 } // extern "C"
