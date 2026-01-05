@@ -1,6 +1,9 @@
 // Drawing Mobile iOS - jank-powered drawing app
 // Uses SDL3 + Metal via drawing_canvas.hpp singleton
 
+// Define METAL_TEST_MODE to bypass jank and test Metal directly
+#define METAL_TEST_MODE 1
+
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include <iostream>
@@ -9,6 +12,9 @@
 #include <mutex>
 #include <condition_variable>
 #include <pthread.h>
+
+#include <SDL3/SDL.h>
+#include "../src/vybe/app/drawing/native/metal_renderer.h"
 
 // jank runtime headers
 // iOS defines 'nil' as a macro which conflicts with jank's object_type::nil
@@ -237,6 +243,160 @@ static void call_jank_main_impl() {
 }
 
 // =============================================================================
+// Metal Test Mode - Pure C++ SDL + Metal rendering (no jank)
+// =============================================================================
+
+#if METAL_TEST_MODE
+
+static int metal_test_main() {
+    std::cout << "========================================" << std::endl;
+    std::cout << "   METAL TEST MODE - Pure C++ Rendering" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    // Create SDL window
+    SDL_Window* window = SDL_CreateWindow(
+        "Metal Test",
+        1024, 768,
+        SDL_WINDOW_METAL | SDL_WINDOW_HIGH_PIXEL_DENSITY
+    );
+
+    if (!window) {
+        std::cerr << "Failed to create window: " << SDL_GetError() << std::endl;
+        return 1;
+    }
+
+    int width, height;
+    SDL_GetWindowSizeInPixels(window, &width, &height);
+    std::cout << "Window size: " << width << "x" << height << std::endl;
+
+    // Initialize Metal renderer
+    std::cout << "Initializing Metal stamp renderer..." << std::endl;
+    if (!metal_stamp_init(window, width, height)) {
+        std::cerr << "Failed to initialize Metal renderer!" << std::endl;
+        SDL_DestroyWindow(window);
+        return 1;
+    }
+    std::cout << "Metal renderer initialized!" << std::endl;
+
+    // Set brush settings
+    metal_stamp_set_brush_size(30.0f);
+    metal_stamp_set_brush_hardness(0.0f);  // Soft brush
+    metal_stamp_set_brush_opacity(1.0f);
+    metal_stamp_set_brush_spacing(0.1f);
+    metal_stamp_set_brush_color(0.0f, 0.0f, 0.0f, 1.0f);  // Black
+
+    // Clear canvas to white
+    metal_stamp_clear_canvas(1.0f, 1.0f, 1.0f, 1.0f);
+
+    // Track drawing state
+    bool is_drawing = false;
+    float last_x = 0, last_y = 0;
+
+    // Main loop
+    bool running = true;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+                case SDL_EVENT_QUIT:
+                    running = false;
+                    break;
+
+                case SDL_EVENT_FINGER_DOWN: {
+                    // Convert normalized coords to screen pixels
+                    float x = event.tfinger.x * width;
+                    float y = event.tfinger.y * height;
+                    float pressure = event.tfinger.pressure;
+                    if (pressure <= 0.0f) pressure = 1.0f;  // Default pressure
+
+                    std::cout << "Touch down: " << x << ", " << y << " (pressure: " << pressure << ")" << std::endl;
+                    metal_stamp_begin_stroke(x, y, pressure);
+                    last_x = x;
+                    last_y = y;
+                    is_drawing = true;
+                    break;
+                }
+
+                case SDL_EVENT_FINGER_MOTION: {
+                    if (is_drawing) {
+                        float x = event.tfinger.x * width;
+                        float y = event.tfinger.y * height;
+                        float pressure = event.tfinger.pressure;
+                        if (pressure <= 0.0f) pressure = 1.0f;
+
+                        // Only add point if moved more than 1 pixel (avoid spurious motion events)
+                        float dx = x - last_x;
+                        float dy = y - last_y;
+                        if (dx*dx + dy*dy > 1.0f) {
+                            metal_stamp_add_stroke_point(x, y, pressure);
+                            last_x = x;
+                            last_y = y;
+                        }
+                    }
+                    break;
+                }
+
+                case SDL_EVENT_FINGER_UP: {
+                    if (is_drawing) {
+                        std::cout << "Touch up - ending stroke" << std::endl;
+                        metal_stamp_end_stroke();
+                        is_drawing = false;
+                    }
+                    break;
+                }
+
+                // NOTE: On iOS simulator, mouse events also fire alongside finger events
+                // but with different coordinates (pixels vs normalized). We only handle
+                // finger events to avoid duplicate strokes.
+                // Mouse events are commented out for iOS:
+                /*
+                case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+                    float x = event.button.x;
+                    float y = event.button.y;
+                    std::cout << "Mouse down: " << x << ", " << y << std::endl;
+                    metal_stamp_begin_stroke(x, y, 1.0f);
+                    is_drawing = true;
+                    break;
+                }
+
+                case SDL_EVENT_MOUSE_MOTION: {
+                    if (is_drawing) {
+                        float x = event.motion.x;
+                        float y = event.motion.y;
+                        metal_stamp_add_stroke_point(x, y, 1.0f);
+                    }
+                    break;
+                }
+
+                case SDL_EVENT_MOUSE_BUTTON_UP: {
+                    if (is_drawing) {
+                        std::cout << "Mouse up - ending stroke" << std::endl;
+                        metal_stamp_end_stroke();
+                        is_drawing = false;
+                    }
+                    break;
+                }
+                */
+            }
+        }
+
+        // Present the frame (strokes render to canvas at end_stroke)
+        metal_stamp_present();
+
+        // Small delay to avoid busy-waiting
+        SDL_Delay(1);
+    }
+
+    // Cleanup
+    metal_stamp_cleanup();
+    SDL_DestroyWindow(window);
+
+    return 0;
+}
+
+#endif  // METAL_TEST_MODE
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -245,6 +405,10 @@ extern "C" int drawing_mobile_main(int argc, char* argv[]) {
     std::cout << "   Drawing Canvas - iOS" << std::endl;
     std::cout << "========================================" << std::endl;
 
+#if METAL_TEST_MODE
+    // Pure C++ Metal test mode
+    return metal_test_main();
+#else
     // Initialize jank runtime on a large stack thread
     if (!init_jank_runtime_on_large_stack()) {
         std::cerr << "[drawing_mobile] Failed to initialize jank" << std::endl;
@@ -256,4 +420,5 @@ extern "C" int drawing_mobile_main(int argc, char* argv[]) {
 
     std::cout << "[drawing_mobile] App finished" << std::endl;
     return 0;
+#endif
 }

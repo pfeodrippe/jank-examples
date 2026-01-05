@@ -74,39 +74,33 @@
   []
   (let [current (state/get-current-stroke)]
     (when-not (empty? current)
-      ;; Full tessellation for current stroke (simpler, reliable)
-      ;; Texture caching for finished strokes is where we save performance
-      (canvas/clear_vertices)
-      (let [triangles (math/stroke->triangles current)]
-        (render-stroke-triangles! triangles)
-        (canvas/render_vertices)))))
+      (if (canvas/is_using_metal)
+        ;; Metal: render current stroke via GPU stamps
+        (canvas/metal_render_stroke)
+        ;; CPU fallback: Full tessellation for current stroke
+        (do
+          (canvas/clear_vertices)
+          (let [triangles (math/stroke->triangles current)]
+            (render-stroke-triangles! triangles)
+            (canvas/render_vertices)))))))
 
 ;; =============================================================================
 ;; Main render function
 ;; =============================================================================
 
 (defn render-frame!
-  "Render all strokes for the current frame."
+  "Render all strokes for the current frame using Metal GPU stamps."
   []
   ;; Set background color
   (let [[r g b a] (state/get-bg-color)]
     (canvas/set_bg_color (float r) (float g) (float b) (float a)))
 
-  ;; Check if we need to rebuild the canvas texture (only for frame changes, undo, etc.)
-  (when (state/canvas-needs-rebuild?)
-    (rebuild-canvas-texture!))
-
-  ;; Check if there's a just-completed stroke to add incrementally
-  (when (state/has-just-completed-stroke?)
-    (render-stroke-to-texture! (state/get-just-completed-stroke))
-    (state/clear-just-completed-stroke!))
-
-  ;; Draw cached canvas texture (all finished strokes)
-  (when (canvas/has_canvas_texture)
-    (canvas/draw_canvas))
-
-  ;; Draw current stroke on top
-  (render-current-stroke!))
+  ;; Metal GPU rendering - smooth Procreate-style strokes
+  ;; Metal canvas accumulates finished strokes via metal_end_stroke
+  ;; Render current in-progress stroke
+  (canvas/metal_render_stroke)
+  ;; Present Metal canvas (composite to SDL)
+  (canvas/metal_present))
 
 ;; =============================================================================
 ;; Screenshot
@@ -170,6 +164,16 @@
    ;; Initialize native canvas
    (when (canvas/init 1024 768 "Drawing Canvas")
      (println "Canvas initialized!")
+
+     ;; Initialize Metal stamp renderer for smooth GPU-accelerated drawing
+     (canvas/init_metal_renderer)
+     (println "Metal GPU stamp renderer initialized - Procreate-style smooth strokes!")
+     ;; Set default brush settings
+     (canvas/metal_set_brush_size 20.0)
+     (canvas/metal_set_brush_hardness 0.3)
+     (canvas/metal_set_brush_opacity 1.0)
+     (canvas/metal_set_brush_color 0.1 0.1 0.1 1.0)
+
      (println "Draw with mouse or touch...")
      (println "")
 

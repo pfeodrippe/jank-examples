@@ -1,5 +1,12 @@
 # Project Rules
 
+Rule 0 - **NEVER edit derived/generated files directly!**
+- **NEVER** edit files in `*/jank-resources/*` - these are copied from `src/`
+- **NEVER** edit files in `*/build-*/*` or `*/generated/*`
+- Always find and edit the **original source** file (usually in `src/`)
+- Use `find . -name "filename" | grep -v jank-resources | grep -v build` to find originals
+- If `git status` shows "nothing to commit" after your edit, you edited the wrong file!
+
 Rule 1 - In the end of your turn, create a new .md file into the `ai` folder with what you've learned + commands you did + what you will do next!
 
 Rule 2 - **Use jank/cpp prefix, cpp/raw is LAST RESORT**

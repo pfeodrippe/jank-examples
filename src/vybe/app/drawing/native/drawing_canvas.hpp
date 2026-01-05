@@ -7,12 +7,25 @@
 // Everything else (bezier math, tessellation, state) is in jank!
 //
 // NOTE: Using SDL_Renderer for simplicity - uses Metal on macOS/iOS automatically
+// GPU STAMP RENDERING: Optional Metal-based stamp renderer for Procreate-style smooth strokes
 
 #pragma once
 
 #include <SDL3/SDL.h>
 #include <vector>
 #include <iostream>
+
+// Metal stamp renderer (GPU-accelerated drawing)
+// Uses extern "C" functions for JIT compatibility
+#include "metal_renderer.h"
+
+// iOS logging
+#ifdef __APPLE__
+#include <os/log.h>
+#define TOUCH_LOG(fmt, ...) os_log_info(OS_LOG_DEFAULT, fmt, ##__VA_ARGS__)
+#else
+#define TOUCH_LOG(fmt, ...) printf(fmt "\n", ##__VA_ARGS__)
+#endif
 
 namespace dc {
 
@@ -51,8 +64,10 @@ struct CanvasState {
     // SDL
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
-    int width = 1024;
+    int width = 1024;           // Window size (logical pixels)
     int height = 768;
+    int render_width = 1024;    // Render output size (physical pixels for high-DPI)
+    int render_height = 768;
     bool running = true;
 
     // Offscreen canvas texture (for caching finished strokes)
@@ -75,7 +90,14 @@ struct CanvasState {
     double avg_frame_time = 0.0;   // Rolling average (ms)
     int frame_count = 0;
 
+    // Touch tracking (to handle only one finger at a time)
+    SDL_FingerID activeFingerID = 0;
+    bool touchActive = false;
+
     bool initialized = false;
+
+    // Metal stamp renderer (GPU-accelerated drawing)
+    bool use_metal_renderer = false;  // Toggle for Metal vs CPU rendering
 };
 
 // ODR-safe singleton pattern
@@ -130,11 +152,16 @@ inline bool init(int width, int height, const char* title) {
     // Enable blending for transparency
     SDL_SetRenderDrawBlendMode(s->renderer, SDL_BLENDMODE_BLEND);
 
-    // Create offscreen canvas texture for caching finished strokes
+    // Get actual render output size (may differ from window size on high-DPI)
+    SDL_GetRenderOutputSize(s->renderer, &s->render_width, &s->render_height);
+    std::cout << "[drawing_canvas] Window size: " << s->width << "x" << s->height
+              << ", Render output size: " << s->render_width << "x" << s->render_height << std::endl;
+
+    // Create offscreen canvas texture for caching finished strokes (use render size!)
     s->canvas_texture = SDL_CreateTexture(s->renderer,
         SDL_PIXELFORMAT_RGBA8888,
         SDL_TEXTUREACCESS_TARGET,
-        width, height);
+        s->render_width, s->render_height);
     if (!s->canvas_texture) {
         std::cerr << "[drawing_canvas] Failed to create canvas texture: " << SDL_GetError() << std::endl;
         // Non-fatal, we can still render without caching
@@ -186,12 +213,12 @@ inline bool should_close() {
 
 inline int get_width() {
     auto* s = get_state();
-    return s ? s->width : 0;
+    return s ? s->render_width : 0;  // Return render size for consistent coordinates
 }
 
 inline int get_height() {
     auto* s = get_state();
-    return s ? s->height : 0;
+    return s ? s->render_height : 0;  // Return render size for consistent coordinates
 }
 
 // =============================================================================
@@ -218,6 +245,8 @@ inline int poll_events() {
             case SDL_EVENT_WINDOW_RESIZED:
                 s->width = event.window.data1;
                 s->height = event.window.data2;
+                // Also update render size for high-DPI
+                SDL_GetRenderOutputSize(s->renderer, &s->render_width, &s->render_height);
                 break;
 
             // Mouse events
@@ -258,39 +287,63 @@ inline int poll_events() {
                 break;
 
             // Touch events (for iOS/iPad)
+            // SDL3 touch coords are NORMALIZED (0-1) - multiply by render size
             case SDL_EVENT_FINGER_DOWN:
-                if (s->eventCount < MAX_EVENTS) {
-                    s->events[s->eventCount++] = {
-                        0,
-                        event.tfinger.x * s->width,
-                        event.tfinger.y * s->height,
-                        event.tfinger.pressure,
-                        false  // Could detect Apple Pencil here
-                    };
+                {
+                    // Touch coords are normalized 0-1, convert to render pixels
+                    float x = event.tfinger.x * s->render_width;
+                    float y = event.tfinger.y * s->render_height;
+
+                    TOUCH_LOG("DOWN raw=(%.3f,%.3f) -> (%.1f,%.1f) render=(%d,%d)",
+                              event.tfinger.x, event.tfinger.y, x, y,
+                              s->render_width, s->render_height);
+
+                    if (s->eventCount < MAX_EVENTS) {
+                        s->events[s->eventCount++] = {
+                            0,  // down
+                            x,
+                            y,
+                            event.tfinger.pressure,
+                            false
+                        };
+                    }
                 }
                 break;
 
             case SDL_EVENT_FINGER_MOTION:
-                if (s->eventCount < MAX_EVENTS) {
-                    s->events[s->eventCount++] = {
-                        1,
-                        event.tfinger.x * s->width,
-                        event.tfinger.y * s->height,
-                        event.tfinger.pressure,
-                        false
-                    };
+                {
+                    float x = event.tfinger.x * s->render_width;
+                    float y = event.tfinger.y * s->render_height;
+
+                    if (s->eventCount < MAX_EVENTS) {
+                        s->events[s->eventCount++] = {
+                            1,  // move
+                            x,
+                            y,
+                            event.tfinger.pressure,
+                            false
+                        };
+                    }
                 }
                 break;
 
             case SDL_EVENT_FINGER_UP:
-                if (s->eventCount < MAX_EVENTS) {
-                    s->events[s->eventCount++] = {
-                        2,
-                        event.tfinger.x * s->width,
-                        event.tfinger.y * s->height,
-                        0.0f,
-                        false
-                    };
+                {
+                    float x = event.tfinger.x * s->render_width;
+                    float y = event.tfinger.y * s->render_height;
+
+                    TOUCH_LOG("UP raw=(%.3f,%.3f) -> (%.1f,%.1f)",
+                              event.tfinger.x, event.tfinger.y, x, y);
+
+                    if (s->eventCount < MAX_EVENTS) {
+                        s->events[s->eventCount++] = {
+                            2,  // up
+                            x,
+                            y,
+                            0.0f,
+                            false
+                        };
+                    }
                 }
                 break;
         }
@@ -382,6 +435,8 @@ inline void clear_canvas() {
     auto* s = get_state();
     if (!s || !s->canvas_texture) return;
 
+    TOUCH_LOG("CLEAR_CANVAS called! canvas_dirty was %d", s->canvas_dirty ? 1 : 0);
+
     SDL_SetRenderTarget(s->renderer, s->canvas_texture);
     SDL_SetRenderDrawColor(s->renderer,
                            (Uint8)(s->bgColor[0] * 255),
@@ -400,6 +455,7 @@ inline void begin_canvas_render() {
 
     // Clear on first use
     if (s->canvas_dirty) {
+        TOUCH_LOG("begin_canvas_render: canvas_dirty=true, clearing!");
         clear_canvas();
     }
 
@@ -598,6 +654,102 @@ inline double get_fps() {
 inline int get_vertex_count() {
     auto* s = get_state();
     return s ? (int)s->vertices.size() : 0;
+}
+
+// =============================================================================
+// Metal Stamp Renderer (GPU-accelerated drawing)
+// =============================================================================
+
+// =============================================================================
+// Metal Stamp Renderer - use extern "C" functions for JIT compatibility
+// =============================================================================
+
+// Initialize Metal stamp renderer
+inline bool init_metal_renderer() {
+    auto* s = get_state();
+    if (!s || !s->window) return false;
+
+    bool success = metal_stamp_init(s->window, s->render_width, s->render_height);
+    if (success) {
+        s->use_metal_renderer = true;
+        std::cout << "[drawing_canvas] Metal stamp renderer initialized" << std::endl;
+    } else {
+        std::cout << "[drawing_canvas] Metal renderer init failed" << std::endl;
+    }
+    return success;
+}
+
+// Cleanup Metal renderer
+inline void cleanup_metal_renderer() {
+    metal_stamp_cleanup();
+    auto* s = get_state();
+    if (s) s->use_metal_renderer = false;
+}
+
+// Check if Metal rendering is active
+inline bool is_using_metal() {
+    auto* s = get_state();
+    return s && s->use_metal_renderer && metal_stamp_is_available();
+}
+
+// =============================================================================
+// Metal Brush Settings (wrapper functions using extern "C")
+// =============================================================================
+
+inline void metal_set_brush_size(float size) {
+    metal_stamp_set_brush_size(size);
+}
+
+inline void metal_set_brush_hardness(float hardness) {
+    metal_stamp_set_brush_hardness(hardness);
+}
+
+inline void metal_set_brush_opacity(float opacity) {
+    metal_stamp_set_brush_opacity(opacity);
+}
+
+inline void metal_set_brush_spacing(float spacing) {
+    metal_stamp_set_brush_spacing(spacing);
+}
+
+inline void metal_set_brush_color(float r, float g, float b, float a) {
+    metal_stamp_set_brush_color(r, g, b, a);
+}
+
+// =============================================================================
+// Metal Stroke Functions (wrapper functions using extern "C")
+// =============================================================================
+
+inline void metal_begin_stroke(float x, float y, float pressure) {
+    metal_stamp_begin_stroke(x, y, pressure);
+}
+
+inline void metal_add_stroke_point(float x, float y, float pressure) {
+    metal_stamp_add_stroke_point(x, y, pressure);
+}
+
+inline void metal_end_stroke() {
+    metal_stamp_end_stroke();
+}
+
+inline void metal_cancel_stroke() {
+    metal_stamp_cancel_stroke();
+}
+
+// =============================================================================
+// Metal Canvas Functions (wrapper functions using extern "C")
+// =============================================================================
+
+inline void metal_clear_canvas(float r, float g, float b, float a) {
+    metal_stamp_clear_canvas(r, g, b, a);
+}
+
+inline void metal_render_stroke() {
+    metal_stamp_render_stroke();
+}
+
+inline void metal_present() {
+    metal_stamp_present();
 }
 
 } // namespace dc

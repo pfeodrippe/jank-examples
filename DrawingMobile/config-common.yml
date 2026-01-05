@@ -93,6 +93,11 @@ targetTemplates:
       # Vybe Flecs helpers (needed for vybe.flecs jank bindings)
       - path: ../vendor/vybe/vybe_flecs_jank.cpp
         compilerFlags: ["-O2"]
+      # Metal stamp renderer (GPU-accelerated brush rendering)
+      - path: jank-resources/src/jank/vybe/app/drawing/native/metal_renderer.mm
+        compilerFlags: ["-x", "objective-c++", "-fobjc-arc"]
+      # Metal shaders (compiled to .metallib by Xcode)
+      - path: jank-resources/src/jank/vybe/app/drawing/native/stamp_shaders.metal
       # Common resources (bundled with app)
       - path: LaunchScreen.storyboard
         buildPhase: resources

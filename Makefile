@@ -1217,6 +1217,7 @@ ios-device-nrepl-proxy:
 
 .PHONY: drawing-ios-setup drawing-ios-jit-sim-run drawing-ios-jit-device-run \
         drawing-ios-jit-sim-build drawing-ios-jit-device-build \
+        drawing-ios-jit-device-core-libs \
         drawing-ios-compile-server-sim drawing-ios-compile-server-device \
         drawing-ios-device-nrepl-proxy
 
@@ -1355,6 +1356,8 @@ drawing-ios-jit-sim-build: drawing-ios-jit-sync-sources drawing-ios-jit-pch draw
 drawing-ios-jit-sim-run: drawing-ios-jit-sim-build drawing-ios-compile-server-sim
 	@echo "Launching simulator..."
 	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
+	@echo "Terminating old app instance (if running)..."
+	-xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.DrawingMobile-JIT-Sim 2>/dev/null || true
 	@echo "Installing DrawingMobile..."
 	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name 'DrawingMobile-JIT-Sim.app' -type d 2>/dev/null | head -1)
 	@echo "Launching app..."
@@ -1367,7 +1370,8 @@ drawing-ios-jit-sim-run: drawing-ios-jit-sim-build drawing-ios-compile-server-si
 .PHONY: drawing-ios-compile-server-sim
 drawing-ios-compile-server-sim:
 	@echo "Starting DrawingMobile compile server for simulator (port 5572)..."
-	@-pkill -f "compile-server.*--port 5572" 2>/dev/null || true
+	@# Kill only the process holding port 5572 (not all compile servers!)
+	@-lsof -ti:5572 | xargs kill 2>/dev/null || true
 	@sleep 0.2
 	@cd $(JANK_SRC) && ./build/compile-server --target sim --port 5572 \
 		--module-path $(PWD)/DrawingMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
@@ -1390,9 +1394,47 @@ drawing-ios-compile-server-sim:
 		fi; \
 	done
 
+# Create libjank_aot.a for DrawingMobile device
+.PHONY: drawing-ios-jit-device-core-libs
+drawing-ios-jit-device-core-libs: drawing-ios-jit-device-core
+	@echo "Creating libjank_aot.a for DrawingMobile device..."
+	@if [ ! -f "DrawingMobile/build-iphoneos-jit/libjank.a" ]; then \
+		echo "ERROR: JIT-only libraries not found!"; \
+		echo "Run 'make drawing-ios-jit-device-core' first."; \
+		exit 1; \
+	fi
+	@rm -f DrawingMobile/build-iphoneos-jit/libjank_aot.a
+	@if [ -d "DrawingMobile/build-iphoneos-jit/obj" ] && [ -n "$$(ls DrawingMobile/build-iphoneos-jit/obj/*.o 2>/dev/null)" ]; then \
+		ar rcs DrawingMobile/build-iphoneos-jit/libjank_aot.a \
+			DrawingMobile/build-iphoneos-jit/obj/*.o; \
+	else \
+		echo "No object files found, creating empty libjank_aot.a"; \
+		ar rcs DrawingMobile/build-iphoneos-jit/libjank_aot.a; \
+	fi
+	@# Copy dependent libs from jank build (DEVICE version)
+	@if [ -f "$(JANK_SRC)/build-ios-jit-device/libfolly.a" ]; then \
+		cp $(JANK_SRC)/build-ios-jit-device/libfolly.a DrawingMobile/build-iphoneos-jit/; \
+	else \
+		echo "WARNING: libfolly.a not found at $(JANK_SRC)/build-ios-jit-device/"; \
+	fi
+	@cp $(JANK_SRC)/build-ios-jit-device/libjankzip.a DrawingMobile/build-iphoneos-jit/ 2>/dev/null || true
+	@cp $(JANK_SRC)/build-ios-jit-device/libgc.a DrawingMobile/build-iphoneos-jit/ 2>/dev/null || true
+	@cp $(JANK_SRC)/build-ios-jit-device/libcurses.a DrawingMobile/build-iphoneos-jit/ 2>/dev/null || true
+	@# Copy merged LLVM if available, or create it using libtool
+	@if [ -f "DrawingMobile/build-iphoneos-jit/libllvm_merged.a" ]; then \
+		echo "libllvm_merged.a already exists"; \
+	elif [ -f "$(JANK_SRC)/build-ios-jit-device/libllvm_merged.a" ]; then \
+		cp $(JANK_SRC)/build-ios-jit-device/libllvm_merged.a DrawingMobile/build-iphoneos-jit/; \
+	else \
+		echo "Merging LLVM libraries using libtool..."; \
+		libtool -static -o DrawingMobile/build-iphoneos-jit/libllvm_merged.a \
+			$$HOME/dev/ios-llvm-build/ios-llvm-device/lib/*.a 2>/dev/null || true; \
+	fi
+	@echo "DrawingMobile device JIT libraries ready!"
+
 # Generate JIT Xcode project for DrawingMobile device
 .PHONY: drawing-ios-jit-device-project
-drawing-ios-jit-device-project: drawing-ios-jit-device-core drawing-ios-jit-sync-sources
+drawing-ios-jit-device-project: drawing-ios-jit-device-core-libs drawing-ios-jit-sync-sources
 	@echo "Generating DrawingMobile JIT device Xcode project..."
 	cd DrawingMobile && ./generate-project.sh project-jit-device.yml
 	@echo "Project generated: DrawingMobile/DrawingMobile-JIT-Device.xcodeproj"
@@ -1413,7 +1455,8 @@ drawing-ios-jit-device-build: drawing-ios-jit-sync-sources drawing-ios-jit-pch-d
 .PHONY: drawing-ios-compile-server-device
 drawing-ios-compile-server-device:
 	@echo "Starting DrawingMobile compile server for device (port 5573)..."
-	@-pkill -f "compile-server.*--port 5573" 2>/dev/null || true
+	@# Kill only the process holding port 5573 (not all compile servers!)
+	@-lsof -ti:5573 | xargs kill 2>/dev/null || true
 	@sleep 0.2
 	@cd $(JANK_SRC) && ./build/compile-server --target device --port 5573 \
 		--module-path $(PWD)/DrawingMobile/jank-resources/src/jank:$(JANK_SRC)/../nrepl-server/src/jank \
@@ -1452,25 +1495,32 @@ drawing-ios-device-nrepl-proxy:
 drawing-ios-jit-device-run: drawing-ios-compile-server-device drawing-ios-device-nrepl-proxy drawing-ios-jit-device-build
 	@echo ""
 	@echo "Installing to connected device..."
-	@# Find the built app and install it
-	@APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name 'DrawingMobile-JIT-Device.app' -path '*Debug-iphoneos*' -type d 2>/dev/null | head -1); \
-	if [ -n "$$APP_PATH" ]; then \
-		echo "Installing: $$APP_PATH"; \
-		ios-deploy -b "$$APP_PATH" --debug 2>&1 || true; \
-	else \
-		echo "ERROR: Built app not found. Build may have failed."; \
+	@DEVICE_ID=$$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*iPad|connected.*iPhone" | awk '{print $$3}' | head -1); \
+	if [ -z "$$DEVICE_ID" ]; then \
+		echo "ERROR: No iOS device found. Connect your device and try again."; \
+		exit 1; \
+	fi; \
+	APP_PATH=$$(find ~/Library/Developer/Xcode/DerivedData -name "DrawingMobile-JIT-Device.app" -path "*/Debug-iphoneos/*" ! -path "*/Index.noindex/*" 2>/dev/null | head -1); \
+	if [ -z "$$APP_PATH" ]; then \
+		echo "ERROR: Built app not found!"; \
 		echo "Check /tmp/drawing_ios_device_build.txt for errors."; \
 		exit 1; \
-	fi
-	@echo ""
-	@echo "================================================"
-	@echo "DrawingMobile JIT on Device"
-	@echo "================================================"
-	@echo "Compile server: port 5573"
-	@echo "nREPL proxy:    localhost:5581 -> device:5580"
-	@echo ""
-	@echo "Connect your nREPL client to localhost:5581"
-	@echo "================================================"
+	fi; \
+	echo "Installing $$APP_PATH to device $$DEVICE_ID..."; \
+	xcrun devicectl device install app --device "$$DEVICE_ID" "$$APP_PATH"; \
+	echo "Terminating existing app (if running)..."; \
+	xcrun devicectl device process terminate --device "$$DEVICE_ID" com.vybe.DrawingMobile-JIT-Device 2>/dev/null || true; \
+	echo "Launching app..."; \
+	xcrun devicectl device process launch --device "$$DEVICE_ID" com.vybe.DrawingMobile-JIT-Device; \
+	echo ""; \
+	echo "═══════════════════════════════════════════════════════════════════════"; \
+	echo "  App launched! Compile server running on port 5573."; \
+	echo "  Connect nREPL to localhost:5581"; \
+	echo "  Press Ctrl+C to stop compile server and exit."; \
+	echo "═══════════════════════════════════════════════════════════════════════"; \
+	echo ""; \
+	echo "Compile server logs:"; \
+	tail -f /dev/null
 
 # ============================================================================
 # End Drawing Mobile iOS Targets

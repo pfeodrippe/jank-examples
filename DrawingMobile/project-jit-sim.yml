@@ -55,6 +55,8 @@ targets:
           - $(PROJECT_DIR)/../vendor
           - $(PROJECT_DIR)/Frameworks/include
           - $(PROJECT_DIR)/Frameworks/include/SDL3
+          # Metal renderer native headers
+          - $(PROJECT_DIR)/jank-resources/src/jank
           - ${JANK_SRC}/include/cpp
           - ${JANK_SRC}/src/cpp
           - ${JANK_SRC}/third-party/immer

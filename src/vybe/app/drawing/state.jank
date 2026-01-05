@@ -93,11 +93,16 @@
 (defn start-drawing! [x y pressure]
   (let [thread (get-active-thread)
         stroke (core/make-stroke (:color thread) (:line-width thread))
-        point (core/make-point x y pressure (canvas/get_time_ms))]
+        point (core/make-point x y pressure (canvas/get_time_ms))
+        [r g b a] (:color thread)]
     (reset! *current-stroke (core/add-point-to-stroke stroke point))
     (reset! *current-stroke-triangles [])
     (reset! *current-stroke-tessellated-count 0)
-    (reset! *drawing? true)))
+    (reset! *drawing? true)
+    ;; Start Metal stroke
+    (canvas/metal_set_brush_size (:line-width thread))
+    (canvas/metal_set_brush_color (float r) (float g) (float b) (float a))
+    (canvas/metal_begin_stroke (float x) (float y) (float pressure))))
 
 ;; Maximum distance between points before we interpolate
 (def +max-point-distance+ 15.0)
@@ -135,7 +140,9 @@
                     (recur (inc i)
                            (core/add-point-to-stroke stroke interp-pt))))))
             ;; Normal distance - just add
-            (swap! *current-stroke core/add-point-to-stroke new-point)))))))
+            (swap! *current-stroke core/add-point-to-stroke new-point)))))
+    ;; Add point to Metal stroke (Metal does its own interpolation)
+    (canvas/metal_add_stroke_point (float x) (float y) (float pressure))))
 
 (defn end-drawing! []
   (when @*drawing?
@@ -148,7 +155,9 @@
         ;; Store for incremental rendering (NOT full rebuild!)
         (reset! *just-completed-stroke stroke))
       (reset! *current-stroke {})
-      (reset! *drawing? false))))
+      (reset! *drawing? false)
+      ;; End Metal stroke - commits to canvas texture
+      (canvas/metal_end_stroke))))
 
 (defn get-current-stroke []
   @*current-stroke)

@@ -45,6 +45,25 @@ echo "   Drawing Canvas - Phase 1"
 echo "=========================================="
 echo ""
 
+# Compile Metal renderer for macOS (if not already compiled or outdated)
+METAL_SRC="src/vybe/app/drawing/native/metal_renderer.mm"
+METAL_OBJ="build/metal_renderer.o"
+METAL_DYLIB="build/libmetal_renderer.dylib"
+
+mkdir -p build
+
+if [ ! -f "$METAL_DYLIB" ] || [ "$METAL_SRC" -nt "$METAL_DYLIB" ]; then
+    echo "Compiling Metal renderer for macOS..."
+    clang++ -std=c++20 -fPIC -c "$METAL_SRC" -o "$METAL_OBJ" \
+        -I/opt/homebrew/include -I/opt/homebrew/include/SDL3 -Isrc \
+        -framework Metal -framework MetalKit -framework QuartzCore -framework Cocoa \
+        -DTARGET_OS_OSX=1 -w
+    clang++ -shared -o "$METAL_DYLIB" "$METAL_OBJ" \
+        -L/opt/homebrew/lib -lSDL3 \
+        -framework Metal -framework MetalKit -framework QuartzCore -framework Cocoa
+    echo "Metal renderer compiled!"
+fi
+
 # Build jank arguments for drawing app
 case "$(uname -s)" in
     Darwin)
@@ -58,10 +77,12 @@ case "$(uname -s)" in
             --framework IOKit
             --framework IOSurface
             --framework Metal
+            --framework MetalKit
             --framework QuartzCore
             --module-path src
             --lib /opt/homebrew/lib/libSDL3.dylib
             --lib /opt/homebrew/lib/libvulkan.dylib
+            --lib "$PWD/$METAL_DYLIB"
         )
         ;;
     Linux)
