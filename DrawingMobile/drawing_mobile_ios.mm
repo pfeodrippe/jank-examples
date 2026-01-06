@@ -282,6 +282,52 @@ struct CanvasTransform {
 };
 
 // =============================================================================
+// Canvas Reset Animation (Procreate-style smooth snap)
+// =============================================================================
+
+struct CanvasResetAnimation {
+    bool isAnimating;
+    Uint64 startTimeMs;
+    float durationMs;
+
+    // Start values (what we're animating FROM)
+    float startPanX, startPanY;
+    float startScale;
+    float startRotation;
+
+    // Target values (what we're animating TO)
+    float targetPanX, targetPanY;
+    float targetScale;
+    float targetRotation;
+};
+
+// Ease-out cubic for smooth deceleration
+static float easeOutCubic(float t) {
+    return 1.0f - powf(1.0f - t, 3.0f);
+}
+
+// Linear interpolation
+static float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+// Shortest path angle interpolation (handles wrap-around)
+static float lerpAngle(float a, float b, float t) {
+    // Normalize angles to -PI to PI
+    while (a > M_PI) a -= 2.0f * M_PI;
+    while (a < -M_PI) a += 2.0f * M_PI;
+    while (b > M_PI) b -= 2.0f * M_PI;
+    while (b < -M_PI) b += 2.0f * M_PI;
+
+    // Find shortest path
+    float diff = b - a;
+    if (diff > M_PI) diff -= 2.0f * M_PI;
+    if (diff < -M_PI) diff += 2.0f * M_PI;
+
+    return a + diff * t;
+}
+
+// =============================================================================
 // Two-Finger Gesture Tracking
 // =============================================================================
 
@@ -301,6 +347,10 @@ struct TwoFingerGesture {
     float basePanX, basePanY;
     float baseScale;
     float baseRotation;
+
+    // For quick-pinch detection (Procreate-style reset)
+    Uint64 startTimeMs;
+    float startDistance;  // Initial distance between fingers
 };
 
 // Helper: Calculate distance between two points
@@ -709,7 +759,22 @@ static int metal_test_main() {
         .finger1_currX = 0, .finger1_currY = 0,
         .basePanX = 0, .basePanY = 0,
         .baseScale = 1.0f,
-        .baseRotation = 0.0f
+        .baseRotation = 0.0f,
+        .startTimeMs = 0,
+        .startDistance = 0.0f
+    };
+
+    // Canvas reset animation state
+    CanvasResetAnimation resetAnim = {
+        .isAnimating = false,
+        .startTimeMs = 0,
+        .durationMs = 250.0f,  // 250ms for smooth but snappy feel
+        .startPanX = 0, .startPanY = 0,
+        .startScale = 1.0f,
+        .startRotation = 0.0f,
+        .targetPanX = 0, .targetPanY = 0,
+        .targetScale = 1.0f,
+        .targetRotation = 0.0f
     };
 
     // Track single finger for potential gesture start
@@ -835,6 +900,12 @@ static int metal_test_main() {
                             gesture.basePanY = canvasTransform.panY;
                             gesture.baseScale = canvasTransform.scale;
                             gesture.baseRotation = canvasTransform.rotation;
+                            // For quick-pinch detection
+                            gesture.startTimeMs = SDL_GetTicks();
+                            gesture.startDistance = pointDistance(
+                                gesture.finger0_startX * width, gesture.finger0_startY * height,
+                                gesture.finger1_startX * width, gesture.finger1_startY * height
+                            );
                             std::cout << "Two-finger gesture started (scale: " << canvasTransform.scale
                                       << ", rotation: " << canvasTransform.rotation << ")" << std::endl;
                         }
@@ -903,6 +974,43 @@ static int metal_test_main() {
                     if (gesture.isActive) {
                         if (fingerId == gesture.finger0_id || fingerId == gesture.finger1_id) {
                             // One of the gesture fingers lifted - end gesture
+
+                            // Quick-pinch detection (Procreate-style canvas reset)
+                            Uint64 gestureDuration = SDL_GetTicks() - gesture.startTimeMs;
+                            float endDistance = pointDistance(
+                                gesture.finger0_currX * width, gesture.finger0_currY * height,
+                                gesture.finger1_currX * width, gesture.finger1_currY * height
+                            );
+                            float distanceRatio = endDistance / gesture.startDistance;
+
+                            // Quick pinch: short duration (<300ms) and fingers moved together (ratio < 0.7)
+                            // OR quick spread: short duration and fingers moved apart (ratio > 1.4)
+                            const Uint64 QUICK_GESTURE_MS = 300;
+                            const float PINCH_THRESHOLD = 0.7f;
+                            const float SPREAD_THRESHOLD = 1.4f;
+
+                            if (gestureDuration < QUICK_GESTURE_MS) {
+                                if (distanceRatio < PINCH_THRESHOLD || distanceRatio > SPREAD_THRESHOLD) {
+                                    // Start animated reset to default view
+                                    resetAnim.isAnimating = true;
+                                    resetAnim.startTimeMs = SDL_GetTicks();
+
+                                    // Store current values as start
+                                    resetAnim.startPanX = canvasTransform.panX;
+                                    resetAnim.startPanY = canvasTransform.panY;
+                                    resetAnim.startScale = canvasTransform.scale;
+                                    resetAnim.startRotation = canvasTransform.rotation;
+
+                                    // Target: default view
+                                    resetAnim.targetPanX = 0.0f;
+                                    resetAnim.targetPanY = 0.0f;
+                                    resetAnim.targetScale = 1.0f;
+                                    resetAnim.targetRotation = 0.0f;
+
+                                    std::cout << "🔄 Quick-pinch: Animating to default view..." << std::endl;
+                                }
+                            }
+
                             gesture.isActive = false;
                             hasFinger0 = false;
                             std::cout << "Two-finger gesture ended (scale: " << canvasTransform.scale
@@ -1101,6 +1209,28 @@ static int metal_test_main() {
 
         // Render the current stroke (for real-time preview)
         metal_stamp_render_stroke();
+
+        // Update canvas reset animation (Procreate-style smooth snap)
+        if (resetAnim.isAnimating) {
+            Uint64 elapsed = SDL_GetTicks() - resetAnim.startTimeMs;
+            float t = (float)elapsed / resetAnim.durationMs;
+
+            if (t >= 1.0f) {
+                // Animation complete
+                t = 1.0f;
+                resetAnim.isAnimating = false;
+                std::cout << "✓ Canvas reset animation complete" << std::endl;
+            }
+
+            // Apply easing
+            float easedT = easeOutCubic(t);
+
+            // Interpolate all transform values
+            canvasTransform.panX = lerp(resetAnim.startPanX, resetAnim.targetPanX, easedT);
+            canvasTransform.panY = lerp(resetAnim.startPanY, resetAnim.targetPanY, easedT);
+            canvasTransform.scale = lerp(resetAnim.startScale, resetAnim.targetScale, easedT);
+            canvasTransform.rotation = lerpAngle(resetAnim.startRotation, resetAnim.targetRotation, easedT);
+        }
 
         // Apply canvas transform before presenting
         metal_stamp_set_canvas_transform(
