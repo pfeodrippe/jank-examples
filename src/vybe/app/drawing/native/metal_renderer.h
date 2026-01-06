@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 // Forward declarations for Objective-C types
 #ifdef __OBJC__
@@ -175,6 +176,22 @@ public:
     void resize(int width, int height);
 
     // =========================================================================
+    // Canvas Snapshots (for undo/redo)
+    // =========================================================================
+
+    // Capture current canvas pixels (RGBA, 4 bytes per pixel)
+    // Returns empty vector if failed
+    std::vector<uint8_t> capture_canvas_snapshot();
+
+    // Restore canvas from snapshot pixels
+    // Returns true on success
+    bool restore_canvas_snapshot(const std::vector<uint8_t>& pixels, int width, int height);
+
+    // Get canvas dimensions
+    int get_canvas_width() const { return width_; }
+    int get_canvas_height() const { return height_; }
+
+    // =========================================================================
     // Rendering
     // =========================================================================
 
@@ -305,5 +322,42 @@ void metal_stamp_queue_ui_rect(float x, float y, float width, float height,
 // Canvas Transform (pan/zoom/rotate)
 void metal_stamp_set_canvas_transform(float panX, float panY, float scale,
                                       float rotation, float pivotX, float pivotY);
+
+// =============================================================================
+// Undo Tree API - Emacs-style branching undo history
+// =============================================================================
+
+// Initialize/cleanup undo tree (called automatically by metal_stamp_init/cleanup)
+void metal_stamp_undo_init();
+void metal_stamp_undo_cleanup();
+
+// Configure undo tree
+void metal_stamp_undo_set_max_nodes(int max);           // Default: 250
+void metal_stamp_undo_set_snapshot_interval(int interval);  // Default: 25
+
+// Core undo operations
+bool metal_stamp_undo();                    // Returns false if at root
+bool metal_stamp_redo();                    // Returns false if no children
+bool metal_stamp_redo_branch(int branch);   // Redo specific branch
+bool metal_stamp_undo_jump_to(uint64_t nodeId);  // Jump to any node
+
+// Query undo state
+bool metal_stamp_can_undo();
+bool metal_stamp_can_redo();
+int metal_stamp_get_redo_branch_count();    // Number of available branches
+uint64_t metal_stamp_get_current_node_id();
+int metal_stamp_get_undo_depth();           // Current depth in tree
+int metal_stamp_get_total_undo_nodes();
+
+// For debugging/visualization
+void metal_stamp_undo_print_tree();
+
+// Undo-aware stroke recording
+// Use these instead of metal_stamp_begin/add/end_stroke to automatically
+// record strokes to the undo tree
+void metal_stamp_undo_begin_stroke(float x, float y, float pressure);
+void metal_stamp_undo_add_stroke_point(float x, float y, float pressure);
+void metal_stamp_undo_end_stroke();
+void metal_stamp_undo_cancel_stroke();
 
 } // extern "C"

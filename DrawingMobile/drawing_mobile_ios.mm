@@ -353,6 +353,28 @@ struct TwoFingerGesture {
     float startDistance;  // Initial distance between fingers
 };
 
+// =============================================================================
+// Three-Finger Gesture Tracking (for redo)
+// =============================================================================
+
+struct ThreeFingerGesture {
+    bool isActive;
+    SDL_FingerID finger0_id, finger1_id, finger2_id;
+
+    // Starting positions (normalized 0-1)
+    float finger0_startX, finger0_startY;
+    float finger1_startX, finger1_startY;
+    float finger2_startX, finger2_startY;
+
+    // Current positions (normalized 0-1)
+    float finger0_currX, finger0_currY;
+    float finger1_currX, finger1_currY;
+    float finger2_currX, finger2_currY;
+
+    // Timing for tap detection
+    Uint64 startTimeMs;
+};
+
 // Helper: Calculate distance between two points
 static float pointDistance(float x1, float y1, float x2, float y2) {
     float dx = x2 - x1;
@@ -650,6 +672,10 @@ static int metal_test_main() {
     }
     std::cout << "Metal renderer initialized!" << std::endl;
 
+    // Initialize undo tree for branching undo history
+    metal_stamp_undo_init();
+    std::cout << "Undo tree initialized!" << std::endl;
+
     // =============================================================================
     // Initialize UI Sliders (Procreate-style vertical sliders on left edge)
     // =============================================================================
@@ -764,6 +790,18 @@ static int metal_test_main() {
         .startDistance = 0.0f
     };
 
+    ThreeFingerGesture threeFingerGesture = {
+        .isActive = false,
+        .finger0_id = 0, .finger1_id = 0, .finger2_id = 0,
+        .finger0_startX = 0, .finger0_startY = 0,
+        .finger1_startX = 0, .finger1_startY = 0,
+        .finger2_startX = 0, .finger2_startY = 0,
+        .finger0_currX = 0, .finger0_currY = 0,
+        .finger1_currX = 0, .finger1_currY = 0,
+        .finger2_currX = 0, .finger2_currY = 0,
+        .startTimeMs = 0
+    };
+
     // Canvas reset animation state
     CanvasResetAnimation resetAnim = {
         .isAnimating = false,
@@ -859,55 +897,80 @@ static int metal_test_main() {
                         }
                     }
 
-                    // If not handled by UI, track for two-finger gesture OR single-finger drawing
-                    if (!handledByUI && !gesture.isActive) {
-                        if (!hasFinger0) {
-                            // First finger down - start drawing OR wait for second finger
-                            hasFinger0 = true;
-                            pendingFinger0_id = fingerId;
-                            pendingFinger0_x = event.tfinger.x;
-                            pendingFinger0_y = event.tfinger.y;
+                    // If not handled by UI, track for gestures OR single-finger drawing
+                    if (!handledByUI) {
+                        // Check for third finger during two-finger gesture
+                        if (gesture.isActive && !threeFingerGesture.isActive &&
+                            fingerId != gesture.finger0_id && fingerId != gesture.finger1_id) {
+                            // Third finger down - start three-finger gesture (for redo)
+                            threeFingerGesture.isActive = true;
+                            threeFingerGesture.finger0_id = gesture.finger0_id;
+                            threeFingerGesture.finger1_id = gesture.finger1_id;
+                            threeFingerGesture.finger2_id = fingerId;
+                            threeFingerGesture.finger0_startX = gesture.finger0_currX;
+                            threeFingerGesture.finger0_startY = gesture.finger0_currY;
+                            threeFingerGesture.finger1_startX = gesture.finger1_currX;
+                            threeFingerGesture.finger1_startY = gesture.finger1_currY;
+                            threeFingerGesture.finger2_startX = event.tfinger.x;
+                            threeFingerGesture.finger2_startY = event.tfinger.y;
+                            threeFingerGesture.finger0_currX = threeFingerGesture.finger0_startX;
+                            threeFingerGesture.finger0_currY = threeFingerGesture.finger0_startY;
+                            threeFingerGesture.finger1_currX = threeFingerGesture.finger1_startX;
+                            threeFingerGesture.finger1_currY = threeFingerGesture.finger1_startY;
+                            threeFingerGesture.finger2_currX = threeFingerGesture.finger2_startX;
+                            threeFingerGesture.finger2_currY = threeFingerGesture.finger2_startY;
+                            threeFingerGesture.startTimeMs = SDL_GetTicks();
+                            std::cout << "Three-finger gesture started (for redo)" << std::endl;
+                        }
+                        else if (!gesture.isActive) {
+                            if (!hasFinger0) {
+                                // First finger down - start drawing OR wait for second finger
+                                hasFinger0 = true;
+                                pendingFinger0_id = fingerId;
+                                pendingFinger0_x = event.tfinger.x;
+                                pendingFinger0_y = event.tfinger.y;
 
-                            // Start drawing with single finger (for simulator testing)
-                            // On real device, Apple Pencil uses PEN events instead
-                            float canvasX, canvasY;
-                            screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
-                            metal_stamp_begin_stroke(canvasX, canvasY, 1.0f);
-                            last_x = canvasX;
-                            last_y = canvasY;
-                            is_drawing = true;
-                            std::cout << "Finger drawing started at " << canvasX << ", " << canvasY << std::endl;
-                        } else if (pendingFinger0_id != fingerId) {
-                            // Second finger down - STOP drawing and start two-finger gesture!
-                            if (is_drawing) {
-                                metal_stamp_cancel_stroke();  // Cancel incomplete stroke
-                                is_drawing = false;
-                                std::cout << "Drawing cancelled - switching to gesture" << std::endl;
+                                // Start drawing with single finger (for simulator testing)
+                                // On real device, Apple Pencil uses PEN events instead
+                                float canvasX, canvasY;
+                                screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
+                                metal_stamp_undo_begin_stroke(canvasX, canvasY, 1.0f);
+                                last_x = canvasX;
+                                last_y = canvasY;
+                                is_drawing = true;
+                                std::cout << "Finger drawing started at " << canvasX << ", " << canvasY << std::endl;
+                            } else if (pendingFinger0_id != fingerId) {
+                                // Second finger down - STOP drawing and start two-finger gesture!
+                                if (is_drawing) {
+                                    metal_stamp_undo_cancel_stroke();  // Cancel incomplete stroke
+                                    is_drawing = false;
+                                    std::cout << "Drawing cancelled - switching to gesture" << std::endl;
+                                }
+                                gesture.isActive = true;
+                                gesture.finger0_id = pendingFinger0_id;
+                                gesture.finger1_id = fingerId;
+                                gesture.finger0_startX = pendingFinger0_x;
+                                gesture.finger0_startY = pendingFinger0_y;
+                                gesture.finger1_startX = event.tfinger.x;
+                                gesture.finger1_startY = event.tfinger.y;
+                                gesture.finger0_currX = gesture.finger0_startX;
+                                gesture.finger0_currY = gesture.finger0_startY;
+                                gesture.finger1_currX = gesture.finger1_startX;
+                                gesture.finger1_currY = gesture.finger1_startY;
+                                // Store current transform as baseline
+                                gesture.basePanX = canvasTransform.panX;
+                                gesture.basePanY = canvasTransform.panY;
+                                gesture.baseScale = canvasTransform.scale;
+                                gesture.baseRotation = canvasTransform.rotation;
+                                // For quick-pinch and tap detection
+                                gesture.startTimeMs = SDL_GetTicks();
+                                gesture.startDistance = pointDistance(
+                                    gesture.finger0_startX * width, gesture.finger0_startY * height,
+                                    gesture.finger1_startX * width, gesture.finger1_startY * height
+                                );
+                                std::cout << "Two-finger gesture started (scale: " << canvasTransform.scale
+                                          << ", rotation: " << canvasTransform.rotation << ")" << std::endl;
                             }
-                            gesture.isActive = true;
-                            gesture.finger0_id = pendingFinger0_id;
-                            gesture.finger1_id = fingerId;
-                            gesture.finger0_startX = pendingFinger0_x;
-                            gesture.finger0_startY = pendingFinger0_y;
-                            gesture.finger1_startX = event.tfinger.x;
-                            gesture.finger1_startY = event.tfinger.y;
-                            gesture.finger0_currX = gesture.finger0_startX;
-                            gesture.finger0_currY = gesture.finger0_startY;
-                            gesture.finger1_currX = gesture.finger1_startX;
-                            gesture.finger1_currY = gesture.finger1_startY;
-                            // Store current transform as baseline
-                            gesture.basePanX = canvasTransform.panX;
-                            gesture.basePanY = canvasTransform.panY;
-                            gesture.baseScale = canvasTransform.scale;
-                            gesture.baseRotation = canvasTransform.rotation;
-                            // For quick-pinch detection
-                            gesture.startTimeMs = SDL_GetTicks();
-                            gesture.startDistance = pointDistance(
-                                gesture.finger0_startX * width, gesture.finger0_startY * height,
-                                gesture.finger1_startX * width, gesture.finger1_startY * height
-                            );
-                            std::cout << "Two-finger gesture started (scale: " << canvasTransform.scale
-                                      << ", rotation: " << canvasTransform.rotation << ")" << std::endl;
                         }
                     }
                     break;
@@ -918,8 +981,21 @@ static int metal_test_main() {
                     float y = event.tfinger.y * height;
                     SDL_FingerID fingerId = event.tfinger.fingerID;
 
+                    // Handle three-finger gesture motion
+                    if (threeFingerGesture.isActive) {
+                        if (fingerId == threeFingerGesture.finger0_id) {
+                            threeFingerGesture.finger0_currX = event.tfinger.x;
+                            threeFingerGesture.finger0_currY = event.tfinger.y;
+                        } else if (fingerId == threeFingerGesture.finger1_id) {
+                            threeFingerGesture.finger1_currX = event.tfinger.x;
+                            threeFingerGesture.finger1_currY = event.tfinger.y;
+                        } else if (fingerId == threeFingerGesture.finger2_id) {
+                            threeFingerGesture.finger2_currX = event.tfinger.x;
+                            threeFingerGesture.finger2_currY = event.tfinger.y;
+                        }
+                    }
                     // Handle two-finger gesture motion
-                    if (gesture.isActive) {
+                    else if (gesture.isActive) {
                         // Update the moving finger's current position
                         if (fingerId == gesture.finger0_id) {
                             gesture.finger0_currX = event.tfinger.x;
@@ -942,7 +1018,7 @@ static int metal_test_main() {
                         float dx = canvasX - last_x;
                         float dy = canvasY - last_y;
                         if (dx*dx + dy*dy > 1.0f) {
-                            metal_stamp_add_stroke_point(canvasX, canvasY, 1.0f);
+                            metal_stamp_undo_add_stroke_point(canvasX, canvasY, 1.0f);
                             last_x = canvasX;
                             last_y = canvasY;
                         }
@@ -970,26 +1046,82 @@ static int metal_test_main() {
                 case SDL_EVENT_FINGER_UP: {
                     SDL_FingerID fingerId = event.tfinger.fingerID;
 
-                    // Handle gesture finger release
-                    if (gesture.isActive) {
+                    // Constants for tap detection
+                    const Uint64 TAP_MAX_DURATION_MS = 200;    // Max duration for a tap
+                    const float TAP_MAX_MOVEMENT = 20.0f;     // Max movement in pixels for a tap
+
+                    // Handle three-finger gesture release (for redo)
+                    if (threeFingerGesture.isActive) {
+                        if (fingerId == threeFingerGesture.finger0_id ||
+                            fingerId == threeFingerGesture.finger1_id ||
+                            fingerId == threeFingerGesture.finger2_id) {
+
+                            Uint64 gestureDuration = SDL_GetTicks() - threeFingerGesture.startTimeMs;
+
+                            // Check if it was a tap (short duration, minimal movement)
+                            float move0 = pointDistance(
+                                threeFingerGesture.finger0_startX * width, threeFingerGesture.finger0_startY * height,
+                                threeFingerGesture.finger0_currX * width, threeFingerGesture.finger0_currY * height);
+                            float move1 = pointDistance(
+                                threeFingerGesture.finger1_startX * width, threeFingerGesture.finger1_startY * height,
+                                threeFingerGesture.finger1_currX * width, threeFingerGesture.finger1_currY * height);
+                            float move2 = pointDistance(
+                                threeFingerGesture.finger2_startX * width, threeFingerGesture.finger2_startY * height,
+                                threeFingerGesture.finger2_currX * width, threeFingerGesture.finger2_currY * height);
+
+                            float maxMove = std::max({move0, move1, move2});
+
+                            if (gestureDuration < TAP_MAX_DURATION_MS && maxMove < TAP_MAX_MOVEMENT) {
+                                // Three-finger tap detected - REDO!
+                                if (metal_stamp_can_redo()) {
+                                    metal_stamp_redo();
+                                    std::cout << "↩️ Three-finger tap: REDO!" << std::endl;
+                                } else {
+                                    std::cout << "↩️ Three-finger tap: No redo available" << std::endl;
+                                }
+                            }
+
+                            threeFingerGesture.isActive = false;
+                            gesture.isActive = false;  // Also end two-finger gesture
+                            hasFinger0 = false;
+                            std::cout << "Three-finger gesture ended" << std::endl;
+                        }
+                    }
+                    // Handle two-finger gesture release
+                    else if (gesture.isActive) {
                         if (fingerId == gesture.finger0_id || fingerId == gesture.finger1_id) {
                             // One of the gesture fingers lifted - end gesture
 
-                            // Quick-pinch detection (Procreate-style canvas reset)
                             Uint64 gestureDuration = SDL_GetTicks() - gesture.startTimeMs;
                             float endDistance = pointDistance(
                                 gesture.finger0_currX * width, gesture.finger0_currY * height,
                                 gesture.finger1_currX * width, gesture.finger1_currY * height
                             );
-                            float distanceRatio = endDistance / gesture.startDistance;
+                            float distanceRatio = gesture.startDistance > 0 ? endDistance / gesture.startDistance : 1.0f;
 
-                            // Quick pinch: short duration (<300ms) and fingers moved together (ratio < 0.7)
-                            // OR quick spread: short duration and fingers moved apart (ratio > 1.4)
-                            const Uint64 QUICK_GESTURE_MS = 300;
-                            const float PINCH_THRESHOLD = 0.7f;
-                            const float SPREAD_THRESHOLD = 1.4f;
+                            // Check for two-finger tap (undo) - short duration, minimal movement
+                            float move0 = pointDistance(
+                                gesture.finger0_startX * width, gesture.finger0_startY * height,
+                                gesture.finger0_currX * width, gesture.finger0_currY * height);
+                            float move1 = pointDistance(
+                                gesture.finger1_startX * width, gesture.finger1_startY * height,
+                                gesture.finger1_currX * width, gesture.finger1_currY * height);
+                            float maxMove = std::max(move0, move1);
 
-                            if (gestureDuration < QUICK_GESTURE_MS) {
+                            if (gestureDuration < TAP_MAX_DURATION_MS && maxMove < TAP_MAX_MOVEMENT) {
+                                // Two-finger tap detected - UNDO!
+                                if (metal_stamp_can_undo()) {
+                                    metal_stamp_undo();
+                                    std::cout << "↪️ Two-finger tap: UNDO!" << std::endl;
+                                } else {
+                                    std::cout << "↪️ Two-finger tap: No undo available" << std::endl;
+                                }
+                            }
+                            // Quick pinch/spread: short duration (<300ms) and significant distance change
+                            else if (gestureDuration < 300) {
+                                const float PINCH_THRESHOLD = 0.7f;
+                                const float SPREAD_THRESHOLD = 1.4f;
+
                                 if (distanceRatio < PINCH_THRESHOLD || distanceRatio > SPREAD_THRESHOLD) {
                                     // Start animated reset to default view
                                     resetAnim.isAnimating = true;
@@ -1021,7 +1153,7 @@ static int metal_test_main() {
                     // Handle single-finger drawing end (for simulator testing)
                     else if (is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
                         std::cout << "Finger drawing ended" << std::endl;
-                        metal_stamp_end_stroke();
+                        metal_stamp_undo_end_stroke();
                         is_drawing = false;
                         hasFinger0 = false;
                     }
@@ -1116,7 +1248,7 @@ static int metal_test_main() {
                         float canvasX, canvasY;
                         screenToCanvas(screenX, screenY, canvasTransform, width, height, canvasX, canvasY);
 
-                        metal_stamp_begin_stroke(canvasX, canvasY, pen_pressure);
+                        metal_stamp_undo_begin_stroke(canvasX, canvasY, pen_pressure);
                         last_x = canvasX;
                         last_y = canvasY;
                         is_drawing = true;
@@ -1148,7 +1280,7 @@ static int metal_test_main() {
                         float dx = canvasX - last_x;
                         float dy = canvasY - last_y;
                         if (dx*dx + dy*dy > 1.0f) {
-                            metal_stamp_add_stroke_point(canvasX, canvasY, pen_pressure);
+                            metal_stamp_undo_add_stroke_point(canvasX, canvasY, pen_pressure);
                             last_x = canvasX;
                             last_y = canvasY;
                         }
@@ -1165,7 +1297,7 @@ static int metal_test_main() {
                         std::cout << "Opacity set to (pen): " << (int)(brushOpacity * 100) << "%" << std::endl;
                     } else if (is_drawing) {
                         std::cout << "Pen up - ending stroke" << std::endl;
-                        metal_stamp_end_stroke();
+                        metal_stamp_undo_end_stroke();
                         is_drawing = false;
                     }
                     pen_pressure = 1.0f;  // Reset pressure
@@ -1181,7 +1313,7 @@ static int metal_test_main() {
                     float x = event.button.x;
                     float y = event.button.y;
                     std::cout << "Mouse down: " << x << ", " << y << std::endl;
-                    metal_stamp_begin_stroke(x, y, 1.0f);
+                    metal_stamp_undo_begin_stroke(x, y, 1.0f);
                     is_drawing = true;
                     break;
                 }
@@ -1190,7 +1322,7 @@ static int metal_test_main() {
                     if (is_drawing) {
                         float x = event.motion.x;
                         float y = event.motion.y;
-                        metal_stamp_add_stroke_point(x, y, 1.0f);
+                        metal_stamp_undo_add_stroke_point(x, y, 1.0f);
                     }
                     break;
                 }
@@ -1198,7 +1330,7 @@ static int metal_test_main() {
                 case SDL_EVENT_MOUSE_BUTTON_UP: {
                     if (is_drawing) {
                         std::cout << "Mouse up - ending stroke" << std::endl;
-                        metal_stamp_end_stroke();
+                        metal_stamp_undo_end_stroke();
                         is_drawing = false;
                     }
                     break;
