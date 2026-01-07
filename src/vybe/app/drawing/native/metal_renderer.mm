@@ -532,6 +532,20 @@ struct CanvasTransformUniforms {
         METAL_LOG("Marker shader not found in library, using fallback");
     }
 
+    // Create textured stamp pipeline (for imported brush shape textures)
+    id<MTLFunction> texturedFragmentFunc = [library newFunctionWithName:@"stamp_textured_fragment"];
+    if (texturedFragmentFunc) {
+        pipelineDesc.fragmentFunction = texturedFragmentFunc;
+        self.stampTexturePipeline = [self.device newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
+        if (!self.stampTexturePipeline) {
+            METAL_LOG("Failed to create textured stamp pipeline: %s", [[error localizedDescription] UTF8String]);
+        } else {
+            METAL_LOG("Created textured stamp pipeline for brush shapes");
+        }
+    } else {
+        METAL_LOG("Textured stamp shader not found in library");
+    }
+
     // Create UI rect pipeline
     id<MTLFunction> uiRectVertexFunc = [library newFunctionWithName:@"ui_rect_vertex"];
     id<MTLFunction> uiRectFragmentFunc = [library newFunctionWithName:@"ui_rect_fragment"];
@@ -911,21 +925,28 @@ struct CanvasTransformUniforms {
 
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
 
-    // Select pipeline based on brush type
+    // Select pipeline based on brush type and textures
     id<MTLRenderPipelineState> pipeline = self.stampPipeline;  // Default
-    switch (self.currentBrushType) {
-        case 0:  // Round
-            pipeline = self.stampPipeline;
-            break;
-        case 1:  // Crayon
-            pipeline = self.crayonPipeline ? self.crayonPipeline : self.stampPipeline;
-            break;
-        case 2:  // Watercolor
-            pipeline = self.watercolorPipeline ? self.watercolorPipeline : self.stampPipeline;
-            break;
-        case 3:  // Marker
-            pipeline = self.markerPipeline ? self.markerPipeline : self.stampPipeline;
-            break;
+
+    // If we have a shape texture, use the textured pipeline to render it
+    if (useShape && self.currentShapeTexture && self.stampTexturePipeline) {
+        pipeline = self.stampTexturePipeline;
+    } else {
+        // Otherwise use the procedural brush type
+        switch (self.currentBrushType) {
+            case 0:  // Round
+                pipeline = self.stampPipeline;
+                break;
+            case 1:  // Crayon
+                pipeline = self.crayonPipeline ? self.crayonPipeline : self.stampPipeline;
+                break;
+            case 2:  // Watercolor
+                pipeline = self.watercolorPipeline ? self.watercolorPipeline : self.stampPipeline;
+                break;
+            case 3:  // Marker
+                pipeline = self.markerPipeline ? self.markerPipeline : self.stampPipeline;
+                break;
+        }
     }
     [encoder setRenderPipelineState:pipeline];
     [encoder setVertexBuffer:self.pointBuffer offset:0 atIndex:0];

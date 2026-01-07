@@ -54,7 +54,8 @@
   - [ ] gpu brush drawing
     - [x] draw
     - [x] real-time drawing
-    - [ ] brush loading
+    - [x] brush loading
+    - [ ] fix text brush
     - [ ] eraser
     - [ ] move with both hands
     - [ ] color

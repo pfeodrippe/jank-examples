@@ -243,7 +243,10 @@ fragment half4 stamp_fragment_marker(
 // Alternative Fragment Shader - Textured Stamp
 // =============================================================================
 
-// For custom brush textures (e.g., pencil, watercolor effects)
+// For custom brush textures (e.g., Procreate brush shapes)
+// Shape textures are loaded as R8 (grayscale).
+// NOTE: CGBitmapContext grayscale loading INVERTS the values, so we invert back here.
+// Procreate convention: WHITE=opaque (paint), BLACK=transparent (no paint)
 fragment half4 stamp_textured_fragment(
     PointVertexOutput in [[stage_in]],
     float2 pointCoord [[point_coord]],
@@ -251,19 +254,21 @@ fragment half4 stamp_textured_fragment(
     sampler brushSampler [[sampler(0)]],
     constant StrokeUniforms& uniforms [[buffer(1)]]
 ) {
-    // Sample brush texture
+    // Sample brush texture (R8 format: only R channel has data)
     float4 texColor = brushTexture.sample(brushSampler, pointCoord);
 
-    // Combine texture with stroke color
-    float4 out_color = in.color;
-    out_color.a *= texColor.a * uniforms.opacity;
+    // INVERT the texture value - CGBitmapContext grayscale loading inverts values
+    // After inversion: HIGH where source WHITE (paint), LOW where source BLACK (transparent)
+    float shapeAlpha = 1.0 - texColor.r;
 
-    // Use texture luminance for variation (optional)
-    // out_color.rgb *= texColor.rgb;
-
-    if (out_color.a <= 0.001) {
+    // Discard fully transparent pixels
+    if (shapeAlpha < 0.01) {
         discard_fragment();
     }
+
+    // Output stroke color with texture-based alpha
+    float4 out_color = in.color;
+    out_color.a *= shapeAlpha * uniforms.opacity * uniforms.flow;
 
     return half4(out_color);
 }

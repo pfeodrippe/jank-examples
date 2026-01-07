@@ -1329,30 +1329,28 @@ static int metal_test_main() {
         .scrollOffset = 0
     };
 
-    // Load brushes from bundled brushset
-    loadBrushesFromBundledFile();
-
     // Calculate initial brush values from slider positions
     float brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
     float brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
 
-    // Set brush settings - Huntsman Crayon with pressure dynamics
-    metal_stamp_set_brush_type(1);  // Crayon brush!
+    // Set DEFAULT brush settings (will be overridden by loaded brush)
+    metal_stamp_set_brush_type(1);  // Textured brush
+    metal_stamp_set_brush_hardness(0.35f);
+    metal_stamp_set_brush_spacing(0.06f);
+    metal_stamp_set_brush_grain_scale(1.8f);
+    metal_stamp_set_brush_size_pressure(0.8f);
+    metal_stamp_set_brush_opacity_pressure(0.3f);
+    metal_stamp_set_brush_scatter(3.0f);
+    metal_stamp_set_brush_size_jitter(0.15f);
+    metal_stamp_set_brush_opacity_jitter(0.1f);
+
+    // Load brushes from bundled brushset - this overrides defaults with actual brush settings
+    loadBrushesFromBundledFile();
+
+    // Set user-controlled values (these don't come from brush, only from UI)
     metal_stamp_set_brush_size(brushSize);
-    metal_stamp_set_brush_hardness(0.35f);  // Crayon hardness
     metal_stamp_set_brush_opacity(brushOpacity);
-    metal_stamp_set_brush_spacing(0.06f);  // Tight spacing for smooth strokes
-    metal_stamp_set_brush_grain_scale(1.8f);  // Visible paper grain
     metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
-
-    // Pressure dynamics - Apple Pencil / touch pressure affects stroke
-    metal_stamp_set_brush_size_pressure(0.8f);    // Pressure strongly affects size
-    metal_stamp_set_brush_opacity_pressure(0.3f); // Pressure slightly affects opacity
-
-    // Scatter and jitter for organic crayon feel
-    metal_stamp_set_brush_scatter(3.0f);          // Subtle scatter perpendicular to stroke
-    metal_stamp_set_brush_size_jitter(0.15f);     // Subtle size variation (15%)
-    metal_stamp_set_brush_opacity_jitter(0.1f);   // Subtle opacity variation (10%)
 
     // Clear canvas to white
     metal_stamp_clear_canvas(1.0f, 1.0f, 1.0f, 1.0f);

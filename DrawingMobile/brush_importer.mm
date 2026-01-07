@@ -12,6 +12,7 @@
 extern "C" {
     int32_t metal_stamp_load_texture_data(const uint8_t* data, int width, int height);
     int32_t metal_stamp_load_rgba_texture_data(const uint8_t* data, int width, int height);
+    void metal_stamp_set_brush_type(int32_t type);
     void metal_stamp_set_brush_size(float size);
     void metal_stamp_set_brush_hardness(float hardness);
     void metal_stamp_set_brush_opacity(float opacity);
@@ -327,29 +328,64 @@ static int32_t g_nextBrushId = 1;
     NSUInteger width = CGImageGetWidth(cgImage);
     NSUInteger height = CGImageGetHeight(cgImage);
 
-    // Create grayscale context
-    NSUInteger bytesPerPixel = 1;
-    NSUInteger bytesPerRow = width * bytesPerPixel;
-    uint8_t* rawData = (uint8_t*)calloc(height * bytesPerRow, sizeof(uint8_t));
+    // Check if image has alpha channel - Procreate brush shapes store the mask in alpha
+    CGImageAlphaInfo alphaInfo = CGImageGetAlphaInfo(cgImage);
+    BOOL hasAlpha = (alphaInfo != kCGImageAlphaNone && alphaInfo != kCGImageAlphaNoneSkipLast && alphaInfo != kCGImageAlphaNoneSkipFirst);
 
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceGray();
-    CGContextRef context = CGBitmapContextCreate(rawData, width, height,
-                                                  8, bytesPerRow, colorSpace,
-                                                  kCGImageAlphaNone);
-    CGColorSpaceRelease(colorSpace);
+    // Prepare grayscale output buffer
+    NSUInteger outputBytesPerRow = width;
+    uint8_t* grayscaleData = (uint8_t*)calloc(height * outputBytesPerRow, sizeof(uint8_t));
 
-    if (!context) {
-        free(rawData);
-        return -1;
+    if (hasAlpha) {
+        // Load as RGBA first to extract alpha channel
+        NSUInteger rgbaBytesPerRow = width * 4;
+        uint8_t* rgbaData = (uint8_t*)calloc(height * rgbaBytesPerRow, sizeof(uint8_t));
+
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef context = CGBitmapContextCreate(rgbaData, width, height,
+                                                      8, rgbaBytesPerRow, colorSpace,
+                                                      kCGImageAlphaPremultipliedLast);
+        CGColorSpaceRelease(colorSpace);
+
+        if (!context) {
+            free(rgbaData);
+            free(grayscaleData);
+            return -1;
+        }
+
+        CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
+        CGContextRelease(context);
+
+        // Extract alpha channel as the grayscale mask
+        // In Procreate brush shapes: alpha=255 means paint, alpha=0 means transparent
+        for (NSUInteger i = 0; i < width * height; i++) {
+            grayscaleData[i] = rgbaData[i * 4 + 3];  // Alpha is the 4th component (index 3)
+        }
+
+        free(rgbaData);
+        NSLog(@"[BrushImporter] Loaded shape texture with ALPHA channel: %lux%lu", (unsigned long)width, (unsigned long)height);
+    } else {
+        // No alpha - use grayscale luminance directly
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceGray();
+        CGContextRef context = CGBitmapContextCreate(grayscaleData, width, height,
+                                                      8, outputBytesPerRow, colorSpace,
+                                                      kCGImageAlphaNone);
+        CGColorSpaceRelease(colorSpace);
+
+        if (!context) {
+            free(grayscaleData);
+            return -1;
+        }
+
+        CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
+        CGContextRelease(context);
+        NSLog(@"[BrushImporter] Loaded shape texture as GRAYSCALE: %lux%lu", (unsigned long)width, (unsigned long)height);
     }
 
-    CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
-    CGContextRelease(context);
+    // Load into Metal as R8 texture
+    int32_t textureId = metal_stamp_load_texture_data(grayscaleData, (int)width, (int)height);
 
-    // Load into Metal
-    int32_t textureId = metal_stamp_load_texture_data(rawData, (int)width, (int)height);
-
-    free(rawData);
+    free(grayscaleData);
     return textureId;
 }
 
@@ -648,6 +684,10 @@ static int32_t g_nextBrushId = 1;
 + (BOOL)applyBrush:(int32_t)brushId {
     ImportedBrush* brush = [self getBrushById:brushId];
     if (!brush) return NO;
+
+    // Set brush type: 1 = textured brush (has shape or grain texture)
+    int brushType = (brush->shapeTextureId >= 0 || brush->grainTextureId >= 0) ? 1 : 0;
+    metal_stamp_set_brush_type(brushType);
 
     // Apply settings to Metal renderer
     metal_stamp_set_brush_spacing(brush->settings.spacing);
