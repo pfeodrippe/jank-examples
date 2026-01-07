@@ -84,6 +84,8 @@ targets:
           - "-framework CoreGraphics"
           - "-framework CoreVideo"
           - "-framework AVFoundation"
+          - "-framework Photos"
+          - "-framework PhotosUI"
           - "-framework GameController"
           - "-framework CoreHaptics"
           - "-framework CoreMotion"

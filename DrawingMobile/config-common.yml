@@ -80,6 +80,8 @@ targetTemplates:
         compilerFlags: ["-x", "objective-c++"]
       - path: drawing_mobile_ios.mm
         compilerFlags: ["-x", "objective-c++"]
+      - path: brush_importer.mm
+        compilerFlags: ["-x", "objective-c++", "-fobjc-arc"]
       # ImGui sources (for debug UI)
       - path: ../vendor/imgui/imgui.cpp
       - path: ../vendor/imgui/imgui_draw.cpp

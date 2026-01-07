@@ -6,6 +6,8 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <Photos/Photos.h>
+#import <PhotosUI/PhotosUI.h>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -16,6 +18,7 @@
 
 #include <SDL3/SDL.h>
 #include "../src/vybe/app/drawing/native/metal_renderer.h"
+#import "brush_importer.h"
 
 // jank runtime headers
 // iOS defines 'nil' as a macro which conflicts with jank's object_type::nil
@@ -248,6 +251,489 @@ static void call_jank_main_impl() {
 // =============================================================================
 
 #if METAL_TEST_MODE
+
+// =============================================================================
+// Texture Picker Helper
+// =============================================================================
+
+typedef enum {
+    TextureTypeShape = 0,
+    TextureTypeGrain = 1
+} TextureType;
+
+// Callback function pointer for when texture is loaded
+typedef void (*TextureLoadedCallback)(int32_t textureId, TextureType type);
+
+// Global pending request state
+static TextureType g_pendingTextureType = TextureTypeShape;
+static SDL_Window* g_sdlWindow = nullptr;
+
+// Global texture button state (set in main, updated by callback)
+static bool g_shapeTextureHasTexture = false;
+static int32_t g_shapeTextureId = -1;
+static bool g_grainTextureHasTexture = false;
+static int32_t g_grainTextureId = -1;
+
+// Global brush picker state
+static NSMutableArray<NSNumber*>* g_brushIds = nil;
+static int32_t g_selectedBrushId = -1;
+static int g_selectedBrushIndex = 0;
+static bool g_brushPickerVisible = false;
+static bool g_brushesLoaded = false;
+
+// Objective-C delegate for PHPicker
+@interface TexturePickerDelegate : NSObject <PHPickerViewControllerDelegate>
+@property (nonatomic, assign) TextureType textureType;
+@end
+
+@implementation TexturePickerDelegate
+
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+
+    if (results.count == 0) {
+        std::cout << "[TexturePicker] User cancelled" << std::endl;
+        return;
+    }
+
+    PHPickerResult* result = results[0];
+
+    // Check if the result can provide an image
+    if (![result.itemProvider canLoadObjectOfClass:[UIImage class]]) {
+        std::cout << "[TexturePicker] Cannot load image from selection" << std::endl;
+        return;
+    }
+
+    TextureType capturedType = self.textureType;
+
+    [result.itemProvider loadObjectOfClass:[UIImage class] completionHandler:^(id<NSItemProviderReading> _Nullable object, NSError * _Nullable error) {
+        if (error) {
+            std::cout << "[TexturePicker] Error loading image: " << [[error localizedDescription] UTF8String] << std::endl;
+            return;
+        }
+
+        UIImage* image = (UIImage*)object;
+        if (!image) {
+            std::cout << "[TexturePicker] Image is nil" << std::endl;
+            return;
+        }
+
+        std::cout << "[TexturePicker] Got image: " << image.size.width << "x" << image.size.height << std::endl;
+
+        // Process image on main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Convert to grayscale and load as texture
+            CGImageRef cgImage = image.CGImage;
+            if (!cgImage) {
+                std::cout << "[TexturePicker] No CGImage" << std::endl;
+                return;
+            }
+
+            // Determine target size (power of 2, max 1024 for efficiency)
+            size_t srcWidth = CGImageGetWidth(cgImage);
+            size_t srcHeight = CGImageGetHeight(cgImage);
+            size_t maxDim = MAX(srcWidth, srcHeight);
+            size_t targetSize = 512;
+            if (maxDim > 512) targetSize = 1024;
+            if (maxDim > 1024) targetSize = 2048;
+
+            std::cout << "[TexturePicker] Converting to " << targetSize << "x" << targetSize << " grayscale" << std::endl;
+
+            // Create grayscale context
+            CGColorSpaceRef graySpace = CGColorSpaceCreateDeviceGray();
+            uint8_t* pixels = (uint8_t*)calloc(targetSize * targetSize, 1);
+
+            CGContextRef ctx = CGBitmapContextCreate(
+                pixels,
+                targetSize, targetSize,
+                8,  // bits per component
+                targetSize,  // bytes per row
+                graySpace,
+                kCGImageAlphaNone
+            );
+
+            // Calculate aspect-fit rectangle
+            float srcAspect = (float)srcWidth / (float)srcHeight;
+            float dstAspect = 1.0f;  // Square
+            CGRect drawRect;
+
+            if (srcAspect > dstAspect) {
+                // Source is wider - fit to width
+                float h = targetSize / srcAspect;
+                drawRect = CGRectMake(0, (targetSize - h) / 2.0f, targetSize, h);
+            } else {
+                // Source is taller - fit to height
+                float w = targetSize * srcAspect;
+                drawRect = CGRectMake((targetSize - w) / 2.0f, 0, w, targetSize);
+            }
+
+            // Fill with black (transparent in brush terms)
+            CGContextSetFillColorWithColor(ctx, [UIColor blackColor].CGColor);
+            CGContextFillRect(ctx, CGRectMake(0, 0, targetSize, targetSize));
+
+            // Draw image
+            CGContextDrawImage(ctx, drawRect, cgImage);
+
+            // Load into Metal texture
+            int32_t textureId = metal_stamp_load_texture_data(pixels, (int)targetSize, (int)targetSize);
+
+            // Cleanup
+            CGContextRelease(ctx);
+            CGColorSpaceRelease(graySpace);
+            free(pixels);
+
+            if (textureId > 0) {
+                std::cout << "[TexturePicker] Loaded texture ID: " << textureId << std::endl;
+
+                // Apply texture based on type
+                if (capturedType == TextureTypeShape) {
+                    metal_stamp_set_brush_shape_texture(textureId);
+                    std::cout << "[TexturePicker] Set as SHAPE texture" << std::endl;
+                } else {
+                    metal_stamp_set_brush_grain_texture(textureId);
+                    std::cout << "[TexturePicker] Set as GRAIN texture" << std::endl;
+                }
+
+                // Update global state for UI
+                if (capturedType == TextureTypeShape) {
+                    g_shapeTextureHasTexture = true;
+                    g_shapeTextureId = textureId;
+                    std::cout << "[TexturePicker] Updated global shape texture state" << std::endl;
+                } else {
+                    g_grainTextureHasTexture = true;
+                    g_grainTextureId = textureId;
+                    std::cout << "[TexturePicker] Updated global grain texture state" << std::endl;
+                }
+            } else {
+                std::cout << "[TexturePicker] Failed to load texture" << std::endl;
+            }
+        });
+    }];
+}
+
+@end
+
+// Global delegate instance (must persist while picker is shown)
+static TexturePickerDelegate* g_pickerDelegate = nil;
+
+// Function to show texture picker
+static void showTexturePicker(SDL_Window* window, TextureType type) {
+    if (!window) {
+        std::cout << "[TexturePicker] No window provided" << std::endl;
+        return;
+    }
+
+    // Get UIWindow from SDL
+    SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    UIWindow* uiWindow = (__bridge UIWindow*)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
+
+    if (!uiWindow) {
+        std::cout << "[TexturePicker] Cannot get UIWindow from SDL" << std::endl;
+        return;
+    }
+
+    UIViewController* rootVC = uiWindow.rootViewController;
+    if (!rootVC) {
+        std::cout << "[TexturePicker] No root view controller" << std::endl;
+        return;
+    }
+
+    std::cout << "[TexturePicker] Opening picker for " << (type == TextureTypeShape ? "SHAPE" : "GRAIN") << std::endl;
+
+    // Create delegate
+    if (!g_pickerDelegate) {
+        g_pickerDelegate = [[TexturePickerDelegate alloc] init];
+    }
+    g_pickerDelegate.textureType = type;
+
+    // Configure picker
+    PHPickerConfiguration* config = [[PHPickerConfiguration alloc] init];
+    config.selectionLimit = 1;
+    config.filter = [PHPickerFilter imagesFilter];
+
+    PHPickerViewController* picker = [[PHPickerViewController alloc] initWithConfiguration:config];
+    picker.delegate = g_pickerDelegate;
+
+    // Present picker with delay to avoid SDL touch event interference
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [rootVC presentViewController:picker animated:YES completion:^{
+            std::cout << "[TexturePicker] Picker presented" << std::endl;
+        }];
+    });
+}
+
+// =============================================================================
+// Brush Picker Functions
+// =============================================================================
+
+// Load brushes from the bundled brushset file
+static void loadBrushesFromBundledFile() {
+    if (g_brushesLoaded) return;
+
+    NSLog(@"[BrushPicker] Loading bundled brushset...");
+
+    // Try to load from the hardcoded path first (for development/testing)
+    NSString* devPath = @"/Users/pfeodrippe/dev/something/DrawingMobile/brushes.brushset";
+    if ([[NSFileManager defaultManager] fileExistsAtPath:devPath]) {
+        NSArray<NSNumber*>* brushIds = [BrushImporter loadBrushSetFromPath:devPath];
+        if (brushIds.count > 0) {
+            g_brushIds = [brushIds mutableCopy];
+            g_brushesLoaded = true;
+            NSLog(@"[BrushPicker] Loaded %lu brushes from dev path", (unsigned long)brushIds.count);
+
+            // Select the first brush by default
+            if (g_brushIds.count > 0) {
+                g_selectedBrushIndex = 0;
+                g_selectedBrushId = [g_brushIds[0] intValue];
+                [BrushImporter applyBrush:g_selectedBrushId];
+            }
+            return;
+        }
+    }
+
+    // Try to load from app bundle
+    NSArray<NSNumber*>* brushIds = [BrushImporter loadBundledBrushSet:@"brushes"];
+    if (brushIds.count > 0) {
+        g_brushIds = [brushIds mutableCopy];
+        g_brushesLoaded = true;
+        NSLog(@"[BrushPicker] Loaded %lu brushes from bundle", (unsigned long)brushIds.count);
+
+        // Select the first brush by default
+        if (g_brushIds.count > 0) {
+            g_selectedBrushIndex = 0;
+            g_selectedBrushId = [g_brushIds[0] intValue];
+            [BrushImporter applyBrush:g_selectedBrushId];
+        }
+    } else {
+        NSLog(@"[BrushPicker] No brushes loaded");
+    }
+}
+
+// Select next brush in the list
+static void selectNextBrush() {
+    if (!g_brushIds || g_brushIds.count == 0) return;
+
+    g_selectedBrushIndex = (g_selectedBrushIndex + 1) % (int)g_brushIds.count;
+    g_selectedBrushId = [g_brushIds[g_selectedBrushIndex] intValue];
+    [BrushImporter applyBrush:g_selectedBrushId];
+
+    ImportedBrush* brush = [BrushImporter getBrushById:g_selectedBrushId];
+    if (brush) {
+        NSLog(@"[BrushPicker] Selected brush %d: %s", g_selectedBrushIndex, brush->name);
+    }
+}
+
+// Select previous brush in the list
+static void selectPrevBrush() {
+    if (!g_brushIds || g_brushIds.count == 0) return;
+
+    g_selectedBrushIndex = (g_selectedBrushIndex - 1 + (int)g_brushIds.count) % (int)g_brushIds.count;
+    g_selectedBrushId = [g_brushIds[g_selectedBrushIndex] intValue];
+    [BrushImporter applyBrush:g_selectedBrushId];
+
+    ImportedBrush* brush = [BrushImporter getBrushById:g_selectedBrushId];
+    if (brush) {
+        NSLog(@"[BrushPicker] Selected brush %d: %s", g_selectedBrushIndex, brush->name);
+    }
+}
+
+// Get currently selected brush name
+static const char* getSelectedBrushName() {
+    if (g_selectedBrushId < 0) return "No Brush";
+
+    ImportedBrush* brush = [BrushImporter getBrushById:g_selectedBrushId];
+    if (brush) return brush->name;
+    return "Unknown";
+}
+
+// =============================================================================
+// Brush Picker Button Configuration
+// =============================================================================
+
+static const float BRUSH_BUTTON_WIDTH = 200.0f;
+static const float BRUSH_BUTTON_HEIGHT = 60.0f;
+
+struct BrushButtonConfig {
+    float x, y;
+    float width, height;
+};
+
+static bool isPointInBrushButton(const BrushButtonConfig& btn, float px, float py) {
+    return px >= btn.x && px <= btn.x + btn.width &&
+           py >= btn.y && py <= btn.y + btn.height;
+}
+
+static void drawBrushButton(const BrushButtonConfig& btn) {
+    // Background
+    metal_stamp_queue_ui_rect(btn.x, btn.y, btn.width, btn.height,
+                              0.3f, 0.3f, 0.5f, 0.9f, 10.0f);
+
+    // Border
+    metal_stamp_queue_ui_rect(btn.x - 2, btn.y - 2, btn.width + 4, btn.height + 4,
+                              0.2f, 0.2f, 0.3f, 0.9f, 12.0f);
+
+    // Selected indicator
+    if (g_brushesLoaded) {
+        metal_stamp_queue_ui_rect(btn.x - 4, btn.y - 4, btn.width + 8, btn.height + 8,
+                                  0.4f, 0.8f, 0.6f, 0.6f, 14.0f);
+    }
+}
+
+// =============================================================================
+// Brush Picker Panel Configuration
+// =============================================================================
+
+static const float BRUSH_PICKER_ITEM_SIZE = 100.0f;
+static const float BRUSH_PICKER_ITEM_GAP = 15.0f;
+static const float BRUSH_PICKER_PADDING = 20.0f;
+static const int BRUSH_PICKER_COLS = 4;
+
+struct BrushPickerConfig {
+    float x, y;          // Position (top-left of panel)
+    float width, height; // Panel dimensions
+    bool isOpen;
+    int scrollOffset;    // For scrolling through many brushes
+};
+
+static bool isPointInBrushPicker(const BrushPickerConfig& picker, float px, float py) {
+    if (!picker.isOpen) return false;
+    return px >= picker.x && px <= picker.x + picker.width &&
+           py >= picker.y && py <= picker.y + picker.height;
+}
+
+// Returns brush index at point, or -1 if none
+static int getBrushAtPoint(const BrushPickerConfig& picker, float px, float py) {
+    if (!picker.isOpen || !g_brushIds || [g_brushIds count] == 0) return -1;
+
+    // Check if point is within the brush grid area
+    float gridX = picker.x + BRUSH_PICKER_PADDING;
+    float gridY = picker.y + BRUSH_PICKER_PADDING;
+
+    float relX = px - gridX;
+    float relY = py - gridY;
+
+    if (relX < 0 || relY < 0) return -1;
+
+    int col = (int)(relX / (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP));
+    int row = (int)(relY / (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP));
+
+    if (col >= BRUSH_PICKER_COLS) return -1;
+
+    int brushIndex = row * BRUSH_PICKER_COLS + col;
+    if (brushIndex >= (int)[g_brushIds count]) return -1;
+
+    // Verify point is actually within the item bounds (not in gap)
+    float itemX = gridX + col * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
+    float itemY = gridY + row * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
+
+    if (px >= itemX && px <= itemX + BRUSH_PICKER_ITEM_SIZE &&
+        py >= itemY && py <= itemY + BRUSH_PICKER_ITEM_SIZE) {
+        return brushIndex;
+    }
+
+    return -1;
+}
+
+static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
+    if (!picker.isOpen) return;
+
+    // Semi-transparent background
+    metal_stamp_queue_ui_rect(picker.x, picker.y, picker.width, picker.height,
+                              0.15f, 0.15f, 0.2f, 0.95f, 15.0f);
+
+    // Border
+    metal_stamp_queue_ui_rect(picker.x - 3, picker.y - 3, picker.width + 6, picker.height + 6,
+                              0.3f, 0.3f, 0.4f, 0.8f, 18.0f);
+
+    if (!g_brushIds || [g_brushIds count] == 0) return;
+
+    // Draw brush items in a grid
+    float gridX = picker.x + BRUSH_PICKER_PADDING;
+    float gridY = picker.y + BRUSH_PICKER_PADDING;
+
+    int brushCount = (int)[g_brushIds count];
+    for (int i = 0; i < brushCount; i++) {
+        int col = i % BRUSH_PICKER_COLS;
+        int row = i / BRUSH_PICKER_COLS;
+
+        float itemX = gridX + col * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
+        float itemY = gridY + row * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
+
+        // Check if item is within visible area
+        if (itemY + BRUSH_PICKER_ITEM_SIZE > picker.y + picker.height - BRUSH_PICKER_PADDING) {
+            continue; // Skip items outside visible area
+        }
+
+        int32_t brushId = [[g_brushIds objectAtIndex:i] intValue];
+        bool isSelected = (brushId == g_selectedBrushId);
+
+        // Draw selection highlight
+        if (isSelected) {
+            metal_stamp_queue_ui_rect(itemX - 4, itemY - 4,
+                                      BRUSH_PICKER_ITEM_SIZE + 8, BRUSH_PICKER_ITEM_SIZE + 8,
+                                      0.3f, 0.7f, 0.9f, 0.9f, 8.0f);
+        }
+
+        // Draw brush item background
+        metal_stamp_queue_ui_rect(itemX, itemY, BRUSH_PICKER_ITEM_SIZE, BRUSH_PICKER_ITEM_SIZE,
+                                  0.25f, 0.25f, 0.3f, 0.9f, 6.0f);
+
+        // Draw brush thumbnail preview (stroke preview)
+        // Get brush info for thumbnail
+        ImportedBrush* brush = [BrushImporter getBrushById:brushId];
+        if (brush && brush->shapeTextureId >= 0) {
+            // Draw shape texture as thumbnail
+            metal_stamp_queue_ui_rect(itemX + 10, itemY + 10,
+                                      BRUSH_PICKER_ITEM_SIZE - 20, BRUSH_PICKER_ITEM_SIZE - 20,
+                                      0.4f, 0.4f, 0.5f, 0.8f, 4.0f);
+        } else {
+            // Draw a simple circle for brushes without shape texture
+            float centerX = itemX + BRUSH_PICKER_ITEM_SIZE / 2;
+            float centerY = itemY + BRUSH_PICKER_ITEM_SIZE / 2;
+            float radius = 25.0f;
+            metal_stamp_queue_ui_rect(centerX - radius, centerY - radius,
+                                      radius * 2, radius * 2,
+                                      0.5f, 0.5f, 0.6f, 0.9f, radius);
+        }
+
+        // Draw brush index number for identification
+        // (In a real app, we'd draw the brush name or thumbnail)
+    }
+}
+
+// =============================================================================
+// Texture Button Configuration
+// =============================================================================
+
+struct TextureButtonConfig {
+    float x, y;
+    float width, height;
+    TextureType type;
+    bool hasTexture;
+    int32_t textureId;
+};
+
+static bool isPointInTextureButton(const TextureButtonConfig& btn, float px, float py) {
+    return px >= btn.x && px <= btn.x + btn.width &&
+           py >= btn.y && py <= btn.y + btn.height;
+}
+
+static void drawTextureButton(const TextureButtonConfig& btn, const char* label) {
+    // Background - darker purple/blue color for visibility
+    float bgAlpha = 0.9f;
+    metal_stamp_queue_ui_rect(btn.x, btn.y, btn.width, btn.height,
+                              0.4f, 0.3f, 0.6f, bgAlpha, 8.0f);
+
+    // Border - always show for visibility
+    metal_stamp_queue_ui_rect(btn.x - 2, btn.y - 2, btn.width + 4, btn.height + 4,
+                              0.2f, 0.2f, 0.3f, 0.9f, 10.0f);
+
+    // Show highlight if has texture
+    if (btn.hasTexture) {
+        metal_stamp_queue_ui_rect(btn.x - 4, btn.y - 4, btn.width + 8, btn.height + 8,
+                                  0.4f, 0.7f, 1.0f, 0.8f, 12.0f);
+    }
+}
 
 // =============================================================================
 // UI Slider Configuration
@@ -659,6 +1145,9 @@ static int metal_test_main() {
         return 1;
     }
 
+    // Store window globally for texture picker
+    g_sdlWindow = window;
+
     int width, height;
     SDL_GetWindowSizeInPixels(window, &width, &height);
     std::cout << "Window size: " << width << "x" << height << std::endl;
@@ -736,6 +1225,65 @@ static int metal_test_main() {
     // Ensure picker stays on screen
     if (colorPicker.y < 10.0f) colorPicker.y = 10.0f;
     if (colorPicker.y + pickerHeight > height - 10.0f) colorPicker.y = height - pickerHeight - 10.0f;
+
+    // =============================================================================
+    // Initialize Texture Buttons (Shape and Grain)
+    // =============================================================================
+    const float TEXTURE_BUTTON_SIZE = 60.0f;
+    const float TEXTURE_BUTTON_GAP = 10.0f;
+
+    // Position texture buttons at top-right corner of the canvas (portrait coords)
+    // Due to 90° rotation, this appears at top-right in landscape view
+    // Note: coordinate system is rotated - portrait (width x height) maps to landscape display
+    float textureButtonsX = width - TEXTURE_BUTTON_SIZE * 2 - TEXTURE_BUTTON_GAP - 40.0f;
+    float textureButtonsY = height - TEXTURE_BUTTON_SIZE * 2 - TEXTURE_BUTTON_GAP - 40.0f;
+
+    TextureButtonConfig shapeTextureButton = {
+        .x = textureButtonsX,
+        .y = textureButtonsY,
+        .width = TEXTURE_BUTTON_SIZE,
+        .height = TEXTURE_BUTTON_SIZE,
+        .type = TextureTypeShape,
+        .hasTexture = false,
+        .textureId = -1
+    };
+
+    TextureButtonConfig grainTextureButton = {
+        .x = textureButtonsX + TEXTURE_BUTTON_SIZE + TEXTURE_BUTTON_GAP,
+        .y = textureButtonsY,
+        .width = TEXTURE_BUTTON_SIZE,
+        .height = TEXTURE_BUTTON_SIZE,
+        .type = TextureTypeGrain,
+        .hasTexture = false,
+        .textureId = -1
+    };
+
+    // =============================================================================
+    // Initialize Brush Picker Button
+    // =============================================================================
+
+    // Position brush button below texture buttons
+    BrushButtonConfig brushButton = {
+        .x = textureButtonsX,
+        .y = textureButtonsY - BRUSH_BUTTON_HEIGHT - 20.0f,  // Above texture buttons in portrait coords
+        .width = BRUSH_BUTTON_WIDTH,
+        .height = BRUSH_BUTTON_HEIGHT
+    };
+
+    // Initialize brush picker panel - position in center of screen
+    float brushPickerWidth = BRUSH_PICKER_COLS * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP) + BRUSH_PICKER_PADDING * 2 - BRUSH_PICKER_ITEM_GAP;
+    float brushPickerHeight = 500.0f;  // Fixed height for now
+    BrushPickerConfig brushPicker = {
+        .x = (width - brushPickerWidth) / 2,
+        .y = (height - brushPickerHeight) / 2,
+        .width = brushPickerWidth,
+        .height = brushPickerHeight,
+        .isOpen = false,
+        .scrollOffset = 0
+    };
+
+    // Load brushes from bundled brushset
+    loadBrushesFromBundledFile();
 
     // Calculate initial brush values from slider positions
     float brushSize = sizeSlider.minVal + sizeSlider.value * (sizeSlider.maxVal - sizeSlider.minVal);
@@ -828,6 +1376,12 @@ static int metal_test_main() {
     // Main loop
     bool running = true;
     while (running) {
+        // Sync texture button state from globals (updated by picker callback)
+        shapeTextureButton.hasTexture = g_shapeTextureHasTexture;
+        shapeTextureButton.textureId = g_shapeTextureId;
+        grainTextureButton.hasTexture = g_grainTextureHasTexture;
+        grainTextureButton.textureId = g_grainTextureId;
+
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
@@ -895,6 +1449,43 @@ static int metal_test_main() {
                             std::cout << "Color picker closed (tap outside)" << std::endl;
                             handledByUI = true;
                         }
+
+                        if (isPointInTextureButton(shapeTextureButton, x, y)) {
+                            // Show shape texture picker
+                            std::cout << "Shape texture button tapped - showing picker" << std::endl;
+                            showTexturePicker(window, TextureTypeShape);
+                            handledByUI = true;
+                        } else if (isPointInTextureButton(grainTextureButton, x, y)) {
+                            // Show grain texture picker
+                            std::cout << "Grain texture button tapped - showing picker" << std::endl;
+                            showTexturePicker(window, TextureTypeGrain);
+                            handledByUI = true;
+                        } else if (isPointInBrushPicker(brushPicker, x, y)) {
+                            // Handle tap on brush picker
+                            int brushIdx = getBrushAtPoint(brushPicker, x, y);
+                            if (brushIdx >= 0) {
+                                g_selectedBrushIndex = brushIdx;
+                                g_selectedBrushId = [[g_brushIds objectAtIndex:brushIdx] intValue];
+                                [BrushImporter applyBrush:g_selectedBrushId];
+                                NSLog(@"[BrushPicker] Selected brush %d from picker", brushIdx);
+                                brushPicker.isOpen = false;  // Close picker after selection
+                            }
+                            handledByUI = true;
+                        } else if (isPointInBrushButton(brushButton, x, y)) {
+                            // Toggle brush picker open/closed
+                            brushPicker.isOpen = !brushPicker.isOpen;
+                            NSLog(@"[BrushPicker] %s", brushPicker.isOpen ? "Opened" : "Closed");
+                            handledByUI = true;
+                        } else if (brushPicker.isOpen) {
+                            // Tap outside picker closes it
+                            brushPicker.isOpen = false;
+                            NSLog(@"[BrushPicker] Closed (tap outside)");
+                            handledByUI = true;
+                        }
+
+                        // Debug: Log tap position vs brush button bounds
+                        NSLog(@"[DEBUG] Tap at (%.1f, %.1f) - Brush button at (%.1f, %.1f) size (%.1fx%.1f)",
+                              x, y, brushButton.x, brushButton.y, brushButton.width, brushButton.height);
                     }
 
                     // If not handled by UI, track for gestures OR single-finger drawing
@@ -1243,6 +1834,32 @@ static int metal_test_main() {
                         // Tap outside picker closes it (pen)
                         colorPicker.isOpen = false;
                         std::cout << "Color picker closed (tap outside, pen)" << std::endl;
+                    } else if (isPointInTextureButton(shapeTextureButton, screenX, screenY)) {
+                        // Show shape texture picker (pen)
+                        std::cout << "Shape texture button tapped (pen) - showing picker" << std::endl;
+                        showTexturePicker(window, TextureTypeShape);
+                    } else if (isPointInTextureButton(grainTextureButton, screenX, screenY)) {
+                        // Show grain texture picker (pen)
+                        std::cout << "Grain texture button tapped (pen) - showing picker" << std::endl;
+                        showTexturePicker(window, TextureTypeGrain);
+                    } else if (isPointInBrushPicker(brushPicker, screenX, screenY)) {
+                        // Handle tap on brush picker (pen)
+                        int brushIdx = getBrushAtPoint(brushPicker, screenX, screenY);
+                        if (brushIdx >= 0) {
+                            g_selectedBrushIndex = brushIdx;
+                            g_selectedBrushId = [[g_brushIds objectAtIndex:brushIdx] intValue];
+                            [BrushImporter applyBrush:g_selectedBrushId];
+                            NSLog(@"[BrushPicker] Selected brush %d from picker (pen)", brushIdx);
+                            brushPicker.isOpen = false;
+                        }
+                    } else if (isPointInBrushButton(brushButton, screenX, screenY)) {
+                        // Toggle brush picker open/closed (pen)
+                        brushPicker.isOpen = !brushPicker.isOpen;
+                        NSLog(@"[BrushPicker] %s (pen)", brushPicker.isOpen ? "Opened" : "Closed");
+                    } else if (brushPicker.isOpen) {
+                        // Tap outside picker closes it (pen)
+                        brushPicker.isOpen = false;
+                        NSLog(@"[BrushPicker] Closed (tap outside, pen)");
                     } else {
                         // Drawing with Apple Pencil - convert screen coords to canvas coords
                         float canvasX, canvasY;
@@ -1380,6 +1997,16 @@ static int metal_test_main() {
         drawColorButton(colorButton, colorPicker);
         // Color picker panel (if open)
         drawColorPicker(colorPicker);
+
+        // Texture buttons (bottom center)
+        drawTextureButton(shapeTextureButton, "Shape");
+        drawTextureButton(grainTextureButton, "Grain");
+
+        // Brush picker button
+        drawBrushButton(brushButton);
+
+        // Brush picker panel (if open)
+        drawBrushPicker(brushPicker, height);
 
         // Present with UI overlay
         metal_stamp_present();

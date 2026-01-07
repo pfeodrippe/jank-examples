@@ -57,7 +57,7 @@
     - [ ] brush
       - [ ] hunstsman crayon
       - [ ] make it more sharp
-    - [ ] erase
+    - [ ] eraser
     - [ ] move with both hands
     - [ ] color
     - [ ] mix

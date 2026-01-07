@@ -1341,9 +1341,15 @@ drawing-ios-jit-sim-project: drawing-ios-jit-sim-core-libs drawing-ios-jit-sync-
 	cd DrawingMobile && ./generate-project.sh project-jit-sim.yml
 	@echo "Project generated: DrawingMobile/DrawingMobile-JIT-Sim.xcodeproj"
 
+# Clean DrawingMobile simulator derived data (fixes CFBundleVersion errors)
+.PHONY: drawing-ios-jit-sim-clean
+drawing-ios-jit-sim-clean:
+	@echo "Cleaning DrawingMobile simulator derived data..."
+	@rm -rf ~/Library/Developer/Xcode/DerivedData/DrawingMobile-JIT-Sim-* 2>/dev/null || true
+
 # Build DrawingMobile JIT simulator app
 .PHONY: drawing-ios-jit-sim-build
-drawing-ios-jit-sim-build: drawing-ios-jit-sync-sources drawing-ios-jit-pch drawing-ios-jit-sim-project
+drawing-ios-jit-sim-build: drawing-ios-jit-sim-clean drawing-ios-jit-sync-sources drawing-ios-jit-pch drawing-ios-jit-sim-project
 	@echo "Building DrawingMobile iOS JIT app for simulator..."
 	cd DrawingMobile && xcodebuild \
 		-project DrawingMobile-JIT-Sim.xcodeproj \
@@ -1359,7 +1365,7 @@ drawing-ios-jit-sim-run: drawing-ios-jit-sim-build drawing-ios-compile-server-si
 	@echo "Terminating old app instance (if running)..."
 	-xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.DrawingMobile-JIT-Sim 2>/dev/null || true
 	@echo "Installing DrawingMobile..."
-	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name 'DrawingMobile-JIT-Sim.app' -type d 2>/dev/null | head -1)
+	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name 'DrawingMobile-JIT-Sim.app' -type d ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
 	@echo "Launching app..."
 	xcrun simctl launch 'iPad Pro 13-inch (M4)' com.vybe.DrawingMobile-JIT-Sim
 	@echo ""
@@ -1439,9 +1445,15 @@ drawing-ios-jit-device-project: drawing-ios-jit-device-core-libs drawing-ios-jit
 	cd DrawingMobile && ./generate-project.sh project-jit-device.yml
 	@echo "Project generated: DrawingMobile/DrawingMobile-JIT-Device.xcodeproj"
 
+# Clean DrawingMobile device derived data (fixes CFBundleVersion errors)
+.PHONY: drawing-ios-jit-device-clean
+drawing-ios-jit-device-clean:
+	@echo "Cleaning DrawingMobile device derived data..."
+	@rm -rf ~/Library/Developer/Xcode/DerivedData/DrawingMobile-JIT-Device-* 2>/dev/null || true
+
 # Build DrawingMobile JIT device app
 .PHONY: drawing-ios-jit-device-build
-drawing-ios-jit-device-build: drawing-ios-jit-sync-sources drawing-ios-jit-pch-device drawing-ios-jit-device-project
+drawing-ios-jit-device-build: drawing-ios-jit-device-clean drawing-ios-jit-sync-sources drawing-ios-jit-pch-device drawing-ios-jit-device-project
 	@echo "Building DrawingMobile iOS JIT app for device..."
 	@echo "(If signing fails, open Xcode first: open DrawingMobile/DrawingMobile-JIT-Device.xcodeproj)"
 	cd DrawingMobile && xcodebuild \
