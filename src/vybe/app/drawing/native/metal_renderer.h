@@ -134,6 +134,9 @@ public:
     // Load texture from raw pixel data (single channel grayscale)
     int32_t load_texture_from_data(const uint8_t* data, int width, int height);
 
+    // Load texture from RGBA pixel data (4 bytes per pixel)
+    int32_t load_texture_from_rgba_data(const uint8_t* data, int width, int height);
+
     // Set the shape texture for the brush (0 = procedural circle)
     void set_brush_shape_texture(int32_t texture_id);
 
@@ -210,6 +213,13 @@ public:
     void queue_ui_rect(float x, float y, float width, float height,
                        float r, float g, float b, float a,
                        float corner_radius);
+
+    // Queue a textured rectangle to be drawn as UI overlay
+    // texture_id: ID from load_texture_from_rgba_data
+    // tint: RGBA color to multiply with texture
+    void queue_ui_textured_rect(float x, float y, float width, float height,
+                                int32_t texture_id,
+                                float tint_r, float tint_g, float tint_b, float alpha);
 
     // =========================================================================
     // Canvas Transform (Pan/Zoom/Rotate)
@@ -302,6 +312,7 @@ void metal_stamp_set_brush_opacity_jitter(float amount);
 // Texture management
 int32_t metal_stamp_load_texture(const char* path);
 int32_t metal_stamp_load_texture_data(const uint8_t* data, int width, int height);
+int32_t metal_stamp_load_rgba_texture_data(const uint8_t* data, int width, int height);
 void metal_stamp_set_brush_shape_texture(int32_t texture_id);
 void metal_stamp_set_brush_grain_texture(int32_t texture_id);
 void metal_stamp_set_brush_grain_scale(float scale);
@@ -318,6 +329,9 @@ void metal_stamp_use_preset_splatter();
 void metal_stamp_queue_ui_rect(float x, float y, float width, float height,
                                float r, float g, float b, float a,
                                float corner_radius);
+void metal_stamp_queue_ui_textured_rect(float x, float y, float width, float height,
+                                        int32_t texture_id,
+                                        float tint_r, float tint_g, float tint_b, float alpha);
 
 // Canvas Transform (pan/zoom/rotate)
 void metal_stamp_set_canvas_transform(float panX, float panY, float scale,

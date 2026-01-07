@@ -54,9 +54,7 @@
   - [ ] gpu brush drawing
     - [x] draw
     - [x] real-time drawing
-    - [ ] brush
-      - [ ] hunstsman crayon
-      - [ ] make it more sharp
+    - [ ] brush loading
     - [ ] eraser
     - [ ] move with both hands
     - [ ] color

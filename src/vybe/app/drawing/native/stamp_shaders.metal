@@ -505,3 +505,36 @@ fragment half4 ui_rect_fragment(UIVertexOut in [[stage_in]], constant UIRectPara
 
     return half4(half3(params.color.rgb), half(params.color.a * alpha));
 }
+
+// ============================================
+// Textured Rectangle Shaders (for brush thumbnails)
+// ============================================
+
+struct UITexturedRectParams {
+    float4 rect;       // x, y, width, height in NDC
+    float4 tint;       // RGBA tint color (multiplied with texture)
+    int textureId;     // Reference to texture (not used in shader directly)
+};
+
+vertex UIVertexOut ui_textured_rect_vertex(uint vid [[vertex_id]], constant UITexturedRectParams& params [[buffer(0)]]) {
+    float2 corners[4] = { float2(0,0), float2(1,0), float2(0,1), float2(1,1) };
+    float2 uv = corners[vid];
+
+    float2 pos = params.rect.xy + uv * params.rect.zw;
+
+    UIVertexOut out;
+    out.position = float4(pos, 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+fragment half4 ui_textured_rect_fragment(UIVertexOut in [[stage_in]],
+                                         constant UITexturedRectParams& params [[buffer(0)]],
+                                         texture2d<float> tex [[texture(0)]],
+                                         sampler s [[sampler(0)]]) {
+    // Flip Y for correct texture orientation
+    float2 texCoord = float2(in.uv.x, 1.0 - in.uv.y);
+    float4 texColor = tex.sample(s, texCoord);
+    float4 result = texColor * params.tint;
+    return half4(result);
+}

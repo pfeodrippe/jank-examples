@@ -564,18 +564,37 @@ static bool isPointInBrushButton(const BrushButtonConfig& btn, float px, float p
 }
 
 static void drawBrushButton(const BrushButtonConfig& btn) {
-    // Background
+    // Outer glow/border - orange/amber to stand out
+    metal_stamp_queue_ui_rect(btn.x - 4, btn.y - 4, btn.width + 8, btn.height + 8,
+                              0.95f, 0.6f, 0.2f, 0.9f, 14.0f);
+
+    // Background - dark gray
     metal_stamp_queue_ui_rect(btn.x, btn.y, btn.width, btn.height,
-                              0.3f, 0.3f, 0.5f, 0.9f, 10.0f);
+                              0.15f, 0.15f, 0.18f, 0.95f, 10.0f);
 
-    // Border
-    metal_stamp_queue_ui_rect(btn.x - 2, btn.y - 2, btn.width + 4, btn.height + 4,
-                              0.2f, 0.2f, 0.3f, 0.9f, 12.0f);
+    // Simple pencil icon using rectangles
+    float iconX = btn.x + 15.0f;
+    float iconY = btn.y + 10.0f;
+    float iconW = 12.0f;
+    float iconH = 40.0f;
 
-    // Selected indicator
+    // Pencil body (yellow)
+    metal_stamp_queue_ui_rect(iconX, iconY, iconW, iconH,
+                              0.95f, 0.85f, 0.3f, 1.0f, 3.0f);
+
+    // Pencil tip (pink/eraser top)
+    metal_stamp_queue_ui_rect(iconX, iconY - 8.0f, iconW, 8.0f,
+                              0.9f, 0.5f, 0.6f, 1.0f, 2.0f);
+
+    // Pencil point (dark)
+    metal_stamp_queue_ui_rect(iconX + 2.0f, iconY + iconH, iconW - 4.0f, 8.0f,
+                              0.3f, 0.25f, 0.2f, 1.0f, 1.0f);
+
+    // "Brush" text indicator area - show if brushes loaded
     if (g_brushesLoaded) {
-        metal_stamp_queue_ui_rect(btn.x - 4, btn.y - 4, btn.width + 8, btn.height + 8,
-                                  0.4f, 0.8f, 0.6f, 0.6f, 14.0f);
+        // Green indicator dot to show brushes are loaded
+        metal_stamp_queue_ui_rect(btn.x + btn.width - 20.0f, btn.y + 5.0f, 12.0f, 12.0f,
+                                  0.3f, 0.9f, 0.4f, 1.0f, 6.0f);
     }
 }
 
@@ -583,8 +602,8 @@ static void drawBrushButton(const BrushButtonConfig& btn) {
 // Brush Picker Panel Configuration
 // =============================================================================
 
-static const float BRUSH_PICKER_ITEM_SIZE = 100.0f;
-static const float BRUSH_PICKER_ITEM_GAP = 15.0f;
+static const float BRUSH_PICKER_ITEM_SIZE = 180.0f;
+static const float BRUSH_PICKER_ITEM_GAP = 12.0f;
 static const float BRUSH_PICKER_PADDING = 20.0f;
 static const int BRUSH_PICKER_COLS = 4;
 
@@ -679,15 +698,46 @@ static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
                                   0.25f, 0.25f, 0.3f, 0.9f, 6.0f);
 
         // Draw brush thumbnail preview (stroke preview)
-        // Get brush info for thumbnail
         ImportedBrush* brush = [BrushImporter getBrushById:brushId];
-        if (brush && brush->shapeTextureId >= 0) {
-            // Draw shape texture as thumbnail
+        if (brush && brush->thumbnailTextureId > 0) {
+            // Draw the actual brush thumbnail (Procreate QuickLook preview)
+            // Thumbnail is white stroke on transparent, so tint with white on dark bg
+            float thumbPadding = 5.0f;
+            float thumbX = itemX + thumbPadding;
+            float thumbY = itemY + thumbPadding;
+            float thumbW = BRUSH_PICKER_ITEM_SIZE - thumbPadding * 2;
+            float thumbH = BRUSH_PICKER_ITEM_SIZE - thumbPadding * 2;
+
+            // Calculate aspect ratio to fit 327x100 thumbnail
+            float thumbAspect = (float)brush->thumbnailWidth / (float)brush->thumbnailHeight;
+            float boxAspect = thumbW / thumbH;
+
+            float drawW, drawH, drawX, drawY;
+            if (thumbAspect > boxAspect) {
+                // Thumbnail is wider - fit to width
+                drawW = thumbW;
+                drawH = thumbW / thumbAspect;
+                drawX = thumbX;
+                drawY = thumbY + (thumbH - drawH) / 2;
+            } else {
+                // Thumbnail is taller - fit to height
+                drawH = thumbH;
+                drawW = thumbH * thumbAspect;
+                drawX = thumbX + (thumbW - drawW) / 2;
+                drawY = thumbY;
+            }
+
+            // Draw the thumbnail texture with white tint
+            metal_stamp_queue_ui_textured_rect(drawX, drawY, drawW, drawH,
+                                               brush->thumbnailTextureId,
+                                               1.0f, 1.0f, 1.0f, 1.0f);
+        } else if (brush && brush->shapeTextureId >= 0) {
+            // Fallback: Draw shape texture as thumbnail
             metal_stamp_queue_ui_rect(itemX + 10, itemY + 10,
                                       BRUSH_PICKER_ITEM_SIZE - 20, BRUSH_PICKER_ITEM_SIZE - 20,
                                       0.4f, 0.4f, 0.5f, 0.8f, 4.0f);
         } else {
-            // Draw a simple circle for brushes without shape texture
+            // Fallback: Draw a simple circle for brushes without textures
             float centerX = itemX + BRUSH_PICKER_ITEM_SIZE / 2;
             float centerY = itemY + BRUSH_PICKER_ITEM_SIZE / 2;
             float radius = 25.0f;
@@ -695,9 +745,6 @@ static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
                                       radius * 2, radius * 2,
                                       0.5f, 0.5f, 0.6f, 0.9f, radius);
         }
-
-        // Draw brush index number for identification
-        // (In a real app, we'd draw the brush name or thumbnail)
     }
 }
 
@@ -1262,23 +1309,23 @@ static int metal_test_main() {
     // Initialize Brush Picker Button
     // =============================================================================
 
-    // Position brush button below texture buttons
+    // Position brush button above the sliders
     BrushButtonConfig brushButton = {
-        .x = textureButtonsX,
-        .y = textureButtonsY - BRUSH_BUTTON_HEIGHT - 20.0f,  // Above texture buttons in portrait coords
+        .x = SLIDER_MARGIN,
+        .y = sizeSlider.y - BRUSH_BUTTON_HEIGHT - 30.0f,
         .width = BRUSH_BUTTON_WIDTH,
         .height = BRUSH_BUTTON_HEIGHT
     };
 
     // Initialize brush picker panel - position in center of screen
     float brushPickerWidth = BRUSH_PICKER_COLS * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP) + BRUSH_PICKER_PADDING * 2 - BRUSH_PICKER_ITEM_GAP;
-    float brushPickerHeight = 500.0f;  // Fixed height for now
+    float brushPickerHeight = 800.0f;  // Show more brushes
     BrushPickerConfig brushPicker = {
         .x = (width - brushPickerWidth) / 2,
         .y = (height - brushPickerHeight) / 2,
         .width = brushPickerWidth,
         .height = brushPickerHeight,
-        .isOpen = false,
+        .isOpen = true,  // Start open for testing thumbnails
         .scrollOffset = 0
     };
 
@@ -1393,6 +1440,10 @@ static int metal_test_main() {
                     // Finger events: Used for UI interaction and two-finger gestures
                     // Drawing is done via Apple Pencil (pen events) only
 
+                    // Log raw normalized finger coordinates
+                    NSLog(@"[DEBUG] Raw finger: (%.4f, %.4f) * (%d, %d)",
+                          event.tfinger.x, event.tfinger.y, width, height);
+
                     float x = event.tfinger.x * width;
                     float y = event.tfinger.y * height;
                     SDL_FingerID fingerId = event.tfinger.fingerID;
@@ -1483,9 +1534,14 @@ static int metal_test_main() {
                             handledByUI = true;
                         }
 
-                        // Debug: Log tap position vs brush button bounds
-                        NSLog(@"[DEBUG] Tap at (%.1f, %.1f) - Brush button at (%.1f, %.1f) size (%.1fx%.1f)",
-                              x, y, brushButton.x, brushButton.y, brushButton.width, brushButton.height);
+                        // Debug: Log tap position vs all UI element bounds
+                        NSLog(@"[DEBUG] Tap at (%.1f, %.1f) - width=%d height=%d", x, y, width, height);
+                        NSLog(@"[DEBUG]   Brush button at (%.1f, %.1f) size (%.1fx%.1f)",
+                              brushButton.x, brushButton.y, brushButton.width, brushButton.height);
+                        NSLog(@"[DEBUG]   Size slider at (%.1f, %.1f) size (%.1fx%.1f)",
+                              sizeSlider.x, sizeSlider.y, sizeSlider.width, sizeSlider.height);
+                        NSLog(@"[DEBUG]   Opacity slider at (%.1f, %.1f) size (%.1fx%.1f)",
+                              opacitySlider.x, opacitySlider.y, opacitySlider.width, opacitySlider.height);
                     }
 
                     // If not handled by UI, track for gestures OR single-finger drawing

@@ -11,6 +11,7 @@
 // External Metal texture loading functions
 extern "C" {
     int32_t metal_stamp_load_texture_data(const uint8_t* data, int width, int height);
+    int32_t metal_stamp_load_rgba_texture_data(const uint8_t* data, int width, int height);
     void metal_stamp_set_brush_size(float size);
     void metal_stamp_set_brush_hardness(float hardness);
     void metal_stamp_set_brush_opacity(float opacity);
@@ -263,14 +264,24 @@ static int32_t g_nextBrushId = 1;
     brush.brushId = g_nextBrushId++;
     brush.shapeTextureId = -1;
     brush.grainTextureId = -1;
+    brush.thumbnailTextureId = -1;
+    brush.thumbnailWidth = 0;
+    brush.thumbnailHeight = 0;
 
     // Set name from filename
     NSString* name = [[url lastPathComponent] stringByDeletingPathExtension];
     strncpy(brush.name, [name UTF8String], sizeof(brush.name) - 1);
 
-    // Set thumbnail path
+    // Set thumbnail path and load texture
     if ([fm fileExistsAtPath:thumbnailURL.path]) {
         strncpy(brush.thumbnailPath, [thumbnailURL.path UTF8String], sizeof(brush.thumbnailPath) - 1);
+        brush.thumbnailTextureId = [self loadThumbnailFromURL:thumbnailURL
+                                                        width:&brush.thumbnailWidth
+                                                       height:&brush.thumbnailHeight];
+        if (brush.thumbnailTextureId >= 0) {
+            NSLog(@"[BrushImporter] Loaded thumbnail texture: %d (%dx%d)",
+                  brush.thumbnailTextureId, brush.thumbnailWidth, brush.thumbnailHeight);
+        }
     }
 
     // Load textures
@@ -337,6 +348,46 @@ static int32_t g_nextBrushId = 1;
 
     // Load into Metal
     int32_t textureId = metal_stamp_load_texture_data(rawData, (int)width, (int)height);
+
+    free(rawData);
+    return textureId;
+}
+
+// Load thumbnail image with RGBA (preserves alpha channel for proper rendering)
++ (int32_t)loadThumbnailFromURL:(NSURL*)url width:(int32_t*)outWidth height:(int32_t*)outHeight {
+    UIImage* image = [UIImage imageWithContentsOfFile:url.path];
+    if (!image) return -1;
+
+    CGImageRef cgImage = image.CGImage;
+    NSUInteger width = CGImageGetWidth(cgImage);
+    NSUInteger height = CGImageGetHeight(cgImage);
+
+    // Store dimensions
+    if (outWidth) *outWidth = (int32_t)width;
+    if (outHeight) *outHeight = (int32_t)height;
+
+    // Create RGBA context for proper alpha handling
+    NSUInteger bytesPerPixel = 4;
+    NSUInteger bytesPerRow = width * bytesPerPixel;
+    uint8_t* rawData = (uint8_t*)calloc(height * bytesPerRow, sizeof(uint8_t));
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(rawData, width, height,
+                                                  8, bytesPerRow, colorSpace,
+                                                  kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(colorSpace);
+
+    if (!context) {
+        free(rawData);
+        return -1;
+    }
+
+    // Draw image
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
+    CGContextRelease(context);
+
+    // Load into Metal as RGBA texture
+    int32_t textureId = metal_stamp_load_rgba_texture_data(rawData, (int)width, (int)height);
 
     free(rawData);
     return textureId;
@@ -490,15 +541,30 @@ static int32_t g_nextBrushId = 1;
     brush.brushId = g_nextBrushId++;
     brush.shapeTextureId = -1;
     brush.grainTextureId = -1;
+    brush.thumbnailTextureId = -1;
+    brush.thumbnailWidth = 0;
+    brush.thumbnailHeight = 0;
 
     // Set initial name from directory name (will be overwritten by Brush.archive if available)
     NSString* name = [dir lastPathComponent];
     strncpy(brush.name, [name UTF8String], sizeof(brush.name) - 1);
 
-    // Look for thumbnail
+    // Look for thumbnail - check root level and Sub01 folder
     NSURL* thumbnailURL = [dir URLByAppendingPathComponent:@"QuickLook/Thumbnail.png"];
+    if (![fm fileExistsAtPath:thumbnailURL.path]) {
+        // Try Sub01 folder
+        thumbnailURL = [dir URLByAppendingPathComponent:@"Sub01/QuickLook/Thumbnail.png"];
+    }
     if ([fm fileExistsAtPath:thumbnailURL.path]) {
         strncpy(brush.thumbnailPath, [thumbnailURL.path UTF8String], sizeof(brush.thumbnailPath) - 1);
+        // Load thumbnail as RGBA texture
+        brush.thumbnailTextureId = [self loadThumbnailFromURL:thumbnailURL
+                                                        width:&brush.thumbnailWidth
+                                                       height:&brush.thumbnailHeight];
+        if (brush.thumbnailTextureId >= 0) {
+            NSLog(@"[BrushImporter] Loaded thumbnail texture: %d (%dx%d)",
+                  brush.thumbnailTextureId, brush.thumbnailWidth, brush.thumbnailHeight);
+        }
     }
 
     // Load textures - check root level first, then Sub01 folder

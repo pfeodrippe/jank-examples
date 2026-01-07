@@ -61,6 +61,7 @@ struct MSLStrokeUniforms {
 @property (nonatomic, strong) id<MTLRenderPipelineState> stampTexturePipeline; // With shape texture
 @property (nonatomic, strong) id<MTLRenderPipelineState> clearPipeline;
 @property (nonatomic, strong) id<MTLRenderPipelineState> uiRectPipeline;      // UI rectangle drawing
+@property (nonatomic, strong) id<MTLRenderPipelineState> uiTexturedRectPipeline; // UI textured rectangle drawing
 @property (nonatomic, strong) id<MTLRenderPipelineState> canvasBlitPipeline; // Canvas blit with transform
 @property (nonatomic, assign) int currentBrushType;  // 0=Round, 1=Crayon, etc.
 @property (nonatomic, strong) id<MTLTexture> canvasTexture;
@@ -103,6 +104,7 @@ struct MSLStrokeUniforms {
 // Texture management
 - (int32_t)loadTextureFromFile:(NSString*)path;
 - (int32_t)loadTextureFromData:(const uint8_t*)data width:(int)width height:(int)height;
+- (int32_t)loadTextureFromRGBAData:(const uint8_t*)data width:(int)width height:(int)height;
 - (id<MTLTexture>)getTextureById:(int32_t)textureId;
 - (void)unloadTexture:(int32_t)textureId;
 
@@ -116,6 +118,8 @@ struct MSLStrokeUniforms {
 // UI Drawing
 - (void)queueUIRect:(float)x y:(float)y width:(float)w height:(float)h
               color:(simd_float4)color cornerRadius:(float)radius;
+- (void)queueUITexturedRect:(float)x y:(float)y width:(float)w height:(float)h
+                  textureId:(int32_t)textureId tint:(simd_float4)tint;
 - (void)drawQueuedUIRectsToTexture:(id<MTLTexture>)texture;
 - (void)clearUIQueue;
 
@@ -140,6 +144,14 @@ struct UIRectParams {
     float _padding[3];      // Align to 16 bytes
 };
 
+// UI Textured Rect parameters (matches shader struct)
+struct UITexturedRectParams {
+    simd_float4 rect;       // x, y, width, height in NDC
+    simd_float4 tint;       // RGBA tint color (multiplied with texture)
+    int32_t textureId;      // Reference to texture
+    float _padding[3];
+};
+
 // Canvas transform uniforms (matches shader struct)
 struct CanvasTransformUniforms {
     simd_float2 pan;           // Pan offset in screen pixels
@@ -153,6 +165,7 @@ struct CanvasTransformUniforms {
     std::vector<MSLPoint> _points;
     simd_float4 _backgroundColor;
     std::vector<UIRectParams> _uiRects;  // UI rects to draw this frame
+    std::vector<UITexturedRectParams> _uiTexturedRects;  // Textured UI rects to draw this frame
     CanvasTransformUniforms _canvasTransform;  // Canvas pan/zoom/rotate
 }
 
@@ -218,6 +231,7 @@ struct CanvasTransformUniforms {
     self.drawableWidth = (int)drawableSize.width;
     self.drawableHeight = (int)drawableSize.height;
     METAL_LOG("Point size: %dx%d, Drawable size: %dx%d", w, h, self.drawableWidth, self.drawableHeight);
+    NSLog(@"[Metal] Point size: %dx%d, Drawable size: %dx%d", w, h, self.drawableWidth, self.drawableHeight);
 
     // Create render pipelines
     if (![self createPipelines]) {
@@ -401,6 +415,34 @@ struct CanvasTransformUniforms {
 
                     return half4(half3(params.color.rgb), half(params.color.a * alpha));
                 }
+
+                // UI Textured Rectangle shader - samples texture and multiplies by tint
+                struct UITexturedRectParams {
+                    float4 rect;       // x, y, width, height in NDC
+                    float4 tint;       // RGBA tint color (multiplied with texture)
+                    int textureId;     // Reference to texture (not used in shader)
+                };
+
+                vertex UIVertexOut ui_textured_rect_vertex(uint vid [[vertex_id]], constant UITexturedRectParams& params [[buffer(0)]]) {
+                    float2 corners[4] = { float2(0,0), float2(1,0), float2(0,1), float2(1,1) };
+                    float2 uv = corners[vid];
+                    float2 pos = params.rect.xy + uv * params.rect.zw;
+                    UIVertexOut out;
+                    out.position = float4(pos, 0.0, 1.0);
+                    out.uv = uv;
+                    return out;
+                }
+
+                fragment half4 ui_textured_rect_fragment(UIVertexOut in [[stage_in]],
+                                                         constant UITexturedRectParams& params [[buffer(0)]],
+                                                         texture2d<float> tex [[texture(0)]],
+                                                         sampler s [[sampler(0)]]) {
+                    // Flip Y for correct texture orientation
+                    float2 texCoord = float2(in.uv.x, 1.0 - in.uv.y);
+                    float4 texColor = tex.sample(s, texCoord);
+                    float4 result = texColor * params.tint;
+                    return half4(result);
+                }
             )";
 
             library = [self.device newLibraryWithSource:shaderSource
@@ -516,6 +558,35 @@ struct CanvasTransformUniforms {
         }
     } else {
         METAL_LOG("UI rect shaders not found in library (vertex=%p fragment=%p)", uiRectVertexFunc, uiRectFragmentFunc);
+    }
+
+    // Create UI textured rect pipeline
+    id<MTLFunction> uiTexturedRectVertexFunc = [library newFunctionWithName:@"ui_textured_rect_vertex"];
+    id<MTLFunction> uiTexturedRectFragmentFunc = [library newFunctionWithName:@"ui_textured_rect_fragment"];
+    NSLog(@"[Metal] Textured rect shaders: vertex=%p fragment=%p", uiTexturedRectVertexFunc, uiTexturedRectFragmentFunc);
+    if (uiTexturedRectVertexFunc && uiTexturedRectFragmentFunc) {
+        MTLRenderPipelineDescriptor* uiTexPipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
+        uiTexPipelineDesc.vertexFunction = uiTexturedRectVertexFunc;
+        uiTexPipelineDesc.fragmentFunction = uiTexturedRectFragmentFunc;
+        uiTexPipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+        // Enable alpha blending for textured UI
+        uiTexPipelineDesc.colorAttachments[0].blendingEnabled = YES;
+        uiTexPipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+        uiTexPipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+        uiTexPipelineDesc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        uiTexPipelineDesc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        uiTexPipelineDesc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        uiTexPipelineDesc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+
+        self.uiTexturedRectPipeline = [self.device newRenderPipelineStateWithDescriptor:uiTexPipelineDesc error:&error];
+        if (!self.uiTexturedRectPipeline) {
+            METAL_LOG("Failed to create UI textured rect pipeline: %s", [[error localizedDescription] UTF8String]);
+        } else {
+            METAL_LOG("Created UI textured rect pipeline");
+        }
+    } else {
+        METAL_LOG("UI textured rect shaders not found in library (vertex=%p fragment=%p)", uiTexturedRectVertexFunc, uiTexturedRectFragmentFunc);
     }
 
     // Create canvas blit pipeline (for transformed canvas rendering)
@@ -666,6 +737,33 @@ struct CanvasTransformUniforms {
     self.loadedTextures[@(textureId)] = texture;
 
     METAL_LOG("Loaded texture %d from data (%dx%d)", textureId, width, height);
+    return textureId;
+}
+
+- (int32_t)loadTextureFromRGBAData:(const uint8_t*)data width:(int)width height:(int)height {
+    // Create texture for RGBA data (4 bytes per pixel)
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                     width:width
+                                    height:height
+                                 mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+
+    id<MTLTexture> texture = [self.device newTextureWithDescriptor:desc];
+    if (!texture) {
+        METAL_LOG("Failed to create RGBA texture from data (%dx%d)", width, height);
+        return 0;
+    }
+
+    // Upload data (4 bytes per pixel)
+    MTLRegion region = MTLRegionMake2D(0, 0, width, height);
+    [texture replaceRegion:region mipmapLevel:0 withBytes:data bytesPerRow:width * 4];
+
+    // Store and return ID
+    int32_t textureId = self.nextTextureId++;
+    self.loadedTextures[@(textureId)] = texture;
+
+    METAL_LOG("Loaded RGBA texture %d from data (%dx%d)", textureId, width, height);
     return textureId;
 }
 
@@ -889,8 +987,24 @@ struct CanvasTransformUniforms {
     _uiRects.push_back(params);
 }
 
+- (void)queueUITexturedRect:(float)x y:(float)y width:(float)w height:(float)h
+                  textureId:(int32_t)textureId tint:(simd_float4)tint {
+    // Convert screen coordinates to NDC
+    float ndcX = (x / self.drawableWidth) * 2.0f - 1.0f;
+    float ndcY = 1.0f - (y / self.drawableHeight) * 2.0f;  // Flip Y
+    float ndcW = (w / self.drawableWidth) * 2.0f;
+    float ndcH = (h / self.drawableHeight) * 2.0f;
+
+    UITexturedRectParams params;
+    params.rect = simd_make_float4(ndcX, ndcY - ndcH, ndcW, ndcH);  // Adjust Y for top-left origin
+    params.tint = tint;
+    params.textureId = textureId;
+
+    _uiTexturedRects.push_back(params);
+}
+
 - (void)drawQueuedUIRectsToTexture:(id<MTLTexture>)texture {
-    if (_uiRects.empty() || !self.uiRectPipeline) return;
+    if (_uiRects.empty() && _uiTexturedRects.empty()) return;
 
     id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
 
@@ -900,12 +1014,35 @@ struct CanvasTransformUniforms {
     passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
 
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
-    [encoder setRenderPipelineState:self.uiRectPipeline];
 
-    for (const UIRectParams& params : _uiRects) {
-        [encoder setVertexBytes:&params length:sizeof(UIRectParams) atIndex:0];
-        [encoder setFragmentBytes:&params length:sizeof(UIRectParams) atIndex:0];
-        [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+    // Draw solid color rects
+    if (!_uiRects.empty() && self.uiRectPipeline) {
+        [encoder setRenderPipelineState:self.uiRectPipeline];
+        for (const UIRectParams& params : _uiRects) {
+            [encoder setVertexBytes:&params length:sizeof(UIRectParams) atIndex:0];
+            [encoder setFragmentBytes:&params length:sizeof(UIRectParams) atIndex:0];
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        }
+    }
+
+    // Draw textured rects
+    if (!_uiTexturedRects.empty() && self.uiTexturedRectPipeline) {
+        [encoder setRenderPipelineState:self.uiTexturedRectPipeline];
+        [encoder setFragmentSamplerState:self.textureSampler atIndex:0];
+        NSLog(@"[TexturedRect] Drawing %lu textured rects", _uiTexturedRects.size());
+        for (const UITexturedRectParams& params : _uiTexturedRects) {
+            id<MTLTexture> tex = [self getTextureById:params.textureId];
+            if (tex) {
+                [encoder setVertexBytes:&params length:sizeof(UITexturedRectParams) atIndex:0];
+                [encoder setFragmentBytes:&params length:sizeof(UITexturedRectParams) atIndex:0];
+                [encoder setFragmentTexture:tex atIndex:0];
+                [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+            } else {
+                NSLog(@"[TexturedRect] WARNING: texture %d not found!", params.textureId);
+            }
+        }
+    } else if (!_uiTexturedRects.empty()) {
+        NSLog(@"[TexturedRect] WARNING: %lu rects queued but pipeline is nil!", _uiTexturedRects.size());
     }
 
     [encoder endEncoding];
@@ -915,6 +1052,7 @@ struct CanvasTransformUniforms {
 
 - (void)clearUIQueue {
     _uiRects.clear();
+    _uiTexturedRects.clear();
 }
 
 // =============================================================================
@@ -1171,6 +1309,11 @@ int32_t MetalStampRenderer::load_texture_from_data(const uint8_t* data, int widt
     return [impl_ loadTextureFromData:data width:width height:height];
 }
 
+int32_t MetalStampRenderer::load_texture_from_rgba_data(const uint8_t* data, int width, int height) {
+    if (!is_ready()) return 0;
+    return [impl_ loadTextureFromRGBAData:data width:width height:height];
+}
+
 void MetalStampRenderer::set_brush_shape_texture(int32_t texture_id) {
     brush_.shape_texture_id = texture_id;
     if (is_ready()) {
@@ -1377,6 +1520,15 @@ void MetalStampRenderer::queue_ui_rect(float x, float y, float width, float heig
     [impl_ queueUIRect:x y:y width:width height:height color:color cornerRadius:corner_radius];
 }
 
+void MetalStampRenderer::queue_ui_textured_rect(float x, float y, float width, float height,
+                                                int32_t texture_id,
+                                                float tint_r, float tint_g, float tint_b, float alpha) {
+    if (!is_ready()) return;
+
+    simd_float4 tint = simd_make_float4(tint_r, tint_g, tint_b, alpha);
+    [impl_ queueUITexturedRect:x y:y width:width height:height textureId:texture_id tint:tint];
+}
+
 void MetalStampRenderer::set_canvas_transform(float panX, float panY, float scale,
                                               float rotation, float pivotX, float pivotY) {
     if (!is_ready()) return;
@@ -1520,6 +1672,12 @@ void metal_queue_ui_rect(float x, float y, float width, float height,
     if (g_metal_renderer) g_metal_renderer->queue_ui_rect(x, y, width, height, r, g, b, a, corner_radius);
 }
 
+void metal_queue_ui_textured_rect(float x, float y, float width, float height,
+                                  int32_t texture_id,
+                                  float tint_r, float tint_g, float tint_b, float alpha) {
+    if (g_metal_renderer) g_metal_renderer->queue_ui_textured_rect(x, y, width, height, texture_id, tint_r, tint_g, tint_b, alpha);
+}
+
 // Canvas Transform
 void metal_set_canvas_transform(float panX, float panY, float scale,
                                 float rotation, float pivotX, float pivotY) {
@@ -1562,6 +1720,10 @@ int32_t metal_load_texture(const char* path) {
 
 int32_t metal_load_texture_data(const uint8_t* data, int width, int height) {
     return g_metal_renderer ? g_metal_renderer->load_texture_from_data(data, width, height) : 0;
+}
+
+int32_t metal_load_rgba_texture_data(const uint8_t* data, int width, int height) {
+    return g_metal_renderer ? g_metal_renderer->load_texture_from_rgba_data(data, width, height) : 0;
 }
 
 void metal_set_brush_shape_texture(int32_t texture_id) {
@@ -1672,6 +1834,12 @@ METAL_EXPORT void metal_stamp_queue_ui_rect(float x, float y, float width, float
     metal_stamp::metal_queue_ui_rect(x, y, width, height, r, g, b, a, corner_radius);
 }
 
+METAL_EXPORT void metal_stamp_queue_ui_textured_rect(float x, float y, float width, float height,
+                                                     int32_t texture_id,
+                                                     float tint_r, float tint_g, float tint_b, float alpha) {
+    metal_stamp::metal_queue_ui_textured_rect(x, y, width, height, texture_id, tint_r, tint_g, tint_b, alpha);
+}
+
 // Canvas Transform
 METAL_EXPORT void metal_stamp_set_canvas_transform(float panX, float panY, float scale,
                                                    float rotation, float pivotX, float pivotY) {
@@ -1714,6 +1882,10 @@ METAL_EXPORT int32_t metal_stamp_load_texture(const char* path) {
 
 METAL_EXPORT int32_t metal_stamp_load_texture_data(const uint8_t* data, int width, int height) {
     return metal_stamp::metal_load_texture_data(data, width, height);
+}
+
+METAL_EXPORT int32_t metal_stamp_load_rgba_texture_data(const uint8_t* data, int width, int height) {
+    return metal_stamp::metal_load_rgba_texture_data(data, width, height);
 }
 
 METAL_EXPORT void metal_stamp_set_brush_shape_texture(int32_t texture_id) {

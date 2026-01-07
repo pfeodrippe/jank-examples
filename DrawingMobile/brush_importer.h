@@ -25,8 +25,11 @@ typedef struct {
     int32_t brushId;
     char name[256];
     char thumbnailPath[1024];
-    int32_t shapeTextureId;   // Metal texture ID, -1 if none
-    int32_t grainTextureId;   // Metal texture ID, -1 if none
+    int32_t shapeTextureId;     // Metal texture ID, -1 if none
+    int32_t grainTextureId;     // Metal texture ID, -1 if none
+    int32_t thumbnailTextureId; // Preview thumbnail texture ID, -1 if none
+    int32_t thumbnailWidth;     // Thumbnail image width
+    int32_t thumbnailHeight;    // Thumbnail image height
     ProcreateBrushSettings settings;
 } ImportedBrush;
 
