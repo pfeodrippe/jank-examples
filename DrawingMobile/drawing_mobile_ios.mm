@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 #import <Photos/Photos.h>
 #import <PhotosUI/PhotosUI.h>
+#import <CoreText/CoreText.h>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -599,13 +600,133 @@ static void drawBrushButton(const BrushButtonConfig& btn) {
 }
 
 // =============================================================================
-// Brush Picker Panel Configuration
+// Brush Picker Panel Configuration (constants needed by text rendering)
 // =============================================================================
 
 static const float BRUSH_PICKER_ITEM_SIZE = 180.0f;
 static const float BRUSH_PICKER_ITEM_GAP = 12.0f;
 static const float BRUSH_PICKER_PADDING = 20.0f;
 static const int BRUSH_PICKER_COLS = 4;
+
+// =============================================================================
+// Text Rendering for Brush Names
+// =============================================================================
+
+// Cache for rendered text textures: key = brushId, value = textureId
+static std::map<int32_t, int32_t> g_brushNameTextures;
+static std::map<int32_t, std::pair<int32_t, int32_t>> g_brushNameSizes;  // width, height
+
+// Render text to a Metal texture and return the texture ID
+static int32_t renderTextToTexture(const char* text, float fontSize, int maxWidth) {
+    if (!text || strlen(text) == 0) return -1;
+
+    NSString* nsText = [NSString stringWithUTF8String:text];
+
+    // Create attributed string with white text
+    UIFont* font = [UIFont systemFontOfSize:fontSize weight:UIFontWeightMedium];
+    NSDictionary* attributes = @{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: [UIColor whiteColor]
+    };
+
+    // Calculate text size
+    CGSize textSize = [nsText boundingRectWithSize:CGSizeMake(maxWidth, CGFLOAT_MAX)
+                                           options:NSStringDrawingUsesLineFragmentOrigin
+                                        attributes:attributes
+                                           context:nil].size;
+
+    int width = (int)ceilf(textSize.width);
+    int height = (int)ceilf(textSize.height);
+
+    if (width <= 0 || height <= 0) return -1;
+
+    // Create bitmap context for rendering
+    NSUInteger bytesPerPixel = 4;
+    NSUInteger bytesPerRow = width * bytesPerPixel;
+    uint8_t* rawData = (uint8_t*)calloc(height * bytesPerRow, sizeof(uint8_t));
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(rawData, width, height,
+                                                  8, bytesPerRow, colorSpace,
+                                                  kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(colorSpace);
+
+    if (!context) {
+        free(rawData);
+        return -1;
+    }
+
+    // Flip context for UIKit coordinate system
+    CGContextTranslateCTM(context, 0, height);
+    CGContextScaleCTM(context, 1.0, -1.0);
+
+    // Draw text using UIKit
+    UIGraphicsPushContext(context);
+    [nsText drawInRect:CGRectMake(0, 0, width, height) withAttributes:attributes];
+    UIGraphicsPopContext();
+
+    CGContextRelease(context);
+
+    // Load into Metal
+    int32_t textureId = metal_stamp_load_rgba_texture_data(rawData, width, height);
+
+    free(rawData);
+
+    // Store the size
+    if (textureId > 0) {
+        // Size will be stored by caller using brushId
+    }
+
+    return textureId;
+}
+
+// Get or create text texture for a brush name
+static int32_t getBrushNameTexture(int32_t brushId, const char* name, int* outWidth, int* outHeight) {
+    // Check cache
+    auto it = g_brushNameTextures.find(brushId);
+    if (it != g_brushNameTextures.end()) {
+        auto sizeIt = g_brushNameSizes.find(brushId);
+        if (sizeIt != g_brushNameSizes.end()) {
+            *outWidth = sizeIt->second.first;
+            *outHeight = sizeIt->second.second;
+        }
+        return it->second;
+    }
+
+    // Render new texture
+    float fontSize = 14.0f;
+    int maxWidth = (int)BRUSH_PICKER_ITEM_SIZE - 10;
+
+    NSString* nsText = [NSString stringWithUTF8String:name];
+    UIFont* font = [UIFont systemFontOfSize:fontSize weight:UIFontWeightMedium];
+    NSDictionary* attributes = @{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: [UIColor whiteColor]
+    };
+
+    CGSize textSize = [nsText boundingRectWithSize:CGSizeMake(maxWidth, CGFLOAT_MAX)
+                                           options:NSStringDrawingUsesLineFragmentOrigin
+                                        attributes:attributes
+                                           context:nil].size;
+
+    int width = (int)ceilf(textSize.width);
+    int height = (int)ceilf(textSize.height);
+
+    int32_t textureId = renderTextToTexture(name, fontSize, maxWidth);
+
+    if (textureId > 0) {
+        g_brushNameTextures[brushId] = textureId;
+        g_brushNameSizes[brushId] = {width, height};
+        *outWidth = width;
+        *outHeight = height;
+    }
+
+    return textureId;
+}
+
+// =============================================================================
+// Brush Picker Panel Structs and Functions
+// =============================================================================
 
 struct BrushPickerConfig {
     float x, y;          // Position (top-left of panel)
@@ -631,22 +752,33 @@ static int getBrushAtPoint(const BrushPickerConfig& picker, float px, float py) 
     float relX = px - gridX;
     float relY = py - gridY;
 
+    float cellSize = BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP;  // 192
+    int col = (int)(relX / cellSize);
+    int row = (int)(relY / cellSize);
+
+    // Debug: show exact position within cell
+    float cellRelX = relX - col * cellSize;
+    float cellRelY = relY - row * cellSize;
+    NSLog(@"[BrushPicker] HIT TEST: rel(%.1f,%.1f) -> row=%d col=%d, cellRel(%.1f,%.1f) itemSize=%.0f",
+          relX, relY, row, col, cellRelX, cellRelY, BRUSH_PICKER_ITEM_SIZE);
+
     if (relX < 0 || relY < 0) return -1;
-
-    int col = (int)(relX / (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP));
-    int row = (int)(relY / (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP));
-
     if (col >= BRUSH_PICKER_COLS) return -1;
 
     int brushIndex = row * BRUSH_PICKER_COLS + col;
     if (brushIndex >= (int)[g_brushIds count]) return -1;
 
     // Verify point is actually within the item bounds (not in gap)
-    float itemX = gridX + col * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
-    float itemY = gridY + row * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
+    float itemX = gridX + col * cellSize;
+    float itemY = gridY + row * cellSize;
 
-    if (px >= itemX && px <= itemX + BRUSH_PICKER_ITEM_SIZE &&
-        py >= itemY && py <= itemY + BRUSH_PICKER_ITEM_SIZE) {
+    bool inBounds = (px >= itemX && px <= itemX + BRUSH_PICKER_ITEM_SIZE &&
+                     py >= itemY && py <= itemY + BRUSH_PICKER_ITEM_SIZE);
+
+    NSLog(@"[BrushPicker] BOUNDS CHECK: item(%.1f,%.1f) tap(%.1f,%.1f) inBounds=%d -> brushIdx=%d",
+          itemX, itemY, px, py, inBounds, inBounds ? brushIndex : -1);
+
+    if (inBounds) {
         return brushIndex;
     }
 
@@ -699,9 +831,29 @@ static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
 
         // Draw brush thumbnail preview (stroke preview)
         ImportedBrush* brush = [BrushImporter getBrushById:brushId];
-        if (brush && brush->thumbnailTextureId > 0) {
+
+        // FIRST: Check if brush is unsupported (no shape texture = uses bundled Procreate resources)
+        if (brush && brush->shapeTextureId < 0) {
+            // UNSUPPORTED BRUSH: Draw a red X to indicate brush cannot be used
+            float centerX = itemX + BRUSH_PICKER_ITEM_SIZE / 2;
+            float centerY = itemY + BRUSH_PICKER_ITEM_SIZE / 2;
+            float xSize = 30.0f;
+            float xThickness = 6.0f;
+
+            // Draw red background circle
+            metal_stamp_queue_ui_rect(centerX - xSize - 5, centerY - xSize - 5,
+                                      (xSize + 5) * 2, (xSize + 5) * 2,
+                                      0.3f, 0.1f, 0.1f, 0.8f, xSize + 5);
+
+            // Draw X using two thick lines
+            metal_stamp_queue_ui_rect(centerX - xSize, centerY - xThickness/2,
+                                      xSize * 2, xThickness,
+                                      0.9f, 0.2f, 0.2f, 1.0f, 2.0f);
+            metal_stamp_queue_ui_rect(centerX - xThickness/2, centerY - xSize,
+                                      xThickness, xSize * 2,
+                                      0.9f, 0.2f, 0.2f, 1.0f, 2.0f);
+        } else if (brush && brush->thumbnailTextureId > 0) {
             // Draw the actual brush thumbnail (Procreate QuickLook preview)
-            // Thumbnail is white stroke on transparent, so tint with white on dark bg
             float thumbPadding = 5.0f;
             float thumbX = itemX + thumbPadding;
             float thumbY = itemY + thumbPadding;
@@ -714,13 +866,11 @@ static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
 
             float drawW, drawH, drawX, drawY;
             if (thumbAspect > boxAspect) {
-                // Thumbnail is wider - fit to width
                 drawW = thumbW;
                 drawH = thumbW / thumbAspect;
                 drawX = thumbX;
                 drawY = thumbY + (thumbH - drawH) / 2;
             } else {
-                // Thumbnail is taller - fit to height
                 drawH = thumbH;
                 drawW = thumbH * thumbAspect;
                 drawX = thumbX + (thumbW - drawW) / 2;
@@ -732,18 +882,38 @@ static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
                                                brush->thumbnailTextureId,
                                                1.0f, 1.0f, 1.0f, 1.0f);
         } else if (brush && brush->shapeTextureId >= 0) {
-            // Fallback: Draw shape texture as thumbnail
+            // Fallback: Draw shape texture indicator
             metal_stamp_queue_ui_rect(itemX + 10, itemY + 10,
                                       BRUSH_PICKER_ITEM_SIZE - 20, BRUSH_PICKER_ITEM_SIZE - 20,
                                       0.4f, 0.4f, 0.5f, 0.8f, 4.0f);
         } else {
-            // Fallback: Draw a simple circle for brushes without textures
-            float centerX = itemX + BRUSH_PICKER_ITEM_SIZE / 2;
-            float centerY = itemY + BRUSH_PICKER_ITEM_SIZE / 2;
-            float radius = 25.0f;
-            metal_stamp_queue_ui_rect(centerX - radius, centerY - radius,
-                                      radius * 2, radius * 2,
-                                      0.5f, 0.5f, 0.6f, 0.9f, radius);
+            // No brush data - draw placeholder
+            metal_stamp_queue_ui_rect(itemX + 10, itemY + 10,
+                                      BRUSH_PICKER_ITEM_SIZE - 20, BRUSH_PICKER_ITEM_SIZE - 20,
+                                      0.3f, 0.3f, 0.3f, 0.5f, 4.0f);
+        }
+
+        // Draw brush name below thumbnail (like Procreate)
+        if (brush && brush->name[0] != '\0') {
+            int textWidth = 0, textHeight = 0;
+            int32_t nameTextureId = getBrushNameTexture(brushId, brush->name, &textWidth, &textHeight);
+
+            if (nameTextureId > 0 && textWidth > 0 && textHeight > 0) {
+                // Position text centered at bottom of item
+                float textX = itemX + (BRUSH_PICKER_ITEM_SIZE - textWidth) / 2;
+                float textY = itemY + BRUSH_PICKER_ITEM_SIZE - textHeight - 8;
+
+                // Draw semi-transparent background for readability
+                float bgPadding = 4;
+                metal_stamp_queue_ui_rect(textX - bgPadding, textY - bgPadding,
+                                          textWidth + bgPadding * 2, textHeight + bgPadding * 2,
+                                          0.0f, 0.0f, 0.0f, 0.6f, 4.0f);
+
+                // Draw the text
+                metal_stamp_queue_ui_textured_rect(textX, textY, textWidth, textHeight,
+                                                   nameTextureId,
+                                                   1.0f, 1.0f, 1.0f, 1.0f);
+            }
         }
     }
 }
@@ -1512,6 +1682,9 @@ static int metal_test_main() {
                         } else if (isPointInBrushPicker(brushPicker, x, y)) {
                             // Handle tap on brush picker
                             int brushIdx = getBrushAtPoint(brushPicker, x, y);
+                            NSLog(@"[BrushPicker] DEBUG: tap(%.1f,%.1f) picker(%.1f,%.1f) grid starts at (%.1f,%.1f) brushIdx=%d",
+                                  x, y, brushPicker.x, brushPicker.y,
+                                  brushPicker.x + BRUSH_PICKER_PADDING, brushPicker.y + BRUSH_PICKER_PADDING, brushIdx);
                             if (brushIdx >= 0) {
                                 g_selectedBrushIndex = brushIdx;
                                 g_selectedBrushId = [[g_brushIds objectAtIndex:brushIdx] intValue];
@@ -1899,6 +2072,7 @@ static int metal_test_main() {
                     } else if (isPointInBrushPicker(brushPicker, screenX, screenY)) {
                         // Handle tap on brush picker (pen)
                         int brushIdx = getBrushAtPoint(brushPicker, screenX, screenY);
+                        NSLog(@"[BrushPicker] DEBUG (pen): tap(%.1f,%.1f) brushIdx=%d", screenX, screenY, brushIdx);
                         if (brushIdx >= 0) {
                             g_selectedBrushIndex = brushIdx;
                             g_selectedBrushId = [[g_brushIds objectAtIndex:brushIdx] intValue];

@@ -26,6 +26,7 @@ extern "C" {
     void metal_stamp_set_brush_opacity_pressure(float pressure);
     void metal_stamp_set_brush_shape_texture(int32_t textureId);
     void metal_stamp_set_brush_grain_texture(int32_t textureId);
+    void metal_stamp_set_brush_shape_inverted(int inverted);
 }
 
 // Global brush storage
@@ -429,6 +430,28 @@ static int32_t g_nextBrushId = 1;
     return textureId;
 }
 
+// Helper to extract integer value from CFKeyedArchiverUID
+// CFKeyedArchiverUID doesn't respond to intValue, so we parse its description
++ (NSInteger)extractUIDValue:(id)uidRef {
+    if (!uidRef) return -1;
+
+    // First try intValue/integerValue (for NSNumber)
+    if ([uidRef respondsToSelector:@selector(integerValue)]) {
+        return [uidRef integerValue];
+    }
+
+    // Parse CFKeyedArchiverUID description: "<CFKeyedArchiverUID ...>{value = 83}"
+    NSString* desc = [uidRef description];
+    NSRange range = [desc rangeOfString:@"value = "];
+    if (range.location != NSNotFound) {
+        NSString* valueStr = [desc substringFromIndex:range.location + range.length];
+        valueStr = [valueStr stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"}"]];
+        return [valueStr integerValue];
+    }
+
+    return -1;
+}
+
 + (BOOL)parseBrushArchive:(NSURL*)archiveURL settings:(ProcreateBrushSettings*)settings name:(char*)nameBuffer nameBufferSize:(size_t)nameBufferSize {
     NSData* data = [NSData dataWithContentsOfURL:archiveURL];
     if (!data) return NO;
@@ -462,17 +485,15 @@ static int32_t g_nextBrushId = 1;
 
     // Extract brush name from referenced object
     if (brush[@"name"]) {
-        // name is a reference to another object in $objects
+        // name is a CFKeyedArchiverUID reference to another object in $objects
         id nameRef = brush[@"name"];
-        if ([nameRef respondsToSelector:@selector(intValue)]) {
-            NSInteger nameIndex = [nameRef intValue];
-            if (nameIndex > 0 && nameIndex < (NSInteger)objects.count) {
-                id nameObj = objects[nameIndex];
-                if ([nameObj isKindOfClass:[NSString class]]) {
-                    if (nameBuffer && nameBufferSize > 0) {
-                        strncpy(nameBuffer, [(NSString*)nameObj UTF8String], nameBufferSize - 1);
-                        nameBuffer[nameBufferSize - 1] = '\0';
-                    }
+        NSInteger nameIndex = [self extractUIDValue:nameRef];
+        if (nameIndex > 0 && nameIndex < (NSInteger)objects.count) {
+            id nameObj = objects[nameIndex];
+            if ([nameObj isKindOfClass:[NSString class]]) {
+                if (nameBuffer && nameBufferSize > 0) {
+                    strncpy(nameBuffer, [(NSString*)nameObj UTF8String], nameBufferSize - 1);
+                    nameBuffer[nameBufferSize - 1] = '\0';
                 }
             }
         }
@@ -524,15 +545,23 @@ static int32_t g_nextBrushId = 1;
     // Hardness - not directly available, estimate from other settings
     settings->hardness = 0.5f;
 
-    NSLog(@"[BrushImporter] Parsed settings: spacing=%.4f, sizeJitter=%.2f, opacityJitter=%.2f, scatter=%.2f, sizePressure=%.2f, opacityPressure=%.2f, grainScale=%.2f, flow=%.2f",
+    // Shape inversion - determines how texture alpha is interpreted
+    // shapeInverted=0: WHITE=opaque, BLACK=transparent (after CGBitmapContext fix)
+    // shapeInverted=1: BLACK=opaque, WHITE=transparent (standard Procreate convention)
+    if (brush[@"shapeInverted"]) {
+        settings->shapeInverted = [brush[@"shapeInverted"] intValue];
+    } else {
+        settings->shapeInverted = 0;  // Default: not inverted
+    }
+
+    NSLog(@"[BrushImporter] Parsed settings: spacing=%.4f, sizeJitter=%.2f, opacityJitter=%.2f, scatter=%.2f, sizePressure=%.2f, opacityPressure=%.2f, grainScale=%.2f, flow=%.2f, shapeInverted=%d",
           settings->spacing, settings->sizeJitter, settings->opacityJitter, settings->scatterAmount,
-          settings->sizePressure, settings->opacityPressure, settings->grainScale, settings->flow);
+          settings->sizePressure, settings->opacityPressure, settings->grainScale, settings->flow, settings->shapeInverted);
 
     return YES;
 }
 
 + (NSArray<NSNumber*>*)importBrushSetFromURL:(NSURL*)url {
-    // TODO: Implement brushset import (multiple brushes)
     NSMutableArray* brushIds = [NSMutableArray array];
 
     // Extract the brushset
@@ -541,25 +570,65 @@ static int32_t g_nextBrushId = 1;
 
     if (!extractedDir) return @[];
 
-    // Find all brush subdirectories
     NSFileManager* fm = [NSFileManager defaultManager];
-    NSArray* contents = [fm contentsOfDirectoryAtURL:extractedDir
-                          includingPropertiesForKeys:@[NSURLIsDirectoryKey]
-                                             options:0
-                                               error:nil];
 
-    for (NSURL* item in contents) {
-        NSNumber* isDir;
-        [item getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
+    // Parse brushset.plist to get the CORRECT brush order
+    // Procreate stores the intended display order in this file
+    NSURL* plistURL = [extractedDir URLByAppendingPathComponent:@"brushset.plist"];
+    NSArray* brushOrder = nil;
 
-        if ([isDir boolValue]) {
-            // Check if it contains Brush.archive
-            NSURL* brushArchive = [item URLByAppendingPathComponent:@"Brush.archive"];
-            if ([fm fileExistsAtPath:brushArchive.path]) {
-                // This is a brush folder, import it
-                int32_t brushId = [self importBrushFromExtractedDirectory:item];
-                if (brushId > 0) {
-                    [brushIds addObject:@(brushId)];
+    if ([fm fileExistsAtPath:plistURL.path]) {
+        NSData* plistData = [NSData dataWithContentsOfURL:plistURL];
+        if (plistData) {
+            NSError* error;
+            NSDictionary* plist = [NSPropertyListSerialization propertyListWithData:plistData
+                                                                            options:NSPropertyListImmutable
+                                                                             format:nil
+                                                                              error:&error];
+            if (plist && !error) {
+                brushOrder = plist[@"brushes"];
+                NSLog(@"[BrushImporter] Found brushset.plist with %lu brushes in order", (unsigned long)[brushOrder count]);
+            }
+        }
+    }
+
+    if (brushOrder && [brushOrder count] > 0) {
+        // Import brushes in the ORDER specified by brushset.plist
+        for (NSString* uuid in brushOrder) {
+            NSURL* brushDir = [extractedDir URLByAppendingPathComponent:uuid];
+            if ([fm fileExistsAtPath:brushDir.path]) {
+                NSURL* brushArchive = [brushDir URLByAppendingPathComponent:@"Brush.archive"];
+                if ([fm fileExistsAtPath:brushArchive.path]) {
+                    int32_t brushId = [self importBrushFromExtractedDirectory:brushDir];
+                    if (brushId > 0) {
+                        [brushIds addObject:@(brushId)];
+                    }
+                }
+            }
+        }
+    } else {
+        // Fallback: Find all brush subdirectories and sort alphabetically
+        NSLog(@"[BrushImporter] No brushset.plist found, using alphabetical order");
+        NSArray* contents = [fm contentsOfDirectoryAtURL:extractedDir
+                              includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+                                                 options:0
+                                                   error:nil];
+
+        contents = [contents sortedArrayUsingComparator:^NSComparisonResult(NSURL* a, NSURL* b) {
+            return [[a lastPathComponent] compare:[b lastPathComponent]];
+        }];
+
+        for (NSURL* item in contents) {
+            NSNumber* isDir;
+            [item getResourceValue:&isDir forKey:NSURLIsDirectoryKey error:nil];
+
+            if ([isDir boolValue]) {
+                NSURL* brushArchive = [item URLByAppendingPathComponent:@"Brush.archive"];
+                if ([fm fileExistsAtPath:brushArchive.path]) {
+                    int32_t brushId = [self importBrushFromExtractedDirectory:item];
+                    if (brushId > 0) {
+                        [brushIds addObject:@(brushId)];
+                    }
                 }
             }
         }
@@ -630,10 +699,25 @@ static int32_t g_nextBrushId = 1;
         NSLog(@"[BrushImporter] Loaded grain texture: %d from %@", brush.grainTextureId, grainURL.lastPathComponent);
     }
 
-    // Parse settings (will also extract brush name)
-    NSURL* archiveURL = [dir URLByAppendingPathComponent:@"Brush.archive"];
+    // Parse settings from the SAME directory as the Shape.png
+    // This ensures shapeInverted matches the actual Shape.png being used
+    NSURL* archiveURL;
+    if (brush.shapeTextureId >= 0) {
+        // Use archive from same directory as the loaded shape
+        NSURL* shapeDir = [shapeURL URLByDeletingLastPathComponent];
+        archiveURL = [shapeDir URLByAppendingPathComponent:@"Brush.archive"];
+        if (![fm fileExistsAtPath:archiveURL.path]) {
+            // Fall back to root if no archive in shape's directory
+            archiveURL = [dir URLByAppendingPathComponent:@"Brush.archive"];
+        }
+    } else {
+        // No shape loaded, use root archive
+        archiveURL = [dir URLByAppendingPathComponent:@"Brush.archive"];
+    }
+
     if ([fm fileExistsAtPath:archiveURL.path]) {
         [self parseBrushArchive:archiveURL settings:&brush.settings name:brush.name nameBufferSize:sizeof(brush.name)];
+        NSLog(@"[BrushImporter] Parsed settings from %@", archiveURL.path);
     } else {
         // Use default settings
         brush.settings.spacing = 0.1f;
@@ -685,6 +769,13 @@ static int32_t g_nextBrushId = 1;
     ImportedBrush* brush = [self getBrushById:brushId];
     if (!brush) return NO;
 
+    // Check if brush is supported (must have a shape texture)
+    // Brushes that use Procreate's bundled resources (bundledShapePath) don't have Shape.png
+    if (brush->shapeTextureId < 0) {
+        NSLog(@"[BrushImporter] UNSUPPORTED: Brush '%s' uses bundled Procreate resources (no Shape.png)", brush->name);
+        return NO;  // Don't apply unsupported brushes - keep current brush active
+    }
+
     // Set brush type: 1 = textured brush (has shape or grain texture)
     int brushType = (brush->shapeTextureId >= 0 || brush->grainTextureId >= 0) ? 1 : 0;
     metal_stamp_set_brush_type(brushType);
@@ -704,12 +795,19 @@ static int32_t g_nextBrushId = 1;
     // Apply textures
     if (brush->shapeTextureId >= 0) {
         metal_stamp_set_brush_shape_texture(brush->shapeTextureId);
+    } else {
+        metal_stamp_set_brush_shape_texture(0);  // Use default procedural circle
     }
     if (brush->grainTextureId >= 0) {
         metal_stamp_set_brush_grain_texture(brush->grainTextureId);
+    } else {
+        metal_stamp_set_brush_grain_texture(0);  // No grain
     }
 
-    NSLog(@"[BrushImporter] Applied brush '%s'", brush->name);
+    // Set shape inversion mode
+    metal_stamp_set_brush_shape_inverted(brush->settings.shapeInverted);
+
+    NSLog(@"[BrushImporter] Applied brush '%s' (shapeInverted=%d)", brush->name, brush->settings.shapeInverted);
     return YES;
 }
 

@@ -18,6 +18,7 @@ typedef struct {
     float grainScale;       // Texture scale multiplier
     float hardness;         // Edge hardness 0.0-1.0
     float flow;             // Paint flow 0.0-1.0
+    int shapeInverted;      // 0 = normal, 1 = inverted (Procreate shapeInverted property)
 } ProcreateBrushSettings;
 
 // Imported brush data

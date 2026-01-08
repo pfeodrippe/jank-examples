@@ -70,6 +70,7 @@ struct BrushSettings {
     int32_t grain_texture_id = 0;   // 0 = no grain
     float grain_scale = 1.0f;       // Grain texture scale
     bool grain_moving = true;       // true = moving, false = texturized
+    int shape_inverted = 0;         // 0 = WHITE=opaque, 1 = BLACK=opaque (Procreate shapeInverted)
 
     // Dynamics
     float rotation = 0.0f;          // Base rotation in degrees
@@ -144,6 +145,9 @@ public:
     void set_brush_grain_texture(int32_t texture_id);
     void set_brush_grain_scale(float scale);
     void set_brush_grain_moving(bool moving);
+
+    // Set shape inversion mode (0 = WHITE=opaque, 1 = BLACK=opaque)
+    void set_brush_shape_inverted(int inverted);
 
     // Unload a texture
     void unload_texture(int32_t texture_id);
@@ -317,6 +321,7 @@ void metal_stamp_set_brush_shape_texture(int32_t texture_id);
 void metal_stamp_set_brush_grain_texture(int32_t texture_id);
 void metal_stamp_set_brush_grain_scale(float scale);
 void metal_stamp_set_brush_grain_moving(bool moving);
+void metal_stamp_set_brush_shape_inverted(int inverted);
 void metal_stamp_unload_texture(int32_t texture_id);
 
 // Built-in brush presets

@@ -43,6 +43,7 @@ struct MSLStrokeUniforms {
     simd_float2 grainOffset;  // For moving grain mode
     int useShapeTexture;      // 0 = procedural, 1 = texture
     int useGrainTexture;      // 0 = no grain, 1 = use grain
+    int shapeInverted;        // 0 = WHITE=opaque, 1 = BLACK=opaque
 };
 
 // =============================================================================
@@ -73,6 +74,7 @@ struct MSLStrokeUniforms {
 // Brush textures
 @property (nonatomic, strong) id<MTLTexture> currentShapeTexture;
 @property (nonatomic, strong) id<MTLTexture> currentGrainTexture;
+@property (nonatomic, assign) int shapeInverted;  // 0 = WHITE=opaque, 1 = BLACK=opaque
 @property (nonatomic, strong) NSMutableDictionary<NSNumber*, id<MTLTexture>>* loadedTextures;
 @property (nonatomic, assign) int32_t nextTextureId;
 
@@ -913,6 +915,7 @@ struct CanvasTransformUniforms {
     uniforms.grainOffset = self.grainOffset;
     uniforms.useShapeTexture = useShape ? 1 : 0;
     uniforms.useGrainTexture = useGrain ? 1 : 0;
+    uniforms.shapeInverted = self.shapeInverted;
     memcpy(self.uniformBuffer.contents, &uniforms, sizeof(MSLStrokeUniforms));
 
     // Render to canvas texture
@@ -1357,6 +1360,13 @@ void MetalStampRenderer::set_brush_grain_moving(bool moving) {
     brush_.grain_moving = moving;
 }
 
+void MetalStampRenderer::set_brush_shape_inverted(int inverted) {
+    brush_.shape_inverted = inverted;
+    if (is_ready()) {
+        impl_.shapeInverted = inverted;
+    }
+}
+
 void MetalStampRenderer::unload_texture(int32_t texture_id) {
     if (!is_ready()) return;
     [impl_ unloadTexture:texture_id];
@@ -1763,6 +1773,10 @@ void metal_set_brush_grain_moving(bool moving) {
     if (g_metal_renderer) g_metal_renderer->set_brush_grain_moving(moving);
 }
 
+void metal_set_brush_shape_inverted(int inverted) {
+    if (g_metal_renderer) g_metal_renderer->set_brush_shape_inverted(inverted);
+}
+
 void metal_unload_texture(int32_t texture_id) {
     if (g_metal_renderer) g_metal_renderer->unload_texture(texture_id);
 }
@@ -1923,6 +1937,10 @@ METAL_EXPORT void metal_stamp_set_brush_grain_scale(float scale) {
 
 METAL_EXPORT void metal_stamp_set_brush_grain_moving(bool moving) {
     metal_stamp::metal_set_brush_grain_moving(moving);
+}
+
+METAL_EXPORT void metal_stamp_set_brush_shape_inverted(int inverted) {
+    metal_stamp::metal_set_brush_shape_inverted(inverted);
 }
 
 METAL_EXPORT void metal_stamp_unload_texture(int32_t texture_id) {

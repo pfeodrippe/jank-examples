@@ -35,6 +35,7 @@ struct StrokeUniforms {
     float2 grainOffset;    // For moving grain mode
     int useShapeTexture;   // 0 = procedural, 1 = use texture
     int useGrainTexture;   // 0 = no grain, 1 = use grain
+    int shapeInverted;     // 0 = WHITE=opaque, 1 = BLACK=opaque (Procreate convention)
 };
 
 // =============================================================================
@@ -245,8 +246,9 @@ fragment half4 stamp_fragment_marker(
 
 // For custom brush textures (e.g., Procreate brush shapes)
 // Shape textures are loaded as R8 (grayscale).
-// NOTE: CGBitmapContext grayscale loading INVERTS the values, so we invert back here.
-// Procreate convention: WHITE=opaque (paint), BLACK=transparent (no paint)
+// CGBitmapContext grayscale loading INVERTS values, so we need to handle both conventions:
+//   shapeInverted=0: Original has WHITE=opaque, BLACK=transparent (after load: need to invert)
+//   shapeInverted=1: Original has BLACK=opaque, WHITE=transparent (after load: don't invert)
 fragment half4 stamp_textured_fragment(
     PointVertexOutput in [[stage_in]],
     float2 pointCoord [[point_coord]],
@@ -257,9 +259,16 @@ fragment half4 stamp_textured_fragment(
     // Sample brush texture (R8 format: only R channel has data)
     float4 texColor = brushTexture.sample(brushSampler, pointCoord);
 
-    // INVERT the texture value - CGBitmapContext grayscale loading inverts values
-    // After inversion: HIGH where source WHITE (paint), LOW where source BLACK (transparent)
-    float shapeAlpha = 1.0 - texColor.r;
+    // Compute shape alpha based on shapeInverted setting
+    // Procreate convention:
+    //   shapeInverted=0: WHITE pixels = opaque (standard: white shapes on black background)
+    //   shapeInverted=1: BLACK pixels = opaque (inverted: black shapes on white background)
+    float shapeAlpha;
+    if (uniforms.shapeInverted == 0) {
+        shapeAlpha = texColor.r;         // WHITE=opaque: use value directly
+    } else {
+        shapeAlpha = 1.0 - texColor.r;   // BLACK=opaque: invert value
+    }
 
     // Discard fully transparent pixels
     if (shapeAlpha < 0.01) {
