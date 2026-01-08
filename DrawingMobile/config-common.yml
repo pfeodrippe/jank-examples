@@ -108,6 +108,8 @@ targetTemplates:
         buildPhase: resources
       - path: BetterThanBasics.brushset
         buildPhase: resources
+      - path: WC_brushes_For_Paperlike.brushset
+        buildPhase: resources
     dependencies:
       - framework: Frameworks/SDL3.xcframework
         embed: true

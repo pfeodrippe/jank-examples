@@ -486,7 +486,7 @@ static void loadBrushesFromBundledFile() {
     g_brushIds = [[NSMutableArray alloc] init];
 
     // Brushsets to load from app bundle (in order)
-    NSArray<NSString*>* bundleNames = @[@"brushes", @"BetterThanBasics"];
+    NSArray<NSString*>* bundleNames = @[@"brushes", @"BetterThanBasics", @"WC_brushes_For_Paperlike"];
 
     for (NSString* bundleName in bundleNames) {
         NSArray<NSNumber*>* brushIds = [BrushImporter loadBundledBrushSet:bundleName];
@@ -2148,10 +2148,6 @@ static int metal_test_main() {
                     // Track pressure from axis events
                     if (event.paxis.axis == SDL_PEN_AXIS_PRESSURE) {
                         pen_pressure = event.paxis.value;
-                        // Update pressure during active drawing
-                        if (is_drawing) {
-                            // Pressure is applied on next motion event
-                        }
                     }
                     break;
                 }

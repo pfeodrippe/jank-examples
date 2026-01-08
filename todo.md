@@ -60,7 +60,6 @@
     - [x] color
     - [x] eraser
     - [ ] pen pressure
-    - [ ] device pen delay
     - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders

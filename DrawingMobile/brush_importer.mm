@@ -297,21 +297,22 @@ static int32_t g_nextBrushId = 1;
         NSLog(@"[BrushImporter] Loaded grain texture: %d", brush.grainTextureId);
     }
 
-    // Parse settings from Brush.archive
+    // Initialize default settings BEFORE parsing (so missing keys have sensible defaults)
+    brush.settings.spacing = 0.1f;
+    brush.settings.sizeJitter = 0.0f;
+    brush.settings.opacityJitter = 0.0f;
+    brush.settings.scatterAmount = 0.0f;
+    brush.settings.rotationJitter = 0.0f;
+    brush.settings.sizePressure = 0.8f;      // Default pressure sensitivity
+    brush.settings.opacityPressure = 0.3f;   // Default pressure sensitivity
+    brush.settings.grainScale = 1.0f;
+    brush.settings.hardness = 0.5f;
+    brush.settings.flow = 1.0f;
+    brush.settings.shapeInverted = 0;
+
+    // Parse settings from Brush.archive (overrides defaults for keys that exist)
     if ([fm fileExistsAtPath:brushArchiveURL.path]) {
         [self parseBrushArchive:brushArchiveURL settings:&brush.settings name:brush.name nameBufferSize:sizeof(brush.name)];
-    } else {
-        // Use default settings
-        brush.settings.spacing = 0.1f;
-        brush.settings.sizeJitter = 0.0f;
-        brush.settings.opacityJitter = 0.0f;
-        brush.settings.scatterAmount = 0.0f;
-        brush.settings.rotationJitter = 0.0f;
-        brush.settings.sizePressure = 0.8f;
-        brush.settings.opacityPressure = 0.3f;
-        brush.settings.grainScale = 1.0f;
-        brush.settings.hardness = 0.5f;
-        brush.settings.flow = 1.0f;
     }
 
     // Store brush

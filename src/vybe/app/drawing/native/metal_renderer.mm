@@ -2082,7 +2082,7 @@ METAL_EXPORT void metal_stamp_undo_init() {
 
     // Simple full snapshot approach - snapshot EVERY stroke
     // No stroke replaying, just pure snapshots for reliability
-    g_undo_tree->setMaxNodes(50);       // Limit to ~700MB max (50 × 14MB)
+    g_undo_tree->setMaxNodes(10);       // Limit to ~140MB max (10 × 14MB)
     g_undo_tree->setSnapshotInterval(1); // Snapshot every stroke
 
     // Snapshot callback - capture full canvas
