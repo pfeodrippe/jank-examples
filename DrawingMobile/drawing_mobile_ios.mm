@@ -1369,6 +1369,11 @@ static int metal_test_main() {
     SDL_GetWindowSizeInPixels(window, &width, &height);
     std::cout << "Window size: " << width << "x" << height << std::endl;
 
+    // Get pixel density for converting pen coordinates (in points) to pixels
+    // Pen events use window coordinates (points), not physical pixels
+    float pixelDensity = SDL_GetWindowPixelDensity(window);
+    std::cout << "Pixel density: " << pixelDensity << std::endl;
+
     // Initialize Metal renderer
     std::cout << "Initializing Metal stamp renderer..." << std::endl;
     if (!metal_stamp_init(window, width, height)) {
@@ -2007,12 +2012,14 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_PEN_DOWN: {
-                    float screenX = event.ptouch.x;
-                    float screenY = event.ptouch.y;
+                    // Pen coordinates are in window points, need to convert to pixels
+                    float screenX = event.ptouch.x * pixelDensity;
+                    float screenY = event.ptouch.y * pixelDensity;
                     // pen_pressure should have been set by preceding axis events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
-                    std::cout << "Pen down: " << screenX << ", " << screenY << " (pressure: " << pen_pressure << ")" << std::endl;
+                    NSLog(@"[PEN] DOWN: raw(%.1f,%.1f) * %.1f = screen(%.1f,%.1f)",
+                          event.ptouch.x, event.ptouch.y, pixelDensity, screenX, screenY);
 
                     // Check if touch is on a slider (UI is in screen space, not canvas space)
                     float sliderHitPadding = 30.0f;
@@ -2102,8 +2109,9 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_PEN_MOTION: {
-                    float screenX = event.pmotion.x;
-                    float screenY = event.pmotion.y;
+                    // Pen coordinates are in window points, need to convert to pixels
+                    float screenX = event.pmotion.x * pixelDensity;
+                    float screenY = event.pmotion.y * pixelDensity;
                     // pen_pressure updated via SDL_EVENT_PEN_AXIS events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
