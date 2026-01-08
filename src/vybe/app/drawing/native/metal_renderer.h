@@ -194,6 +194,10 @@ public:
     // Returns true on success
     bool restore_canvas_snapshot(const std::vector<uint8_t>& pixels, int width, int height);
 
+    // Delta snapshots - capture/restore only a region of the canvas (memory efficient)
+    std::vector<uint8_t> capture_delta_snapshot(int x, int y, int w, int h);
+    bool restore_delta_snapshot(const std::vector<uint8_t>& pixels, int x, int y, int w, int h);
+
     // Get canvas dimensions
     int get_canvas_width() const { return width_; }
     int get_canvas_height() const { return height_; }

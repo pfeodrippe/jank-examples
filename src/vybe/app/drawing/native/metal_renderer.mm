@@ -10,6 +10,7 @@
 #include "undo_tree.hpp"
 #include "undo_tree.cpp"  // Include implementation directly for single-TU build
 #include <vector>
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 
@@ -135,6 +136,10 @@ struct MSLStrokeUniforms {
 // Canvas Snapshots
 - (NSData*)captureCanvasSnapshot;
 - (BOOL)restoreCanvasSnapshot:(NSData*)pixels width:(int)width height:(int)height;
+
+// Delta Snapshots (capture only changed region)
+- (NSData*)captureDeltaSnapshotX:(int)x y:(int)y width:(int)w height:(int)h;
+- (BOOL)restoreDeltaSnapshot:(NSData*)pixels atX:(int)x y:(int)y width:(int)w height:(int)h;
 
 @end
 
@@ -1194,6 +1199,69 @@ struct CanvasTransformUniforms {
     return YES;
 }
 
+// =============================================================================
+// Delta Snapshots - Capture/restore only a region of the canvas
+// =============================================================================
+
+- (NSData*)captureDeltaSnapshotX:(int)x y:(int)y width:(int)w height:(int)h {
+    if (!self.canvasTexture) return nil;
+
+    int canvasW = self.drawableWidth;
+    int canvasH = self.drawableHeight;
+
+    // Clamp region to canvas bounds
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > canvasW) w = canvasW - x;
+    if (y + h > canvasH) h = canvasH - y;
+
+    if (w <= 0 || h <= 0) return nil;
+
+    size_t bytesPerRow = w * 4;
+    size_t totalBytes = bytesPerRow * h;
+
+    NSMutableData* pixelData = [NSMutableData dataWithLength:totalBytes];
+    if (!pixelData) return nil;
+
+    // Read only the specified region
+    [self.canvasTexture getBytes:pixelData.mutableBytes
+                     bytesPerRow:bytesPerRow
+                      fromRegion:MTLRegionMake2D(x, y, w, h)
+                     mipmapLevel:0];
+
+    return pixelData;
+}
+
+- (BOOL)restoreDeltaSnapshot:(NSData*)pixels atX:(int)x y:(int)y width:(int)w height:(int)h {
+    if (!self.canvasTexture || !pixels) return NO;
+
+    int canvasW = self.drawableWidth;
+    int canvasH = self.drawableHeight;
+
+    // Validate bounds
+    if (x < 0 || y < 0 || x + w > canvasW || y + h > canvasH) {
+        std::cout << "[Delta] Region out of bounds: (" << x << "," << y << ") "
+                  << w << "x" << h << " vs canvas " << canvasW << "x" << canvasH << std::endl;
+        return NO;
+    }
+
+    size_t bytesPerRow = w * 4;
+    size_t expectedSize = bytesPerRow * h;
+    if (pixels.length != expectedSize) {
+        std::cout << "[Delta] Size mismatch: " << pixels.length
+                  << " vs expected " << expectedSize << std::endl;
+        return NO;
+    }
+
+    // Write pixels to the specified region
+    [self.canvasTexture replaceRegion:MTLRegionMake2D(x, y, w, h)
+                          mipmapLevel:0
+                            withBytes:pixels.bytes
+                          bytesPerRow:bytesPerRow];
+
+    return YES;
+}
+
 @end
 
 // =============================================================================
@@ -1476,6 +1544,24 @@ bool MetalStampRenderer::restore_canvas_snapshot(const std::vector<uint8_t>& pix
     return [impl_ restoreCanvasSnapshot:data width:width height:height];
 }
 
+std::vector<uint8_t> MetalStampRenderer::capture_delta_snapshot(int x, int y, int w, int h) {
+    if (!is_ready()) return {};
+
+    NSData* data = [impl_ captureDeltaSnapshotX:x y:y width:w height:h];
+    if (!data) return {};
+
+    std::vector<uint8_t> result(data.length);
+    memcpy(result.data(), data.bytes, data.length);
+    return result;
+}
+
+bool MetalStampRenderer::restore_delta_snapshot(const std::vector<uint8_t>& pixels, int x, int y, int w, int h) {
+    if (!is_ready() || pixels.empty()) return false;
+
+    NSData* data = [NSData dataWithBytes:pixels.data() length:pixels.size()];
+    return [impl_ restoreDeltaSnapshot:data atX:x y:y width:w height:h];
+}
+
 void MetalStampRenderer::render_current_stroke() {
     if (!is_ready() || !impl_.isDrawing) return;
 
@@ -1581,6 +1667,11 @@ static MetalStampRenderer* g_metal_renderer = nullptr;
 static std::unique_ptr<undo_tree::UndoTree> g_undo_tree = nullptr;
 static undo_tree::StrokeData g_current_stroke;  // Accumulates points during drawing
 static bool g_is_recording_stroke = false;
+
+// Stroke bounding box (kept for potential future delta optimization)
+static float g_stroke_min_x = 0, g_stroke_min_y = 0;
+static float g_stroke_max_x = 0, g_stroke_max_y = 0;
+static bool g_stroke_bbox_valid = false;
 
 // Debug: Log when dylib is loaded
 __attribute__((constructor))
@@ -1989,36 +2080,45 @@ METAL_EXPORT void metal_stamp_undo_init() {
 
     g_undo_tree = std::make_unique<undo_tree::UndoTree>();
 
-    // Use snapshots for EVERY stroke - this guarantees pixel-perfect undo
-    g_undo_tree->setSnapshotInterval(1);
+    // Simple full snapshot approach - snapshot EVERY stroke
+    // No stroke replaying, just pure snapshots for reliability
+    g_undo_tree->setMaxNodes(50);       // Limit to ~700MB max (50 × 14MB)
+    g_undo_tree->setSnapshotInterval(1); // Snapshot every stroke
 
-    // Snapshot callback - capture canvas pixels
+    // Snapshot callback - capture full canvas
     g_undo_tree->setSnapshotCallback([]() -> std::shared_ptr<undo_tree::CanvasSnapshot> {
         if (!metal_stamp::g_metal_renderer) return nullptr;
 
+        int canvasW = metal_stamp::g_metal_renderer->get_canvas_width();
+        int canvasH = metal_stamp::g_metal_renderer->get_canvas_height();
+
         auto snapshot = std::make_shared<undo_tree::CanvasSnapshot>();
-        snapshot->width = metal_stamp::g_metal_renderer->get_canvas_width();
-        snapshot->height = metal_stamp::g_metal_renderer->get_canvas_height();
-        snapshot->pixels = metal_stamp::g_metal_renderer->capture_canvas_snapshot();
         snapshot->timestamp = SDL_GetTicks();
+        snapshot->canvasWidth = canvasW;
+        snapshot->canvasHeight = canvasH;
+        snapshot->isDelta = false;
+        snapshot->deltaX = 0;
+        snapshot->deltaY = 0;
+        snapshot->width = canvasW;
+        snapshot->height = canvasH;
+        snapshot->pixels = metal_stamp::g_metal_renderer->capture_canvas_snapshot();
 
         if (snapshot->pixels.empty()) {
             std::cout << "[UndoTree] Failed to capture snapshot" << std::endl;
             return nullptr;
         }
 
-        std::cout << "[UndoTree] Captured snapshot " << snapshot->width << "x"
-                  << snapshot->height << " (" << snapshot->pixels.size() << " bytes)" << std::endl;
+        std::cout << "[UndoTree] Snapshot " << snapshot->width << "x"
+                  << snapshot->height << " (" << snapshot->pixels.size() / 1024 << " KB)" << std::endl;
         return snapshot;
     });
 
-    // Restore callback - restore canvas from snapshot
+    // Restore callback - restore full canvas from snapshot
     g_undo_tree->setRestoreCallback([](const undo_tree::CanvasSnapshot& snapshot) {
         if (!metal_stamp::g_metal_renderer) return;
 
         std::cout << "[UndoTree] Restoring snapshot " << snapshot.width << "x"
                   << snapshot.height << std::endl;
-
         metal_stamp::g_metal_renderer->restore_canvas_snapshot(
             snapshot.pixels, snapshot.width, snapshot.height);
     });
@@ -2031,15 +2131,11 @@ METAL_EXPORT void metal_stamp_undo_init() {
         }
     });
 
-    // Apply stroke callback - fallback for when no snapshot available
-    // With snapshot interval = 1, this should rarely be needed
-    g_undo_tree->setApplyStrokeCallback([](const undo_tree::StrokeData& stroke) {
-        std::cout << "[UndoTree] WARNING: Replaying stroke (no snapshot available)" << std::endl;
-        // Stroke replay code kept as fallback but should not be used
-    });
+    // No stroke replay needed - we snapshot every stroke
+    // (callback not set, so replay won't happen)
 
-    std::cout << "[UndoTree] Initialized with SNAPSHOT mode (interval=1), max "
-              << g_undo_tree->getMaxNodes() << " nodes" << std::endl;
+    std::cout << "[UndoTree] Initialized with full snapshots, max "
+              << g_undo_tree->getMaxNodes() << " undo steps" << std::endl;
 }
 
 METAL_EXPORT void metal_stamp_undo_cleanup() {
@@ -2194,6 +2290,19 @@ void undo_begin_stroke(float x, float y, float pressure) {
     pt.timestamp = 0;  // Relative to stroke start
     g_current_stroke.points.push_back(pt);
 
+    // Initialize bounding box with first point (expanded by MAX possible brush size)
+    float baseSize = g_current_stroke.brush.size;
+    float pressureMax = 1.0f + g_current_stroke.brush.size_pressure;
+    float jitterMax = 1.0f + g_current_stroke.brush.size_jitter;
+    float scatterMax = baseSize * g_current_stroke.brush.scatter;
+    float maxSize = baseSize * pressureMax * jitterMax + scatterMax;
+
+    g_stroke_min_x = x - maxSize;
+    g_stroke_min_y = y - maxSize;
+    g_stroke_max_x = x + maxSize;
+    g_stroke_max_y = y + maxSize;
+    g_stroke_bbox_valid = true;
+
     g_is_recording_stroke = true;
 }
 
@@ -2212,6 +2321,19 @@ void undo_add_stroke_point(float x, float y, float pressure) {
     pt.y = y;
     pt.pressure = pressure;
     pt.timestamp = SDL_GetTicks() - g_current_stroke.startTime;
+
+    // Expand bounding box (account for MAX possible brush size due to dynamics)
+    // size_pressure can increase size based on pressure (0-1), size_jitter adds random variation
+    float baseSize = g_current_stroke.brush.size;
+    float pressureMax = 1.0f + g_current_stroke.brush.size_pressure;  // Pressure can double size
+    float jitterMax = 1.0f + g_current_stroke.brush.size_jitter;      // Jitter can also increase
+    float scatterMax = baseSize * g_current_stroke.brush.scatter;     // Scatter offsets stamps
+    float maxSize = baseSize * pressureMax * jitterMax + scatterMax;
+
+    if (x - maxSize < g_stroke_min_x) g_stroke_min_x = x - maxSize;
+    if (y - maxSize < g_stroke_min_y) g_stroke_min_y = y - maxSize;
+    if (x + maxSize > g_stroke_max_x) g_stroke_max_x = x + maxSize;
+    if (y + maxSize > g_stroke_max_y) g_stroke_max_y = y + maxSize;
     g_current_stroke.points.push_back(pt);
 }
 
@@ -2245,6 +2367,7 @@ void undo_cancel_stroke() {
 
     g_current_stroke = undo_tree::StrokeData();
     g_is_recording_stroke = false;
+    g_stroke_bbox_valid = false;
 }
 
 } // namespace metal_stamp

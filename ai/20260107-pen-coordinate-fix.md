@@ -60,6 +60,23 @@ SDL3 coordinate systems on iOS:
 
 The `pixelDensity` is typically 2.0 or 3.0 on iOS retina displays.
 
+## Memory Crash Fix
+
+The app was crashing due to excessive memory usage from the undo system.
+
+**Root Cause:**
+- Undo system captured full canvas snapshot for EVERY stroke (`snapshotInterval = 1`)
+- iPad canvas = 2160 × 1620 × 4 = ~14 MB per snapshot
+- 250 max nodes × 14 MB = 3.5 GB potential memory usage!
+
+**Fix in `metal_renderer.mm`:**
+```cpp
+// Before: snapshotInterval(1), maxNodes(250) = 3.5 GB potential
+// After: snapshotInterval(10), maxNodes(50) = ~70 MB max
+g_undo_tree->setMaxNodes(50);
+g_undo_tree->setSnapshotInterval(10);
+```
+
 ## Related Session
 
 See `ai/20260107-brush-fixes-session2.md` for the brush picker fixes done earlier in this session.

@@ -282,6 +282,13 @@ static int g_selectedBrushIndex = 0;
 static bool g_brushPickerVisible = false;
 static bool g_brushesLoaded = false;
 
+// Brush picker scroll state
+static float g_brushPickerScrollOffset = 0.0f;  // Current scroll offset (pixels)
+static bool g_brushPickerIsDragging = false;    // Currently dragging to scroll
+static float g_brushPickerDragStartY = 0.0f;    // Y position where drag started
+static float g_brushPickerDragStartOffset = 0.0f; // Scroll offset when drag started
+static SDL_FingerID g_brushPickerDragFingerId = 0; // Finger used for scrolling
+
 // Objective-C delegate for PHPicker
 @interface TexturePickerDelegate : NSObject <PHPickerViewControllerDelegate>
 @property (nonatomic, assign) TextureType textureType;
@@ -467,44 +474,32 @@ static void showTexturePicker(SDL_Window* window, TextureType type) {
 // Brush Picker Functions
 // =============================================================================
 
-// Load brushes from the bundled brushset file
+// Load brushes from the bundled brushset files
 static void loadBrushesFromBundledFile() {
     if (g_brushesLoaded) return;
 
-    NSLog(@"[BrushPicker] Loading bundled brushset...");
+    NSLog(@"[BrushPicker] Loading bundled brushsets...");
 
-    // Try to load from the hardcoded path first (for development/testing)
-    NSString* devPath = @"/Users/pfeodrippe/dev/something/DrawingMobile/brushes.brushset";
-    if ([[NSFileManager defaultManager] fileExistsAtPath:devPath]) {
-        NSArray<NSNumber*>* brushIds = [BrushImporter loadBrushSetFromPath:devPath];
+    g_brushIds = [[NSMutableArray alloc] init];
+
+    // Brushsets to load from app bundle (in order)
+    NSArray<NSString*>* bundleNames = @[@"brushes", @"BetterThanBasics"];
+
+    for (NSString* bundleName in bundleNames) {
+        NSArray<NSNumber*>* brushIds = [BrushImporter loadBundledBrushSet:bundleName];
         if (brushIds.count > 0) {
-            g_brushIds = [brushIds mutableCopy];
-            g_brushesLoaded = true;
-            NSLog(@"[BrushPicker] Loaded %lu brushes from dev path", (unsigned long)brushIds.count);
-
-            // Select the first brush by default
-            if (g_brushIds.count > 0) {
-                g_selectedBrushIndex = 0;
-                g_selectedBrushId = [g_brushIds[0] intValue];
-                [BrushImporter applyBrush:g_selectedBrushId];
-            }
-            return;
+            [g_brushIds addObjectsFromArray:brushIds];
+            NSLog(@"[BrushPicker] Loaded %lu brushes from bundle: %@",
+                  (unsigned long)brushIds.count, bundleName);
         }
     }
 
-    // Try to load from app bundle
-    NSArray<NSNumber*>* brushIds = [BrushImporter loadBundledBrushSet:@"brushes"];
-    if (brushIds.count > 0) {
-        g_brushIds = [brushIds mutableCopy];
+    if (g_brushIds.count > 0) {
         g_brushesLoaded = true;
-        NSLog(@"[BrushPicker] Loaded %lu brushes from bundle", (unsigned long)brushIds.count);
-
-        // Select the first brush by default
-        if (g_brushIds.count > 0) {
-            g_selectedBrushIndex = 0;
-            g_selectedBrushId = [g_brushIds[0] intValue];
-            [BrushImporter applyBrush:g_selectedBrushId];
-        }
+        g_selectedBrushIndex = 0;
+        g_selectedBrushId = [g_brushIds[0] intValue];
+        [BrushImporter applyBrush:g_selectedBrushId];
+        NSLog(@"[BrushPicker] Total: %lu brushes loaded", (unsigned long)g_brushIds.count);
     } else {
         NSLog(@"[BrushPicker] No brushes loaded");
     }
@@ -732,7 +727,7 @@ struct BrushPickerConfig {
     float x, y;          // Position (top-left of panel)
     float width, height; // Panel dimensions
     bool isOpen;
-    int scrollOffset;    // For scrolling through many brushes
+    float scrollOffset;  // Vertical scroll offset in pixels (positive = scrolled down)
 };
 
 static bool isPointInBrushPicker(const BrushPickerConfig& picker, float px, float py) {
@@ -742,6 +737,7 @@ static bool isPointInBrushPicker(const BrushPickerConfig& picker, float px, floa
 }
 
 // Returns brush index at point, or -1 if none
+// Uses global g_brushPickerScrollOffset for scroll position
 static int getBrushAtPoint(const BrushPickerConfig& picker, float px, float py) {
     if (!picker.isOpen || !g_brushIds || [g_brushIds count] == 0) return -1;
 
@@ -750,7 +746,8 @@ static int getBrushAtPoint(const BrushPickerConfig& picker, float px, float py) 
     float gridY = picker.y + BRUSH_PICKER_PADDING;
 
     float relX = px - gridX;
-    float relY = py - gridY;
+    // Add scroll offset to get the "virtual" position in the full content
+    float relY = py - gridY + g_brushPickerScrollOffset;
 
     float cellSize = BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP;  // 192
     int col = (int)(relX / cellSize);
@@ -759,8 +756,8 @@ static int getBrushAtPoint(const BrushPickerConfig& picker, float px, float py) 
     // Debug: show exact position within cell
     float cellRelX = relX - col * cellSize;
     float cellRelY = relY - row * cellSize;
-    NSLog(@"[BrushPicker] HIT TEST: rel(%.1f,%.1f) -> row=%d col=%d, cellRel(%.1f,%.1f) itemSize=%.0f",
-          relX, relY, row, col, cellRelX, cellRelY, BRUSH_PICKER_ITEM_SIZE);
+    NSLog(@"[BrushPicker] HIT TEST: rel(%.1f,%.1f) scroll=%.1f -> row=%d col=%d, cellRel(%.1f,%.1f)",
+          relX, relY - g_brushPickerScrollOffset, g_brushPickerScrollOffset, row, col, cellRelX, cellRelY);
 
     if (relX < 0 || relY < 0) return -1;
     if (col >= BRUSH_PICKER_COLS) return -1;
@@ -769,14 +766,18 @@ static int getBrushAtPoint(const BrushPickerConfig& picker, float px, float py) 
     if (brushIndex >= (int)[g_brushIds count]) return -1;
 
     // Verify point is actually within the item bounds (not in gap)
-    float itemX = gridX + col * cellSize;
-    float itemY = gridY + row * cellSize;
+    // Item positions are in virtual (scrolled) coordinates
+    float virtualItemX = col * cellSize;
+    float virtualItemY = row * cellSize;
 
-    bool inBounds = (px >= itemX && px <= itemX + BRUSH_PICKER_ITEM_SIZE &&
-                     py >= itemY && py <= itemY + BRUSH_PICKER_ITEM_SIZE);
+    float localRelX = relX - virtualItemX;
+    float localRelY = relY - virtualItemY;
 
-    NSLog(@"[BrushPicker] BOUNDS CHECK: item(%.1f,%.1f) tap(%.1f,%.1f) inBounds=%d -> brushIdx=%d",
-          itemX, itemY, px, py, inBounds, inBounds ? brushIndex : -1);
+    bool inBounds = (localRelX >= 0 && localRelX <= BRUSH_PICKER_ITEM_SIZE &&
+                     localRelY >= 0 && localRelY <= BRUSH_PICKER_ITEM_SIZE);
+
+    NSLog(@"[BrushPicker] BOUNDS CHECK: localRel(%.1f,%.1f) inBounds=%d -> brushIdx=%d",
+          localRelX, localRelY, inBounds, inBounds ? brushIndex : -1);
 
     if (inBounds) {
         return brushIndex;
@@ -798,21 +799,40 @@ static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
 
     if (!g_brushIds || [g_brushIds count] == 0) return;
 
-    // Draw brush items in a grid
+    // Draw brush items in a grid with scroll support
     float gridX = picker.x + BRUSH_PICKER_PADDING;
     float gridY = picker.y + BRUSH_PICKER_PADDING;
+    float cellSize = BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP;
 
+    // Calculate content dimensions
     int brushCount = (int)[g_brushIds count];
+    int rowCount = (brushCount + BRUSH_PICKER_COLS - 1) / BRUSH_PICKER_COLS;
+    float contentHeight = rowCount * cellSize - BRUSH_PICKER_ITEM_GAP;
+    float visibleHeight = picker.height - BRUSH_PICKER_PADDING * 2;
+
+    // Clamp scroll offset to valid range
+    float maxScroll = std::max(0.0f, contentHeight - visibleHeight);
+    g_brushPickerScrollOffset = std::max(0.0f, std::min(g_brushPickerScrollOffset, maxScroll));
+
     for (int i = 0; i < brushCount; i++) {
         int col = i % BRUSH_PICKER_COLS;
         int row = i / BRUSH_PICKER_COLS;
 
-        float itemX = gridX + col * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
-        float itemY = gridY + row * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP);
+        float itemX = gridX + col * cellSize;
+        // Apply scroll offset (negative offset moves items up)
+        float itemY = gridY + row * cellSize - g_brushPickerScrollOffset;
 
-        // Check if item is within visible area
-        if (itemY + BRUSH_PICKER_ITEM_SIZE > picker.y + picker.height - BRUSH_PICKER_PADDING) {
-            continue; // Skip items outside visible area
+        // Check if item is within visible area (accounting for scroll)
+        float visibleTop = picker.y + BRUSH_PICKER_PADDING;
+        float visibleBottom = picker.y + picker.height - BRUSH_PICKER_PADDING;
+
+        // Skip items completely above visible area
+        if (itemY + BRUSH_PICKER_ITEM_SIZE < visibleTop) {
+            continue;
+        }
+        // Skip items completely below visible area
+        if (itemY > visibleBottom) {
+            continue;
         }
 
         int32_t brushId = [[g_brushIds objectAtIndex:i] intValue];
@@ -915,6 +935,30 @@ static void drawBrushPicker(const BrushPickerConfig& picker, int windowHeight) {
                                                    1.0f, 1.0f, 1.0f, 1.0f);
             }
         }
+    }
+
+    // Draw scroll indicator on right edge if content is scrollable
+    if (contentHeight > visibleHeight) {
+        float scrollBarWidth = 6.0f;
+        float scrollBarPadding = 4.0f;
+        float scrollBarX = picker.x + picker.width - scrollBarWidth - scrollBarPadding;
+
+        // Calculate scroll bar dimensions
+        float scrollRatio = visibleHeight / contentHeight;
+        float scrollBarHeight = std::max(40.0f, visibleHeight * scrollRatio);
+        float scrollRange = visibleHeight - scrollBarHeight;
+        float scrollProgress = (maxScroll > 0) ? (g_brushPickerScrollOffset / maxScroll) : 0.0f;
+        float scrollBarY = picker.y + BRUSH_PICKER_PADDING + scrollProgress * scrollRange;
+
+        // Draw scroll track (darker)
+        metal_stamp_queue_ui_rect(scrollBarX, picker.y + BRUSH_PICKER_PADDING,
+                                  scrollBarWidth, visibleHeight,
+                                  0.1f, 0.1f, 0.15f, 0.5f, scrollBarWidth / 2);
+
+        // Draw scroll thumb (brighter)
+        metal_stamp_queue_ui_rect(scrollBarX, scrollBarY,
+                                  scrollBarWidth, scrollBarHeight,
+                                  0.5f, 0.5f, 0.6f, 0.8f, scrollBarWidth / 2);
     }
 }
 
@@ -1685,18 +1729,12 @@ static int metal_test_main() {
                             showTexturePicker(window, TextureTypeGrain);
                             handledByUI = true;
                         } else if (isPointInBrushPicker(brushPicker, x, y)) {
-                            // Handle tap on brush picker
-                            int brushIdx = getBrushAtPoint(brushPicker, x, y);
-                            NSLog(@"[BrushPicker] DEBUG: tap(%.1f,%.1f) picker(%.1f,%.1f) grid starts at (%.1f,%.1f) brushIdx=%d",
-                                  x, y, brushPicker.x, brushPicker.y,
-                                  brushPicker.x + BRUSH_PICKER_PADDING, brushPicker.y + BRUSH_PICKER_PADDING, brushIdx);
-                            if (brushIdx >= 0) {
-                                g_selectedBrushIndex = brushIdx;
-                                g_selectedBrushId = [[g_brushIds objectAtIndex:brushIdx] intValue];
-                                [BrushImporter applyBrush:g_selectedBrushId];
-                                NSLog(@"[BrushPicker] Selected brush %d from picker", brushIdx);
-                                brushPicker.isOpen = false;  // Close picker after selection
-                            }
+                            // Start tracking touch for scroll/tap detection
+                            g_brushPickerIsDragging = true;
+                            g_brushPickerDragFingerId = fingerId;
+                            g_brushPickerDragStartY = y;
+                            g_brushPickerDragStartOffset = g_brushPickerScrollOffset;
+                            NSLog(@"[BrushPicker] Touch down at y=%.1f, scroll=%.1f", y, g_brushPickerScrollOffset);
                             handledByUI = true;
                         } else if (isPointInBrushButton(brushButton, x, y)) {
                             // Toggle brush picker open/closed
@@ -1852,6 +1890,13 @@ static int metal_test_main() {
                         pendingFinger0_y = event.tfinger.y;
                     }
                     // Handle UI slider dragging
+                    // Handle brush picker scrolling
+                    else if (g_brushPickerIsDragging && fingerId == g_brushPickerDragFingerId) {
+                        // Update scroll offset based on drag distance
+                        float deltaY = g_brushPickerDragStartY - y;  // Drag down = positive delta = scroll down
+                        g_brushPickerScrollOffset = g_brushPickerDragStartOffset + deltaY;
+                        // Note: clamping happens in drawBrushPicker
+                    }
                     else if (sizeSlider.isDragging) {
                         float relY = (y - sizeSlider.y) / sizeSlider.height;
                         sizeSlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
@@ -1991,6 +2036,32 @@ static int metal_test_main() {
                     } else if (opacitySlider.isDragging) {
                         opacitySlider.isDragging = false;
                         std::cout << "Opacity set to: " << (int)(brushOpacity * 100) << "%" << std::endl;
+                    }
+                    // Handle brush picker finger up - detect tap vs scroll
+                    else if (g_brushPickerIsDragging && fingerId == g_brushPickerDragFingerId) {
+                        float y = event.tfinger.y * height;
+                        float x = event.tfinger.x * width;
+                        float totalMovement = std::abs(y - g_brushPickerDragStartY);
+
+                        // If minimal movement, treat as tap (select brush)
+                        const float TAP_THRESHOLD = 15.0f;  // pixels
+                        if (totalMovement < TAP_THRESHOLD) {
+                            int brushIdx = getBrushAtPoint(brushPicker, x, y);
+                            NSLog(@"[BrushPicker] Tap detected (moved %.1fpx), checking brush at (%.1f,%.1f) -> idx=%d",
+                                  totalMovement, x, y, brushIdx);
+                            if (brushIdx >= 0) {
+                                g_selectedBrushIndex = brushIdx;
+                                g_selectedBrushId = [[g_brushIds objectAtIndex:brushIdx] intValue];
+                                [BrushImporter applyBrush:g_selectedBrushId];
+                                NSLog(@"[BrushPicker] Selected brush %d from picker", brushIdx);
+                                brushPicker.isOpen = false;  // Close picker after selection
+                            }
+                        } else {
+                            NSLog(@"[BrushPicker] Scroll ended (moved %.1fpx), scroll=%.1f",
+                                  totalMovement, g_brushPickerScrollOffset);
+                        }
+
+                        g_brushPickerIsDragging = false;
                     }
                     break;
                 }

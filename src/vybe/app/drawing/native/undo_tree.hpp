@@ -67,15 +67,24 @@ struct StrokeData {
 };
 
 // =============================================================================
-// Canvas Snapshot - For fast restoration
+// Canvas Snapshot - For fast restoration (supports delta snapshots)
 // =============================================================================
 
 struct CanvasSnapshot {
-    std::vector<uint8_t> pixels;  // RGBA pixel data
-    int width, height;
+    std::vector<uint8_t> pixels;  // RGBA pixel data (full or delta region)
+    int width, height;            // Canvas dimensions (for full) or region size (for delta)
     uint64_t timestamp;
 
+    // Delta snapshot support - only store changed region
+    bool isDelta = false;         // true = delta (partial), false = full snapshot
+    int deltaX = 0, deltaY = 0;   // Top-left corner of delta region in canvas coords
+    int canvasWidth = 0;          // Full canvas width (needed for delta restoration)
+    int canvasHeight = 0;         // Full canvas height
+
     size_t byteSize() const { return pixels.size(); }
+
+    // For delta: region is (deltaX, deltaY) to (deltaX+width, deltaY+height)
+    // pixels contains only the changed region (width * height * 4 bytes)
 };
 
 // =============================================================================

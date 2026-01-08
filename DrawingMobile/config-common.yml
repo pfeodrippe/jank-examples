@@ -103,8 +103,10 @@ targetTemplates:
       # Common resources (bundled with app)
       - path: LaunchScreen.storyboard
         buildPhase: resources
-      # Procreate brushset (bundled with app)
+      # Procreate brushsets (bundled with app)
       - path: brushes.brushset
+        buildPhase: resources
+      - path: BetterThanBasics.brushset
         buildPhase: resources
     dependencies:
       - framework: Frameworks/SDL3.xcframework

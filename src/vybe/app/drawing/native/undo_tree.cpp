@@ -97,7 +97,7 @@ bool UndoTree::redo() {
     // Move to active child
     current_ = current_->children[current_->activeChildIndex];
 
-    // Restore canvas to this state (using snapshot, same as undo)
+    // Restore canvas to this state
     restoreToNode(current_);
 
     std::cout << "[UndoTree] Redo to node " << current_->id
