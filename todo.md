@@ -55,11 +55,13 @@
     - [x] draw
     - [x] real-time drawing
     - [x] brush loading
-    - [ ] fix text brush
-    - [ ] eraser
-    - [ ] move with both hands
-    - [ ] color
-    - [ ] mix
+    - [x] fix text brush
+    - [x] move
+    - [x] color
+    - [x] eraser
+    - [ ] pen pressure
+    - [ ] device pen delay
+    - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders
   - [ ] export

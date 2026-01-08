@@ -289,6 +289,9 @@ static float g_brushPickerDragStartY = 0.0f;    // Y position where drag started
 static float g_brushPickerDragStartOffset = 0.0f; // Scroll offset when drag started
 static SDL_FingerID g_brushPickerDragFingerId = 0; // Finger used for scrolling
 
+// Eraser mode state
+static bool g_eraserMode = false;  // When true, paint with background color
+
 // Objective-C delegate for PHPicker
 @interface TexturePickerDelegate : NSObject <PHPickerViewControllerDelegate>
 @property (nonatomic, assign) TextureType textureType;
@@ -592,6 +595,57 @@ static void drawBrushButton(const BrushButtonConfig& btn) {
         metal_stamp_queue_ui_rect(btn.x + btn.width - 20.0f, btn.y + 5.0f, 12.0f, 12.0f,
                                   0.3f, 0.9f, 0.4f, 1.0f, 6.0f);
     }
+}
+
+// =============================================================================
+// Eraser Button Configuration
+// =============================================================================
+
+static const float ERASER_BUTTON_SIZE = 60.0f;
+
+struct EraserButtonConfig {
+    float x, y;
+    float size;
+};
+
+static bool isPointInEraserButton(const EraserButtonConfig& btn, float px, float py) {
+    return px >= btn.x && px <= btn.x + btn.size &&
+           py >= btn.y && py <= btn.y + btn.size;
+}
+
+static void drawEraserButton(const EraserButtonConfig& btn, bool isActive) {
+    // Background - changes color when active
+    if (isActive) {
+        // Active: pink/red background
+        metal_stamp_queue_ui_rect(btn.x - 3, btn.y - 3, btn.size + 6, btn.size + 6,
+                                  0.9f, 0.3f, 0.4f, 0.95f, 12.0f);
+        metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
+                                  0.8f, 0.2f, 0.3f, 0.95f, 10.0f);
+    } else {
+        // Inactive: dark gray
+        metal_stamp_queue_ui_rect(btn.x - 3, btn.y - 3, btn.size + 6, btn.size + 6,
+                                  0.4f, 0.4f, 0.45f, 0.8f, 12.0f);
+        metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
+                                  0.2f, 0.2f, 0.25f, 0.95f, 10.0f);
+    }
+
+    // Eraser icon - simple rectangle shape
+    float iconX = btn.x + btn.size * 0.2f;
+    float iconY = btn.y + btn.size * 0.15f;
+    float iconW = btn.size * 0.6f;
+    float iconH = btn.size * 0.7f;
+
+    // Eraser body (pink top half)
+    metal_stamp_queue_ui_rect(iconX, iconY, iconW, iconH * 0.4f,
+                              0.95f, 0.6f, 0.7f, 1.0f, 4.0f);
+
+    // Eraser bottom (darker band)
+    metal_stamp_queue_ui_rect(iconX, iconY + iconH * 0.4f, iconW, iconH * 0.2f,
+                              0.5f, 0.5f, 0.55f, 1.0f, 0.0f);
+
+    // Eraser holder (blue/gray)
+    metal_stamp_queue_ui_rect(iconX, iconY + iconH * 0.6f, iconW, iconH * 0.4f,
+                              0.3f, 0.4f, 0.6f, 1.0f, 2.0f);
 }
 
 // =============================================================================
@@ -1536,6 +1590,13 @@ static int metal_test_main() {
         .height = BRUSH_BUTTON_HEIGHT
     };
 
+    // Position eraser button to the right of brush button
+    EraserButtonConfig eraserButton = {
+        .x = brushButton.x + brushButton.width + 20.0f,
+        .y = brushButton.y + (brushButton.height - ERASER_BUTTON_SIZE) / 2,
+        .size = ERASER_BUTTON_SIZE
+    };
+
     // Initialize brush picker panel - position in center of screen
     float brushPickerWidth = BRUSH_PICKER_COLS * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP) + BRUSH_PICKER_PADDING * 2 - BRUSH_PICKER_ITEM_GAP;
     float brushPickerHeight = 800.0f;  // Show more brushes
@@ -1740,6 +1801,19 @@ static int metal_test_main() {
                             // Toggle brush picker open/closed
                             brushPicker.isOpen = !brushPicker.isOpen;
                             NSLog(@"[BrushPicker] %s", brushPicker.isOpen ? "Opened" : "Closed");
+                            handledByUI = true;
+                        } else if (isPointInEraserButton(eraserButton, x, y)) {
+                            // Toggle eraser mode
+                            g_eraserMode = !g_eraserMode;
+                            if (g_eraserMode) {
+                                // Set brush color to white (background color)
+                                metal_stamp_set_brush_color(1.0f, 1.0f, 1.0f, 1.0f);
+                                NSLog(@"[Eraser] Eraser mode ON");
+                            } else {
+                                // Restore to current color picker color
+                                metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
+                                NSLog(@"[Eraser] Eraser mode OFF");
+                            }
                             handledByUI = true;
                         } else if (brushPicker.isOpen) {
                             // Tap outside picker closes it
@@ -2086,11 +2160,11 @@ static int metal_test_main() {
                     // Pen coordinates are in window points, need to convert to pixels
                     float screenX = event.ptouch.x * pixelDensity;
                     float screenY = event.ptouch.y * pixelDensity;
-                    // pen_pressure should have been set by preceding axis events
+                    // pen_pressure is set via SDL_EVENT_PEN_AXIS events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
-                    NSLog(@"[PEN] DOWN: raw(%.1f,%.1f) * %.1f = screen(%.1f,%.1f)",
-                          event.ptouch.x, event.ptouch.y, pixelDensity, screenX, screenY);
+                    NSLog(@"[PEN] DOWN: raw(%.1f,%.1f) * %.1f = screen(%.1f,%.1f) pressure=%.2f",
+                          event.ptouch.x, event.ptouch.y, pixelDensity, screenX, screenY, pen_pressure);
 
                     // Check if touch is on a slider (UI is in screen space, not canvas space)
                     float sliderHitPadding = 30.0f;
@@ -2162,6 +2236,16 @@ static int metal_test_main() {
                         // Toggle brush picker open/closed (pen)
                         brushPicker.isOpen = !brushPicker.isOpen;
                         NSLog(@"[BrushPicker] %s (pen)", brushPicker.isOpen ? "Opened" : "Closed");
+                    } else if (isPointInEraserButton(eraserButton, screenX, screenY)) {
+                        // Toggle eraser mode (pen)
+                        g_eraserMode = !g_eraserMode;
+                        if (g_eraserMode) {
+                            metal_stamp_set_brush_color(1.0f, 1.0f, 1.0f, 1.0f);
+                            NSLog(@"[Eraser] Eraser mode ON (pen)");
+                        } else {
+                            metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
+                            NSLog(@"[Eraser] Eraser mode OFF (pen)");
+                        }
                     } else if (brushPicker.isOpen) {
                         // Tap outside picker closes it (pen)
                         brushPicker.isOpen = false;
@@ -2183,7 +2267,7 @@ static int metal_test_main() {
                     // Pen coordinates are in window points, need to convert to pixels
                     float screenX = event.pmotion.x * pixelDensity;
                     float screenY = event.pmotion.y * pixelDensity;
-                    // pen_pressure updated via SDL_EVENT_PEN_AXIS events
+                    // pen_pressure is updated via SDL_EVENT_PEN_AXIS events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
                     if (sizeSlider.isDragging) {
@@ -2311,6 +2395,9 @@ static int metal_test_main() {
 
         // Brush picker button
         drawBrushButton(brushButton);
+
+        // Eraser toggle button
+        drawEraserButton(eraserButton, g_eraserMode);
 
         // Brush picker panel (if open)
         drawBrushPicker(brushPicker, height);
