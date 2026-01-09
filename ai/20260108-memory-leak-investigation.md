@@ -154,3 +154,24 @@ Deploy to device and verify:
 1. Memory stays stable during extended drawing sessions
 2. No OOM crashes after several minutes of drawing
 3. Undo/redo still works correctly
+
+---
+
+## Additional Fix: Stroke Point Limit
+
+### Issue
+Drawing would stop after extended strokes because `MAX_POINTS_PER_STROKE = 10000` was hit, silently dropping new points.
+
+### Fix
+Added auto-flush in `add_stroke_point()` - every 8000 points, render current points to canvas and continue:
+
+```cpp
+if (impl_.pointCount > 0 && (impl_.pointCount % 8000) == 0) {
+    // Render and commit current points, then continue
+    [impl_ renderPointsWithHardness:...];
+    [impl_ commitStrokeToCanvas];
+    std::cout << "[Stroke] Auto-flushed " << impl_.pointCount << " points to canvas" << std::endl;
+}
+```
+
+This allows continuous drawing without hitting buffer limits.

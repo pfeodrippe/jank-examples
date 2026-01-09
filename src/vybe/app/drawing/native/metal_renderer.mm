@@ -88,6 +88,14 @@ struct MSLStrokeUniforms {
 @property (nonatomic, assign) int pointCount;
 @property (nonatomic, assign) int pointsRendered;
 
+// For auto-flush: brush settings stored at stroke start
+@property (nonatomic, assign) float strokeHardness;
+@property (nonatomic, assign) float strokeOpacity;
+@property (nonatomic, assign) float strokeFlow;
+@property (nonatomic, assign) float strokeGrainScale;
+@property (nonatomic, assign) BOOL strokeUseShape;
+@property (nonatomic, assign) BOOL strokeUseGrain;
+
 - (BOOL)initWithWindow:(SDL_Window*)window width:(int)w height:(int)h;
 - (void)cleanup;
 - (BOOL)createPipelines;
@@ -844,7 +852,17 @@ struct CanvasTransformUniforms {
     float perpY = (strokeLen > 0.001f) ? dx / strokeLen : 0.0f;
 
     // Interpolate points
-    for (int i = 0; i < numPoints && _points.size() < metal_stamp::MAX_POINTS_PER_STROKE; i++) {
+    for (int i = 0; i < numPoints; i++) {
+        // Auto-flush: if buffer is getting full, render and commit current points
+        // Leave some headroom (500 points) to avoid overflowing
+        if (_points.size() >= metal_stamp::MAX_POINTS_PER_STROKE - 500) {
+            NSLog(@"[Stroke] Auto-flush: %zu points at buffer limit, committing to canvas", _points.size());
+            [self renderPointsWithHardness:self.strokeHardness opacity:self.strokeOpacity
+                                      flow:self.strokeFlow grainScale:self.strokeGrainScale
+                            useShapeTexture:self.strokeUseShape useGrainTexture:self.strokeUseGrain];
+            [self commitStrokeToCanvas];  // This clears _points
+        }
+
         float t = (float)i / (float)numPoints;
 
         // Base position
@@ -1445,6 +1463,16 @@ void MetalStampRenderer::begin_stroke(float x, float y, float pressure) {
     impl_.isDrawing = YES;
     impl_.lastPoint = [impl_ screenToNDC:x y:y];
 
+    // Store brush settings for auto-flush during long strokes
+    BOOL useShape = brush_.shape_texture_id != 0 && impl_.currentShapeTexture != nil;
+    BOOL useGrain = brush_.grain_texture_id != 0 && impl_.currentGrainTexture != nil;
+    impl_.strokeHardness = brush_.hardness;
+    impl_.strokeOpacity = brush_.opacity;
+    impl_.strokeFlow = brush_.flow;
+    impl_.strokeGrainScale = brush_.grain_scale;
+    impl_.strokeUseShape = useShape;
+    impl_.strokeUseGrain = useGrain;
+
     // Apply pressure dynamics
     // size_pressure: 0 = constant size, 1 = full pressure variation
     // opacity_pressure: 0 = constant opacity, 1 = full pressure variation
@@ -1464,6 +1492,8 @@ void MetalStampRenderer::begin_stroke(float x, float y, float pressure) {
 
 void MetalStampRenderer::add_stroke_point(float x, float y, float pressure) {
     if (!is_ready() || !impl_.isDrawing) return;
+
+    // NOTE: Auto-flush is now handled in interpolateFrom:to: where _points.size() is accessible
 
     // Apply pressure dynamics
     float sizeFactor = 1.0f - brush_.size_pressure + (brush_.size_pressure * pressure);
