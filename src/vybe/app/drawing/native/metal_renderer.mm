@@ -2113,7 +2113,7 @@ METAL_EXPORT void metal_stamp_undo_init() {
     // On iPad Pro 13": canvas is ~2732x2048 = 22MB per snapshot
     // With interval=10: max 5 snapshots = 110MB (vs 220MB with interval=1)
     g_undo_tree->setMaxNodes(50);        // 50 undo levels
-    g_undo_tree->setSnapshotInterval(10); // Snapshot every 10 strokes
+    g_undo_tree->setSnapshotInterval(1); // Snapshot every 10 strokes
 
     // Snapshot callback - capture full canvas
     g_undo_tree->setSnapshotCallback([]() -> std::shared_ptr<undo_tree::CanvasSnapshot> {

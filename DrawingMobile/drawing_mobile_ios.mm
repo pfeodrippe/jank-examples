@@ -1710,6 +1710,7 @@ static int metal_test_main() {
     bool is_drawing = false;
     float last_x = 0, last_y = 0;
     float pen_pressure = 1.0f;  // Track Apple Pencil pressure from axis events
+    bool pencil_detected = false;  // Set true when Apple Pencil is used - disables finger drawing
 
     // Main loop
     bool running = true;
@@ -1879,15 +1880,17 @@ static int metal_test_main() {
                                 pendingFinger0_x = event.tfinger.x;
                                 pendingFinger0_y = event.tfinger.y;
 
-                                // Start drawing with single finger (for simulator testing)
-                                // On real device, Apple Pencil uses PEN events instead
-                                float canvasX, canvasY;
-                                screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
-                                metal_stamp_undo_begin_stroke(canvasX, canvasY, 1.0f);
-                                last_x = canvasX;
-                                last_y = canvasY;
-                                is_drawing = true;
-                                std::cout << "Finger drawing started at " << canvasX << ", " << canvasY << std::endl;
+                                // Start drawing with single finger (for simulator testing only)
+                                // On real device with Apple Pencil, finger drawing is disabled
+                                if (!pencil_detected) {
+                                    float canvasX, canvasY;
+                                    screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
+                                    metal_stamp_undo_begin_stroke(canvasX, canvasY, 1.0f);
+                                    last_x = canvasX;
+                                    last_y = canvasY;
+                                    is_drawing = true;
+                                    std::cout << "Finger drawing started at " << canvasX << ", " << canvasY << std::endl;
+                                }
                             } else if (pendingFinger0_id != fingerId) {
                                 // Second finger down - STOP drawing and start two-finger gesture!
                                 if (is_drawing) {
@@ -2167,6 +2170,12 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_PEN_DOWN: {
+                    // Apple Pencil detected - disable finger drawing
+                    if (!pencil_detected) {
+                        pencil_detected = true;
+                        NSLog(@"[Input] Apple Pencil detected - finger drawing disabled");
+                    }
+
                     // Pen coordinates are in window points, need to convert to pixels
                     float screenX = event.ptouch.x * pixelDensity;
                     float screenY = event.ptouch.y * pixelDensity;

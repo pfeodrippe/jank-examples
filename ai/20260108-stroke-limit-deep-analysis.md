@@ -159,3 +159,25 @@ Store current brush settings in the ObjC impl when stroke begins, then use them 
 The buffer limit is on **interpolated points** (`_points.size()`), not **raw input points** (`pointCount`).
 With small spacing (0.1), one raw point generates ~10 interpolated points.
 My first fix checked raw points - completely wrong scale!
+
+---
+
+## Additional Fix: Disable Finger Drawing When Pencil Detected
+
+### Problem
+On device with Apple Pencil, finger touches were also triggering drawing, interfering with intended input.
+
+### Solution
+Added `pencil_detected` flag:
+1. Set `true` on first `SDL_EVENT_PEN_DOWN`
+2. Guard finger drawing: `if (!pencil_detected)` before starting finger strokes
+
+### Code Changes (drawing_mobile_ios.mm)
+- Line 1713: Added `bool pencil_detected = false;`
+- Lines 2171-2175: Set flag on pen down with log message
+- Line 1885: Guard finger drawing with `if (!pencil_detected)`
+
+Now finger touches only work for:
+- UI interaction (buttons, sliders, color picker)
+- Two-finger gestures (pan, zoom, rotate)
+- Undo gesture (three-finger swipe)
