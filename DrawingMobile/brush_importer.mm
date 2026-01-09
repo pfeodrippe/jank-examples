@@ -7,6 +7,8 @@
 #include <vector>
 #include <map>
 #include <zlib.h>
+#include <spawn.h>
+#include <sys/wait.h>
 
 // External Metal texture loading functions
 extern "C" {
@@ -112,13 +114,34 @@ static int32_t g_nextBrushId = 1;
 }
 
 + (BOOL)extractZipFile:(NSURL*)zipURL toDirectory:(NSURL*)destDir {
-    // Use NSFileManager with file coordination for iOS-native ZIP extraction
-    // This is a simplified implementation - for production, use a proper ZIP library
+#if TARGET_OS_SIMULATOR
+    // On simulator, use system unzip command via posix_spawn (more reliable)
+    extern char **environ;
 
+    pid_t pid;
+    const char* args[] = {"/usr/bin/unzip", "-o", "-q",
+                          [zipURL.path UTF8String], "-d",
+                          [destDir.path UTF8String], NULL};
+
+    int status = posix_spawn(&pid, "/usr/bin/unzip", NULL, NULL, (char* const*)args, environ);
+    if (status == 0) {
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            NSLog(@"[BrushImporter] Successfully extracted ZIP using system unzip");
+            return YES;
+        } else {
+            NSLog(@"[BrushImporter] System unzip failed with exit status: %d", WEXITSTATUS(status));
+        }
+    } else {
+        NSLog(@"[BrushImporter] posix_spawn failed: %d", status);
+    }
+    // Fall through to manual extraction if system unzip fails
+#endif
+
+    // Manual ZIP extraction for device - use Central Directory for reliable sizes
     NSFileManager* fm = [NSFileManager defaultManager];
     NSError* error;
 
-    // Read the ZIP file
     NSData* zipData = [NSData dataWithContentsOfURL:zipURL options:0 error:&error];
     if (!zipData || error) {
         NSLog(@"[BrushImporter] Cannot read ZIP: %@", error);
@@ -128,44 +151,75 @@ static int32_t g_nextBrushId = 1;
     const uint8_t* bytes = (const uint8_t*)[zipData bytes];
     NSUInteger length = [zipData length];
 
-    // Basic ZIP parsing - look for local file headers (PK\x03\x04)
-    NSUInteger offset = 0;
+    // Step 1: Find End of Central Directory record (search backwards for PK\x05\x06)
+    NSInteger eocdOffset = -1;
+    for (NSInteger i = length - 22; i >= 0 && i >= (NSInteger)length - 65557; i--) {
+        if (bytes[i] == 0x50 && bytes[i+1] == 0x4B &&
+            bytes[i+2] == 0x05 && bytes[i+3] == 0x06) {
+            eocdOffset = i;
+            break;
+        }
+    }
 
-    while (offset + 30 < length) {
-        // Check for local file header signature
-        if (bytes[offset] != 0x50 || bytes[offset+1] != 0x4B ||
-            bytes[offset+2] != 0x03 || bytes[offset+3] != 0x04) {
-            // Not a local file header, might be central directory
+    if (eocdOffset < 0) {
+        NSLog(@"[BrushImporter] Cannot find ZIP end of central directory");
+        return NO;
+    }
+
+    // Read EOCD to find central directory
+    uint32_t cdOffset = bytes[eocdOffset+16] | (bytes[eocdOffset+17] << 8) |
+                        (bytes[eocdOffset+18] << 16) | (bytes[eocdOffset+19] << 24);
+    uint16_t numEntries = bytes[eocdOffset+10] | (bytes[eocdOffset+11] << 8);
+
+    NSLog(@"[BrushImporter] ZIP has %d entries, central dir at offset %u", numEntries, cdOffset);
+
+    // Step 2: Parse Central Directory entries (PK\x01\x02)
+    NSUInteger cdPos = cdOffset;
+    for (uint16_t i = 0; i < numEntries && cdPos + 46 < length; i++) {
+        if (bytes[cdPos] != 0x50 || bytes[cdPos+1] != 0x4B ||
+            bytes[cdPos+2] != 0x01 || bytes[cdPos+3] != 0x02) {
+            NSLog(@"[BrushImporter] Invalid central directory entry at %lu", cdPos);
             break;
         }
 
-        // Parse local file header
-        uint16_t flags = bytes[offset+6] | (bytes[offset+7] << 8);
-        uint16_t compression = bytes[offset+8] | (bytes[offset+9] << 8);
-        uint32_t compressedSize = bytes[offset+18] | (bytes[offset+19] << 8) |
-                                  (bytes[offset+20] << 16) | (bytes[offset+21] << 24);
-        uint32_t uncompressedSize = bytes[offset+22] | (bytes[offset+23] << 8) |
-                                    (bytes[offset+24] << 16) | (bytes[offset+25] << 24);
-        uint16_t nameLength = bytes[offset+26] | (bytes[offset+27] << 8);
-        uint16_t extraLength = bytes[offset+28] | (bytes[offset+29] << 8);
+        uint16_t compression = bytes[cdPos+10] | (bytes[cdPos+11] << 8);
+        uint32_t compressedSize = bytes[cdPos+20] | (bytes[cdPos+21] << 8) |
+                                  (bytes[cdPos+22] << 16) | (bytes[cdPos+23] << 24);
+        uint32_t uncompressedSize = bytes[cdPos+24] | (bytes[cdPos+25] << 8) |
+                                    (bytes[cdPos+26] << 16) | (bytes[cdPos+27] << 24);
+        uint16_t nameLength = bytes[cdPos+28] | (bytes[cdPos+29] << 8);
+        uint16_t extraLength = bytes[cdPos+30] | (bytes[cdPos+31] << 8);
+        uint16_t commentLength = bytes[cdPos+32] | (bytes[cdPos+33] << 8);
+        uint32_t localHeaderOffset = bytes[cdPos+42] | (bytes[cdPos+43] << 8) |
+                                     (bytes[cdPos+44] << 16) | (bytes[cdPos+45] << 24);
 
-        if (offset + 30 + nameLength > length) break;
+        if (cdPos + 46 + nameLength > length) break;
 
-        NSString* fileName = [[NSString alloc] initWithBytes:bytes+offset+30
+        NSString* fileName = [[NSString alloc] initWithBytes:bytes+cdPos+46
                                                      length:nameLength
                                                    encoding:NSUTF8StringEncoding];
 
-        offset += 30 + nameLength + extraLength;
+        cdPos += 46 + nameLength + extraLength + commentLength;
 
-        if (offset + compressedSize > length) break;
+        // Skip __MACOSX resource forks
+        if ([fileName hasPrefix:@"__MACOSX/"] || [fileName containsString:@"/__MACOSX/"]) {
+            continue;
+        }
 
         // Skip directories
         if ([fileName hasSuffix:@"/"]) {
             NSURL* dirURL = [destDir URLByAppendingPathComponent:fileName isDirectory:YES];
             [fm createDirectoryAtURL:dirURL withIntermediateDirectories:YES attributes:nil error:nil];
-            offset += compressedSize;
             continue;
         }
+
+        // Parse local file header to find data offset
+        if (localHeaderOffset + 30 > length) continue;
+        uint16_t localNameLen = bytes[localHeaderOffset+26] | (bytes[localHeaderOffset+27] << 8);
+        uint16_t localExtraLen = bytes[localHeaderOffset+28] | (bytes[localHeaderOffset+29] << 8);
+        NSUInteger dataOffset = localHeaderOffset + 30 + localNameLen + localExtraLen;
+
+        if (dataOffset + compressedSize > length) continue;
 
         // Create parent directories
         NSString* parentDir = [fileName stringByDeletingLastPathComponent];
@@ -177,17 +231,14 @@ static int32_t g_nextBrushId = 1;
         NSURL* fileURL = [destDir URLByAppendingPathComponent:fileName];
 
         // Extract file data
-        NSData* fileData;
+        NSData* fileData = nil;
         if (compression == 0) {
-            // Stored (no compression)
-            fileData = [NSData dataWithBytes:bytes+offset length:compressedSize];
+            fileData = [NSData dataWithBytes:bytes+dataOffset length:compressedSize];
         } else if (compression == 8) {
-            // Deflate compression - use zlib
-            NSData* compressedData = [NSData dataWithBytes:bytes+offset length:compressedSize];
+            NSData* compressedData = [NSData dataWithBytes:bytes+dataOffset length:compressedSize];
             fileData = [self inflateData:compressedData expectedSize:uncompressedSize];
         } else {
-            NSLog(@"[BrushImporter] Unsupported compression method: %d", compression);
-            offset += compressedSize;
+            NSLog(@"[BrushImporter] Unsupported compression: %d for %@", compression, fileName);
             continue;
         }
 
@@ -195,8 +246,6 @@ static int32_t g_nextBrushId = 1;
             [fileData writeToURL:fileURL atomically:YES];
             NSLog(@"[BrushImporter] Extracted: %@", fileName);
         }
-
-        offset += compressedSize;
     }
 
     return YES;
@@ -904,8 +953,44 @@ static int32_t g_nextBrushId = 1;
         return @[];
     }
 
-    // Recursively find all .brushset and .brush files
-    NSDirectoryEnumerator* enumerator = [fm enumeratorAtURL:tempDir
+    NSArray<NSNumber*>* brushIds = [self loadBrushesFromDirectory:tempDir source:@"zip"];
+
+    // Cleanup temp directory
+    [fm removeItemAtURL:tempDir error:nil];
+
+    return brushIds;
+}
+
++ (NSArray<NSNumber*>*)loadBundledBrushFolder:(NSString*)folderName {
+    // Load brushes from a pre-extracted folder in the app bundle
+    NSBundle* mainBundle = [NSBundle mainBundle];
+    NSFileManager* fm = [NSFileManager defaultManager];
+
+    // Find the folder in the bundle
+    NSURL* folderURL = [mainBundle URLForResource:folderName withExtension:nil];
+    if (!folderURL) {
+        NSString* resourcePath = [mainBundle resourcePath];
+        NSString* folderPath = [resourcePath stringByAppendingPathComponent:folderName];
+        if ([fm fileExistsAtPath:folderPath]) {
+            folderURL = [NSURL fileURLWithPath:folderPath];
+        }
+    }
+
+    if (!folderURL) {
+        NSLog(@"[BrushImporter] Bundled folder '%@' not found", folderName);
+        return @[];
+    }
+
+    NSLog(@"[BrushImporter] Loading brushes from bundled folder: %@", folderURL.path);
+    return [self loadBrushesFromDirectory:folderURL source:@"folder"];
+}
+
+// Shared helper: scan directory for .brushset and .brush files and load them
++ (NSArray<NSNumber*>*)loadBrushesFromDirectory:(NSURL*)dirURL source:(NSString*)source {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSMutableArray<NSNumber*>* allBrushIds = [NSMutableArray array];
+
+    NSDirectoryEnumerator* enumerator = [fm enumeratorAtURL:dirURL
                                  includingPropertiesForKeys:@[NSURLIsDirectoryKey]
                                                     options:NSDirectoryEnumerationSkipsHiddenFiles
                                                errorHandler:nil];
@@ -922,29 +1007,24 @@ static int32_t g_nextBrushId = 1;
         }
     }
 
-    NSLog(@"[BrushImporter] Found %lu .brushset files and %lu .brush files in zip",
-          (unsigned long)brushsetURLs.count, (unsigned long)brushURLs.count);
+    NSLog(@"[BrushImporter] Found %lu .brushset and %lu .brush files in %@",
+          (unsigned long)brushsetURLs.count, (unsigned long)brushURLs.count, source);
 
-    // Load all brushsets
     for (NSURL* brushsetURL in brushsetURLs) {
-        NSLog(@"[BrushImporter] Loading brushset from zip: %@", [brushsetURL lastPathComponent]);
+        NSLog(@"[BrushImporter] Loading brushset from %@: %@", source, [brushsetURL lastPathComponent]);
         NSArray<NSNumber*>* brushIds = [self importBrushSetFromURL:brushsetURL];
         [allBrushIds addObjectsFromArray:brushIds];
     }
 
-    // Load all individual brushes
     for (NSURL* brushURL in brushURLs) {
-        NSLog(@"[BrushImporter] Loading brush from zip: %@", [brushURL lastPathComponent]);
+        NSLog(@"[BrushImporter] Loading brush from %@: %@", source, [brushURL lastPathComponent]);
         int32_t brushId = [self importBrushFromURL:brushURL];
         if (brushId >= 0) {
             [allBrushIds addObject:@(brushId)];
         }
     }
 
-    // Cleanup temp directory
-    [fm removeItemAtURL:tempDir error:nil];
-
-    NSLog(@"[BrushImporter] Loaded %lu total brushes from zip", (unsigned long)allBrushIds.count);
+    NSLog(@"[BrushImporter] Loaded %lu total brushes from %@", (unsigned long)allBrushIds.count, source);
     return allBrushIds;
 }
 

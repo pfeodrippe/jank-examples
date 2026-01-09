@@ -114,9 +114,28 @@ targetTemplates:
         buildPhase: resources
       - path: brushes/WC_brushes_For_Paperlike.brushset
         buildPhase: resources
-      # Zip containing .brushset and .brush files (extracted at runtime)
-      - path: brushes/Goodtype+Curated+Brush+Pack+from+Paperlike.zip
+      # Goodtype brush pack (extracted at build time from ZIP)
+      - path: brushes/Goodtype_Extracted
         buildPhase: resources
+        type: folder
+    preBuildScripts:
+      - name: Extract Goodtype Brush Pack
+        script: |
+          cd "${PROJECT_DIR}/brushes"
+          ZIP="Goodtype+Curated+Brush+Pack+from+Paperlike.zip"
+          DEST="Goodtype_Extracted"
+          if [ -f "$ZIP" ]; then
+            rm -rf "$DEST" && mkdir -p "$DEST"
+            unzip -o -q "$ZIP" -d /tmp/goodtype_tmp
+            rm -rf /tmp/goodtype_tmp/__MACOSX
+            # Move files directly (flatten)
+            find /tmp/goodtype_tmp -name "*.brushset" -exec mv {} "$DEST/" \;
+            find /tmp/goodtype_tmp -name "*.brush" -exec mv {} "$DEST/" \;
+            rm -rf /tmp/goodtype_tmp
+            # Fix problematic filename
+            [ -f "$DEST/IdlelettersPaperlike.brushset 2" ] && mv "$DEST/IdlelettersPaperlike.brushset 2" "$DEST/IdlelettersPaperlike.brushset"
+            echo "Extracted $(ls -1 $DEST | wc -l) brushes to $DEST"
+          fi
     dependencies:
       - framework: Frameworks/SDL3.xcframework
         embed: true

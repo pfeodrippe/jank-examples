@@ -51,7 +51,7 @@
   - [x] jit sim
   - [x] jit device
 - [ ] ipad simple animation app
-  - [ ] gpu brush drawing
+  - [x] gpu brush drawing
     - [x] draw
     - [x] real-time drawing
     - [x] brush loading
@@ -60,14 +60,19 @@
     - [x] color
     - [x] eraser
     - [x] pen pressure
-    - [ ] fix device crash (nodes max of 10 maybe)
-    - [ ] mix brushes ?
+    - [x] fix device crash (nodes max of 10 maybe)
+  - [x] all brushes loaded?
+  - [ ] procreate brushes we don't have
+  - [ ] animation
+    - [ ]
+  - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders
   - [ ] export
   - [ ] 3d support (?)
   - [ ] macos (nREPL?) integration
     - [ ] can check more frames
+  - [ ] divide brushes in set sections
 - [ ] dynamic dependencies (e.g. using clang-repl) at runtime (without using precompiled shared objs)
 - [ ] add jolt to sdf project
 - [ ] ios

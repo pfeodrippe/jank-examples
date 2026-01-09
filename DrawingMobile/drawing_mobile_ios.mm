@@ -498,14 +498,14 @@ static void loadBrushesFromBundledFile() {
         }
     }
 
-    // Load brushes from zip files (containing .brushset and .brush files)
-    NSArray<NSString*>* zipNames = @[@"Goodtype+Curated+Brush+Pack+from+Paperlike"];
-    for (NSString* zipName in zipNames) {
-        NSArray<NSNumber*>* brushIds = [BrushImporter loadBundledBrushZip:zipName];
+    // Load brushes from pre-extracted folders (containing .brushset and .brush files)
+    NSArray<NSString*>* folderNames = @[@"Goodtype_Extracted"];
+    for (NSString* folderName in folderNames) {
+        NSArray<NSNumber*>* brushIds = [BrushImporter loadBundledBrushFolder:folderName];
         if (brushIds.count > 0) {
             [g_brushIds addObjectsFromArray:brushIds];
-            NSLog(@"[BrushPicker] Loaded %lu brushes from zip: %@",
-                  (unsigned long)brushIds.count, zipName);
+            NSLog(@"[BrushPicker] Loaded %lu brushes from folder: %@",
+                  (unsigned long)brushIds.count, folderName);
         }
     }
 
@@ -1730,6 +1730,11 @@ static int metal_test_main() {
                     break;
 
                 case SDL_EVENT_FINGER_DOWN: {
+                    // PALM REJECTION: Skip ALL finger input while pencil is drawing
+                    if (pencil_detected && is_drawing) {
+                        break;
+                    }
+
                     // Finger events: Used for UI interaction and two-finger gestures
                     // Drawing is done via Apple Pencil (pen events) only
 
@@ -1873,7 +1878,12 @@ static int metal_test_main() {
                             std::cout << "Three-finger gesture started (for redo)" << std::endl;
                         }
                         else if (!gesture.isActive) {
-                            if (!hasFinger0) {
+                            // When pencil is drawing, ignore finger events for gestures
+                            // (palm rejection - don't let hand touches interfere with pencil)
+                            if (pencil_detected && is_drawing) {
+                                // Ignore finger touches while drawing with pencil
+                            }
+                            else if (!hasFinger0) {
                                 // First finger down - start drawing OR wait for second finger
                                 hasFinger0 = true;
                                 pendingFinger0_id = fingerId;
@@ -1929,6 +1939,11 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_FINGER_MOTION: {
+                    // PALM REJECTION: Skip ALL finger motion while pencil is drawing
+                    if (pencil_detected && is_drawing) {
+                        break;
+                    }
+
                     float x = event.tfinger.x * width;
                     float y = event.tfinger.y * height;
                     SDL_FingerID fingerId = event.tfinger.fingerID;
@@ -2003,6 +2018,11 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_FINGER_UP: {
+                    // PALM REJECTION: Skip finger release while pencil is drawing
+                    if (pencil_detected && is_drawing) {
+                        break;
+                    }
+
                     SDL_FingerID fingerId = event.tfinger.fingerID;
 
                     // Constants for tap detection
@@ -2273,6 +2293,22 @@ static int metal_test_main() {
                         // Drawing with Apple Pencil - convert screen coords to canvas coords
                         float canvasX, canvasY;
                         screenToCanvas(screenX, screenY, canvasTransform, width, height, canvasX, canvasY);
+
+                        // PALM REJECTION: Cancel any active finger gesture/tracking
+                        // This prevents palm touches from affecting pencil drawing
+                        if (gesture.isActive) {
+                            gesture.isActive = false;
+                            NSLog(@"[PalmReject] Cancelled two-finger gesture - pencil drawing started");
+                        }
+                        if (hasFinger0) {
+                            hasFinger0 = false;
+                            pendingFinger0_id = 0;
+                            NSLog(@"[PalmReject] Cancelled finger tracking - pencil drawing started");
+                        }
+                        if (threeFingerGesture.isActive) {
+                            threeFingerGesture.isActive = false;
+                            NSLog(@"[PalmReject] Cancelled three-finger gesture - pencil drawing started");
+                        }
 
                         metal_stamp_undo_begin_stroke(canvasX, canvasY, pen_pressure);
                         last_x = canvasX;
