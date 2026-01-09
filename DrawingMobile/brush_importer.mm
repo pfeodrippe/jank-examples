@@ -858,4 +858,94 @@ static int32_t g_nextBrushId = 1;
     return [self importBrushSetFromURL:brushSetURL];
 }
 
++ (NSArray<NSNumber*>*)loadBundledBrushZip:(NSString*)zipName {
+    // Load a zip file containing .brushset and/or .brush files from the app bundle
+    NSBundle* mainBundle = [NSBundle mainBundle];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSMutableArray<NSNumber*>* allBrushIds = [NSMutableArray array];
+
+    // Find the zip file in the bundle
+    NSURL* zipURL = [mainBundle URLForResource:zipName withExtension:@"zip"];
+    if (!zipURL) {
+        // Try with the full name (in case it already has .zip)
+        zipURL = [mainBundle URLForResource:zipName withExtension:nil];
+    }
+    if (!zipURL) {
+        NSString* resourcePath = [mainBundle resourcePath];
+        NSString* zipPath = [resourcePath stringByAppendingPathComponent:
+                            [NSString stringWithFormat:@"%@.zip", zipName]];
+        if ([fm fileExistsAtPath:zipPath]) {
+            zipURL = [NSURL fileURLWithPath:zipPath];
+        }
+    }
+
+    if (!zipURL) {
+        NSLog(@"[BrushImporter] Bundled zip '%@' not found", zipName);
+        return @[];
+    }
+
+    NSLog(@"[BrushImporter] Loading brushes from bundled zip: %@", zipURL.path);
+
+    // Extract zip to temp directory using iOS-compatible extraction
+    NSURL* tempDir = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+                      URLByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
+
+    NSError* error;
+    [fm createDirectoryAtURL:tempDir withIntermediateDirectories:YES attributes:nil error:&error];
+    if (error) {
+        NSLog(@"[BrushImporter] Failed to create temp directory: %@", error);
+        return @[];
+    }
+
+    // Use our iOS-compatible ZIP extraction
+    if (![self extractZipFile:zipURL toDirectory:tempDir]) {
+        NSLog(@"[BrushImporter] Failed to extract zip file");
+        [fm removeItemAtURL:tempDir error:nil];
+        return @[];
+    }
+
+    // Recursively find all .brushset and .brush files
+    NSDirectoryEnumerator* enumerator = [fm enumeratorAtURL:tempDir
+                                 includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+                                                    options:NSDirectoryEnumerationSkipsHiddenFiles
+                                               errorHandler:nil];
+
+    NSMutableArray<NSURL*>* brushsetURLs = [NSMutableArray array];
+    NSMutableArray<NSURL*>* brushURLs = [NSMutableArray array];
+
+    for (NSURL* fileURL in enumerator) {
+        NSString* filename = [fileURL lastPathComponent];
+        if ([filename hasSuffix:@".brushset"]) {
+            [brushsetURLs addObject:fileURL];
+        } else if ([filename hasSuffix:@".brush"]) {
+            [brushURLs addObject:fileURL];
+        }
+    }
+
+    NSLog(@"[BrushImporter] Found %lu .brushset files and %lu .brush files in zip",
+          (unsigned long)brushsetURLs.count, (unsigned long)brushURLs.count);
+
+    // Load all brushsets
+    for (NSURL* brushsetURL in brushsetURLs) {
+        NSLog(@"[BrushImporter] Loading brushset from zip: %@", [brushsetURL lastPathComponent]);
+        NSArray<NSNumber*>* brushIds = [self importBrushSetFromURL:brushsetURL];
+        [allBrushIds addObjectsFromArray:brushIds];
+    }
+
+    // Load all individual brushes
+    for (NSURL* brushURL in brushURLs) {
+        NSLog(@"[BrushImporter] Loading brush from zip: %@", [brushURL lastPathComponent]);
+        int32_t brushId = [self importBrushFromURL:brushURL];
+        if (brushId >= 0) {
+            [allBrushIds addObject:@(brushId)];
+        }
+    }
+
+    // Cleanup temp directory
+    [fm removeItemAtURL:tempDir error:nil];
+
+    NSLog(@"[BrushImporter] Loaded %lu total brushes from zip", (unsigned long)allBrushIds.count);
+    return allBrushIds;
+}
+
 @end

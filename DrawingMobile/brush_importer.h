@@ -65,6 +65,9 @@ typedef struct {
 // Load brushset from absolute path
 + (NSArray<NSNumber*>*)loadBrushSetFromPath:(NSString*)path;
 
+// Load brushes from a bundled zip file containing .brushset and/or .brush files
++ (NSArray<NSNumber*>*)loadBundledBrushZip:(NSString*)zipName;
+
 @end
 
 #endif // BRUSH_IMPORTER_H

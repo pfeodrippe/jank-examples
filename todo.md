@@ -59,7 +59,8 @@
     - [x] move
     - [x] color
     - [x] eraser
-    - [ ] pen pressure
+    - [x] pen pressure
+    - [ ] fix device crash (nodes max of 10 maybe)
     - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders

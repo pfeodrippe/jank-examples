@@ -104,11 +104,14 @@ targetTemplates:
       - path: LaunchScreen.storyboard
         buildPhase: resources
       # Procreate brushsets (bundled with app)
-      - path: brushes.brushset
+      - path: brushes/brushes.brushset
         buildPhase: resources
-      - path: BetterThanBasics.brushset
+      - path: brushes/BetterThanBasics.brushset
         buildPhase: resources
-      - path: WC_brushes_For_Paperlike.brushset
+      - path: brushes/WC_brushes_For_Paperlike.brushset
+        buildPhase: resources
+      # Zip containing .brushset and .brush files (extracted at runtime)
+      - path: brushes/Goodtype+Curated+Brush+Pack+from+Paperlike.zip
         buildPhase: resources
     dependencies:
       - framework: Frameworks/SDL3.xcframework

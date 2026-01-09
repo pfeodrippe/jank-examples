@@ -259,7 +259,31 @@ void UndoTree::trimOldestBranch() {
         }
     }
 
-    if (leaves.empty()) return;
+    // If no leaves off the current path, trim oldest from the path itself
+    // (but never trim root or current node)
+    if (leaves.empty()) {
+        // For linear trees, trim the node right after root
+        // This loses the oldest undo history but keeps the tree from growing unbounded
+        if (currentPath.size() > 2) {  // Need root + at least 2 nodes
+            UndoNode* toTrim = currentPath[1];  // First node after root
+
+            // Move its children to root and update root's children
+            root_->children.clear();
+            if (!toTrim->children.empty()) {
+                for (UndoNode* child : toTrim->children) {
+                    child->parent = root_;
+                    root_->children.push_back(child);
+                }
+                root_->activeChildIndex = 0;
+            }
+
+            delete toTrim;
+            totalNodes_--;
+
+            std::cout << "[UndoTree] Trimmed oldest path node, total now " << totalNodes_ << std::endl;
+        }
+        return;
+    }
 
     // Sort by timestamp (oldest first)
     std::sort(leaves.begin(), leaves.end(), [](UndoNode* a, UndoNode* b) {

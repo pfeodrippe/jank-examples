@@ -497,6 +497,17 @@ static void loadBrushesFromBundledFile() {
         }
     }
 
+    // Load brushes from zip files (containing .brushset and .brush files)
+    NSArray<NSString*>* zipNames = @[@"Goodtype+Curated+Brush+Pack+from+Paperlike"];
+    for (NSString* zipName in zipNames) {
+        NSArray<NSNumber*>* brushIds = [BrushImporter loadBundledBrushZip:zipName];
+        if (brushIds.count > 0) {
+            [g_brushIds addObjectsFromArray:brushIds];
+            NSLog(@"[BrushPicker] Loaded %lu brushes from zip: %@",
+                  (unsigned long)brushIds.count, zipName);
+        }
+    }
+
     if (g_brushIds.count > 0) {
         g_brushesLoaded = true;
         g_selectedBrushIndex = 0;

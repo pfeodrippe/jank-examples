@@ -1276,13 +1276,25 @@ drawing-ios-jit-sync-sources:
 
 # Build JIT-only core libs for DrawingMobile simulator
 .PHONY: drawing-ios-jit-sim-core
-drawing-ios-jit-sim-core: ios-jit-sim
+drawing-ios-jit-sim-core:
+	@if [ ! -f "$(JANK_SRC)/build-ios-sim-jit/libjank.a" ]; then \
+		echo "[build-ios] libjank.a not found, building jank for iOS Simulator..."; \
+		$(MAKE) ios-jit-sim; \
+	else \
+		echo "[build-ios] libjank.a already exists, skipping jank build"; \
+	fi
 	@echo "Building JIT-only core libs for DrawingMobile simulator..."
 	./DrawingMobile/build_ios_jank_jit.sh simulator
 
 # Build JIT-only core libs for DrawingMobile device
 .PHONY: drawing-ios-jit-device-core
-drawing-ios-jit-device-core: ios-jit-device
+drawing-ios-jit-device-core:
+	@if [ ! -f "$(JANK_SRC)/build-ios-device-jit/libjank.a" ]; then \
+		echo "[build-ios] libjank.a not found, building jank for iOS Device..."; \
+		$(MAKE) ios-jit-device; \
+	else \
+		echo "[build-ios] libjank.a already exists, skipping jank build"; \
+	fi
 	@echo "Building JIT-only core libs for DrawingMobile device..."
 	./DrawingMobile/build_ios_jank_jit.sh device
 
