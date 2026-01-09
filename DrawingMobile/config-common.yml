@@ -46,6 +46,8 @@ settingGroups:
       - $(PROJECT_DIR)/../vendor
       - $(PROJECT_DIR)/Frameworks/include
       - $(PROJECT_DIR)/Frameworks/include/SDL3
+      # Native drawing code (metal renderer, undo tree)
+      - $(PROJECT_DIR)/../src/vybe/app/drawing/native
       # jank headers (uses JANK_SRC env var, substituted at xcodegen time)
       - ${JANK_SRC}/include/cpp
       - ${JANK_SRC}/src/cpp
@@ -96,10 +98,12 @@ targetTemplates:
       - path: ../vendor/vybe/vybe_flecs_jank.cpp
         compilerFlags: ["-O2"]
       # Metal stamp renderer (GPU-accelerated brush rendering)
-      - path: jank-resources/src/jank/vybe/app/drawing/native/metal_renderer.mm
+      - path: ../src/vybe/app/drawing/native/metal_renderer.mm
         compilerFlags: ["-x", "objective-c++", "-fobjc-arc"]
+      # Undo tree (branching undo history)
+      - path: ../src/vybe/app/drawing/native/undo_tree.cpp
       # Metal shaders (compiled to .metallib by Xcode)
-      - path: jank-resources/src/jank/vybe/app/drawing/native/stamp_shaders.metal
+      - path: ../src/vybe/app/drawing/native/stamp_shaders.metal
       # Common resources (bundled with app)
       - path: LaunchScreen.storyboard
         buildPhase: resources

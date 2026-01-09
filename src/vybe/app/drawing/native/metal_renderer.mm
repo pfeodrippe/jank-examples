@@ -8,7 +8,6 @@
 
 #include "metal_renderer.h"
 #include "undo_tree.hpp"
-#include "undo_tree.cpp"  // Include implementation directly for single-TU build
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -2080,10 +2079,11 @@ METAL_EXPORT void metal_stamp_undo_init() {
 
     g_undo_tree = std::make_unique<undo_tree::UndoTree>();
 
-    // Simple full snapshot approach - snapshot EVERY stroke
-    // No stroke replaying, just pure snapshots for reliability
-    g_undo_tree->setMaxNodes(10);       // Limit to ~140MB max (10 × 14MB)
-    g_undo_tree->setSnapshotInterval(1); // Snapshot every stroke
+    // Memory-efficient approach: snapshot every N strokes, replay in between
+    // On iPad Pro 13": canvas is ~2732x2048 = 22MB per snapshot
+    // With interval=10: max 5 snapshots = 110MB (vs 220MB with interval=1)
+    g_undo_tree->setMaxNodes(50);        // 50 undo levels
+    g_undo_tree->setSnapshotInterval(10); // Snapshot every 10 strokes
 
     // Snapshot callback - capture full canvas
     g_undo_tree->setSnapshotCallback([]() -> std::shared_ptr<undo_tree::CanvasSnapshot> {
@@ -2131,10 +2131,55 @@ METAL_EXPORT void metal_stamp_undo_init() {
         }
     });
 
-    // No stroke replay needed - we snapshot every stroke
-    // (callback not set, so replay won't happen)
+    // Stroke replay callback - replays a stroke from recorded data
+    g_undo_tree->setApplyStrokeCallback([](const undo_tree::StrokeData& stroke) {
+        if (!metal_stamp::g_metal_renderer || stroke.points.empty()) return;
 
-    std::cout << "[UndoTree] Initialized with full snapshots, max "
+        // Save current brush
+        auto savedBrush = metal_stamp::g_metal_renderer->get_brush();
+
+        // Apply stroke's brush settings
+        metal_stamp::BrushSettings brush;
+        brush.type = static_cast<metal_stamp::BrushType>(stroke.brush.brushType);
+        brush.size = stroke.brush.size;
+        brush.hardness = stroke.brush.hardness;
+        brush.opacity = stroke.brush.opacity;
+        brush.spacing = stroke.brush.spacing;
+        brush.flow = stroke.brush.flow;
+        brush.r = stroke.brush.r;
+        brush.g = stroke.brush.g;
+        brush.b = stroke.brush.b;
+        brush.a = stroke.brush.a;
+        brush.shape_texture_id = stroke.brush.shape_texture_id;
+        brush.grain_texture_id = stroke.brush.grain_texture_id;
+        brush.grain_scale = stroke.brush.grain_scale;
+        brush.grain_moving = stroke.brush.grain_moving;
+        brush.rotation = stroke.brush.rotation;
+        brush.rotation_jitter = stroke.brush.rotation_jitter;
+        brush.scatter = stroke.brush.scatter;
+        brush.size_pressure = stroke.brush.size_pressure;
+        brush.opacity_pressure = stroke.brush.opacity_pressure;
+        brush.size_velocity = stroke.brush.size_velocity;
+        brush.size_jitter = stroke.brush.size_jitter;
+        brush.opacity_jitter = stroke.brush.opacity_jitter;
+        metal_stamp::g_metal_renderer->set_brush(brush);
+
+        // Replay all points
+        for (const auto& pt : stroke.points) {
+            metal_stamp::g_metal_renderer->add_stroke_point(pt.x, pt.y, pt.pressure);
+        }
+
+        // Render the stroke
+        metal_stamp::g_metal_renderer->render_current_stroke();
+
+        // Restore original brush
+        metal_stamp::g_metal_renderer->set_brush(savedBrush);
+
+        std::cout << "[UndoTree] Replayed stroke with " << stroke.points.size() << " points" << std::endl;
+    });
+
+    std::cout << "[UndoTree] Initialized with snapshots every " << g_undo_tree->getSnapshotInterval()
+              << " strokes, max "
               << g_undo_tree->getMaxNodes() << " undo steps" << std::endl;
 }
 

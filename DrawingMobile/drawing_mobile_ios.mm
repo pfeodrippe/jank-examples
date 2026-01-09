@@ -481,6 +481,7 @@ static void showTexturePicker(SDL_Window* window, TextureType type) {
 static void loadBrushesFromBundledFile() {
     if (g_brushesLoaded) return;
 
+    @autoreleasepool {  // Release temp objects from brush loading
     NSLog(@"[BrushPicker] Loading bundled brushsets...");
 
     g_brushIds = [[NSMutableArray alloc] init];
@@ -517,6 +518,7 @@ static void loadBrushesFromBundledFile() {
     } else {
         NSLog(@"[BrushPicker] No brushes loaded");
     }
+    }  // End @autoreleasepool
 }
 
 // Select next brush in the list
@@ -1712,6 +1714,7 @@ static int metal_test_main() {
     // Main loop
     bool running = true;
     while (running) {
+        @autoreleasepool {  // CRITICAL: Release temporary ObjC objects each frame to prevent memory leak
         // Sync texture button state from globals (updated by picker callback)
         shapeTextureButton.hasTexture = g_shapeTextureHasTexture;
         shapeTextureButton.textureId = g_shapeTextureId;
@@ -2414,6 +2417,7 @@ static int metal_test_main() {
 
         // Small delay to avoid busy-waiting
         SDL_Delay(1);
+        }  // End @autoreleasepool - releases all temp ObjC objects
     }
 
     // Cleanup
