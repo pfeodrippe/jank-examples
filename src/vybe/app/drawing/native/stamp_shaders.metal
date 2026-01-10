@@ -403,7 +403,8 @@ struct CanvasTransformUniforms {
     float scale;          // Zoom level
     float rotation;       // Rotation in radians
     float2 pivot;         // Transform pivot in pixels
-    float2 viewportSize;  // Viewport size in pixels
+    float2 viewportSize;  // Screen/viewport size in pixels
+    float2 canvasSize;    // Canvas texture size (may differ from viewport)
 };
 
 struct CanvasBlitVertexOut {
@@ -450,8 +451,8 @@ vertex CanvasBlitVertexOut canvas_blit_vertex(
     // 5. Translate back from pivot
     p = p + transform.pivot;
 
-    // Convert to UV (0 to 1)
-    float2 uv = p / transform.viewportSize;
+    // Convert to UV (0 to 1) - use canvas size, not viewport size
+    float2 uv = p / transform.canvasSize;
 
     CanvasBlitVertexOut out;
     out.position = float4(corners[vid], 0.0, 1.0);

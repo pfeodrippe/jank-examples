@@ -80,8 +80,10 @@ struct MSLStrokeUniforms {
 
 @property (nonatomic, assign) int width;           // Point size (for input)
 @property (nonatomic, assign) int height;          // Point size (for input)
-@property (nonatomic, assign) int drawableWidth;   // Pixel size (for rendering)
-@property (nonatomic, assign) int drawableHeight;  // Pixel size (for rendering)
+@property (nonatomic, assign) int drawableWidth;   // Pixel size (for screen rendering)
+@property (nonatomic, assign) int drawableHeight;  // Pixel size (for screen rendering)
+@property (nonatomic, assign) int canvasWidth;     // Canvas texture resolution (independent of screen)
+@property (nonatomic, assign) int canvasHeight;    // Canvas texture resolution (independent of screen)
 @property (nonatomic, assign) BOOL isDrawing;
 @property (nonatomic, assign) simd_float2 lastPoint;
 @property (nonatomic, assign) simd_float2 grainOffset;  // Accumulated grain offset for moving mode
@@ -95,6 +97,12 @@ struct MSLStrokeUniforms {
 @property (nonatomic, assign) float strokeGrainScale;
 @property (nonatomic, assign) BOOL strokeUseShape;
 @property (nonatomic, assign) BOOL strokeUseGrain;
+
+// Frame texture cache for instant frame switching (animation)
+@property (nonatomic, strong) NSMutableArray<id<MTLTexture>>* frameTextureCache;
+@property (nonatomic, strong) NSMutableArray<NSNumber*>* frameCacheValid;  // Track which frames have content
+@property (nonatomic, assign) int activeFrameIndex;
+@property (nonatomic, assign) int maxFrames;  // Default 12 for Looom-style wheel
 
 - (BOOL)initWithWindow:(SDL_Window*)window width:(int)w height:(int)h;
 - (void)cleanup;
@@ -148,6 +156,13 @@ struct MSLStrokeUniforms {
 - (NSData*)captureDeltaSnapshotX:(int)x y:(int)y width:(int)w height:(int)h;
 - (BOOL)restoreDeltaSnapshot:(NSData*)pixels atX:(int)x y:(int)y width:(int)w height:(int)h;
 
+// Frame texture cache (for instant animation frame switching)
+- (BOOL)initFrameCache:(int)maxFrames;
+- (BOOL)cacheCurrentFrameToGPU:(int)frameIndex;  // Copy canvas to cached texture
+- (BOOL)switchToCachedFrame:(int)frameIndex;      // Instant switch (no CPU->GPU transfer)
+- (BOOL)isFrameCached:(int)frameIndex;
+- (void)clearFrameCache;
+
 @end
 
 // UI Rect parameters (matches shader struct)
@@ -172,7 +187,8 @@ struct CanvasTransformUniforms {
     float scale;               // Zoom level (1.0 = 100%)
     float rotation;            // Rotation in radians
     simd_float2 pivot;         // Transform pivot in pixels
-    simd_float2 viewportSize;  // Viewport size for aspect ratio
+    simd_float2 viewportSize;  // Screen/viewport size in pixels
+    simd_float2 canvasSize;    // Canvas texture size in pixels (may differ from viewport)
 };
 
 @implementation MetalStampRendererImpl {
@@ -244,8 +260,23 @@ struct CanvasTransformUniforms {
     CGSize drawableSize = self.metalLayer.drawableSize;
     self.drawableWidth = (int)drawableSize.width;
     self.drawableHeight = (int)drawableSize.height;
-    METAL_LOG("Point size: %dx%d, Drawable size: %dx%d", w, h, self.drawableWidth, self.drawableHeight);
-    NSLog(@"[Metal] Point size: %dx%d, Drawable size: %dx%d", w, h, self.drawableWidth, self.drawableHeight);
+
+    // Set canvas resolution independent of screen - default to 4K (3840x2160)
+    // This allows high-res drawing regardless of screen size
+    self.canvasWidth = 3840;
+    self.canvasHeight = 2160;
+
+    // Update canvas transform with viewport and canvas sizes
+    // Note: Actual pan/scale/rotation are set by drawing_mobile_ios.mm via metal_stamp_set_canvas_transform()
+    _canvasTransform.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
+    _canvasTransform.canvasSize = simd_make_float2(self.canvasWidth, self.canvasHeight);
+    _canvasTransform.scale = 1.0f;
+    _canvasTransform.pan = simd_make_float2(0.0f, 0.0f);
+
+    METAL_LOG("Point size: %dx%d, Drawable size: %dx%d, Canvas: %dx%d",
+              w, h, self.drawableWidth, self.drawableHeight, self.canvasWidth, self.canvasHeight);
+    NSLog(@"[Metal] Point size: %dx%d, Drawable size: %dx%d, Canvas: %dx%d",
+          w, h, self.drawableWidth, self.drawableHeight, self.canvasWidth, self.canvasHeight);
 
     // Create render pipelines
     if (![self createPipelines]) {
@@ -644,11 +675,11 @@ struct CanvasTransformUniforms {
 }
 
 - (BOOL)createCanvasTexture {
-    // Use drawable size for canvas texture (accounts for Retina scale)
+    // Use canvas resolution (independent of screen size) for high-res drawing
     MTLTextureDescriptor* desc = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                     width:self.drawableWidth
-                                    height:self.drawableHeight
+                                     width:self.canvasWidth
+                                    height:self.canvasHeight
                                  mipmapped:NO];
     desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;  // Shared allows CPU read for snapshots
@@ -662,7 +693,7 @@ struct CanvasTransformUniforms {
     // Clear to background color
     [self clearCanvasWithColor:_backgroundColor];
 
-    METAL_LOG("Created canvas texture (%dx%d)", self.drawableWidth, self.drawableHeight);
+    METAL_LOG("Created canvas texture (%dx%d)", self.canvasWidth, self.canvasHeight);
     return YES;
 }
 
@@ -824,19 +855,26 @@ struct CanvasTransformUniforms {
 }
 
 - (simd_float2)screenToNDC:(float)x y:(float)y {
-    // Convert from screen pixels to Metal NDC (-1 to 1)
-    // Note: Metal Y axis is flipped (positive Y is up)
-    float ndcX = (x / self.width) * 2.0f - 1.0f;
-    float ndcY = 1.0f - (y / self.height) * 2.0f;  // Flip Y
+    // NOTE: Input (x, y) is ALREADY in canvas pixel coordinates!
+    // The caller (drawing_mobile_ios.mm screenToCanvas) has already applied
+    // the inverse view transform to convert screen → canvas coordinates.
+    //
+    // We just need to convert canvas pixels to NDC for the stroke shader.
+
+    // Convert canvas pixels to NDC (-1 to 1)
+    float ndcX = (x / self.canvasWidth) * 2.0f - 1.0f;
+    float ndcY = 1.0f - (y / self.canvasHeight) * 2.0f;  // Flip Y
+
     return simd_make_float2(ndcX, ndcY);
 }
 
 - (void)interpolateFrom:(simd_float2)from to:(simd_float2)to
               pointSize:(float)size color:(simd_float4)color spacing:(float)spacing
                 scatter:(float)scatter sizeJitter:(float)sizeJitter opacityJitter:(float)opacityJitter {
-    // Calculate distance in screen space
-    float dx = (to.x - from.x) * self.width * 0.5f;
-    float dy = (to.y - from.y) * self.height * 0.5f;
+    // Calculate distance in CANVAS space (not screen space!)
+    // NDC range is -1 to 1, so multiply by canvasSize/2 to get canvas pixels
+    float dx = (to.x - from.x) * self.canvasWidth * 0.5f;
+    float dy = (to.y - from.y) * self.canvasHeight * 0.5f;
     float distance = sqrtf(dx * dx + dy * dy);
 
     // Calculate number of points needed
@@ -874,7 +912,7 @@ struct CanvasTransformUniforms {
         // Apply scatter (random offset perpendicular to stroke)
         if (scatter > 0.0f) {
             float scatterAmount = ((float)rand() / RAND_MAX - 0.5f) * 2.0f * scatter;
-            float scatterNDC = scatterAmount * size / self.width;  // Convert to NDC
+            float scatterNDC = scatterAmount * size / self.canvasWidth;  // Convert to NDC using canvas size
             pos.x += perpX * scatterNDC;
             pos.y += perpY * scatterNDC;
         }
@@ -927,9 +965,9 @@ struct CanvasTransformUniforms {
     // Update point buffer
     memcpy(self.pointBuffer.contents, _points.data(), sizeof(MSLPoint) * _points.size());
 
-    // Update uniforms - use drawable size for proper Retina support
+    // Update uniforms - use canvas size since we're rendering to canvas texture
     MSLStrokeUniforms uniforms;
-    uniforms.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
+    uniforms.viewportSize = simd_make_float2(self.canvasWidth, self.canvasHeight);
     uniforms.hardness = hardness;
     uniforms.opacity = opacity;
     uniforms.flow = flow;
@@ -949,6 +987,11 @@ struct CanvasTransformUniforms {
     passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
 
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
+
+    // CRITICAL: Set viewport to canvas texture size, not screen size!
+    // Without this, strokes outside the screen viewport won't be rendered to the 4K canvas
+    MTLViewport viewport = {0, 0, (double)self.canvasWidth, (double)self.canvasHeight, 0.0, 1.0};
+    [encoder setViewport:viewport];
 
     // Select pipeline based on brush type and textures
     id<MTLRenderPipelineState> pipeline = self.stampPipeline;  // Default
@@ -1114,6 +1157,7 @@ struct CanvasTransformUniforms {
     // Pivot is in pixel coordinates (matches shader which works in pixel space)
     _canvasTransform.pivot = simd_make_float2(pivotX, pivotY);
     _canvasTransform.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
+    _canvasTransform.canvasSize = simd_make_float2(self.canvasWidth, self.canvasHeight);
 }
 
 - (void)drawCanvasToTexture:(id<MTLTexture>)targetTexture {
@@ -1122,8 +1166,9 @@ struct CanvasTransformUniforms {
         return;
     }
 
-    // Update viewport size in case it changed
+    // Update viewport and canvas sizes in case they changed
     _canvasTransform.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
+    _canvasTransform.canvasSize = simd_make_float2(self.canvasWidth, self.canvasHeight);
 
     id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
 
@@ -1152,11 +1197,9 @@ struct CanvasTransformUniforms {
 }
 
 - (BOOL)hasCanvasTransform {
-    // Check if canvas has any transform applied
-    return _canvasTransform.scale != 1.0f ||
-           _canvasTransform.rotation != 0.0f ||
-           _canvasTransform.pan.x != 0.0f ||
-           _canvasTransform.pan.y != 0.0f;
+    // Always return YES now that canvas can be different size from screen
+    // This ensures the blit pipeline is used for proper scaling
+    return YES;
 }
 
 // =============================================================================
@@ -1166,8 +1209,8 @@ struct CanvasTransformUniforms {
 - (NSData*)captureCanvasSnapshot {
     if (!self.canvasTexture) return nil;
 
-    int w = self.drawableWidth;
-    int h = self.drawableHeight;
+    int w = self.canvasWidth;
+    int h = self.canvasHeight;
     size_t bytesPerRow = w * 4;
     size_t totalBytes = bytesPerRow * h;
 
@@ -1188,8 +1231,8 @@ struct CanvasTransformUniforms {
 - (BOOL)restoreCanvasSnapshot:(NSData*)pixels width:(int)width height:(int)height {
     if (!self.canvasTexture || !pixels) return NO;
 
-    int texW = self.drawableWidth;
-    int texH = self.drawableHeight;
+    int texW = self.canvasWidth;
+    int texH = self.canvasHeight;
 
     // Check if dimensions match
     if (width != texW || height != texH) {
@@ -1212,7 +1255,6 @@ struct CanvasTransformUniforms {
                             withBytes:pixels.bytes
                           bytesPerRow:bytesPerRow];
 
-    std::cout << "[Snapshot] Restored " << width << "x" << height << std::endl;
     return YES;
 }
 
@@ -1223,8 +1265,8 @@ struct CanvasTransformUniforms {
 - (NSData*)captureDeltaSnapshotX:(int)x y:(int)y width:(int)w height:(int)h {
     if (!self.canvasTexture) return nil;
 
-    int canvasW = self.drawableWidth;
-    int canvasH = self.drawableHeight;
+    int canvasW = self.canvasWidth;
+    int canvasH = self.canvasHeight;
 
     // Clamp region to canvas bounds
     if (x < 0) { w += x; x = 0; }
@@ -1252,8 +1294,8 @@ struct CanvasTransformUniforms {
 - (BOOL)restoreDeltaSnapshot:(NSData*)pixels atX:(int)x y:(int)y width:(int)w height:(int)h {
     if (!self.canvasTexture || !pixels) return NO;
 
-    int canvasW = self.drawableWidth;
-    int canvasH = self.drawableHeight;
+    int canvasW = self.canvasWidth;
+    int canvasH = self.canvasHeight;
 
     // Validate bounds
     if (x < 0 || y < 0 || x + w > canvasW || y + h > canvasH) {
@@ -1277,6 +1319,115 @@ struct CanvasTransformUniforms {
                           bytesPerRow:bytesPerRow];
 
     return YES;
+}
+
+// =============================================================================
+// Frame Texture Cache - For instant animation frame switching
+// =============================================================================
+
+- (BOOL)initFrameCache:(int)maxFrames {
+    if (!self.device || !self.canvasTexture) return NO;
+
+    self.maxFrames = maxFrames;
+    self.activeFrameIndex = 0;
+    self.frameTextureCache = [NSMutableArray arrayWithCapacity:maxFrames];
+    self.frameCacheValid = [NSMutableArray arrayWithCapacity:maxFrames];
+
+    // Pre-allocate textures for all frames (same size as canvas - 4K resolution)
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:self.canvasWidth
+                                    height:self.canvasHeight
+                                 mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
+    desc.storageMode = MTLStorageModePrivate;  // GPU-only for fastest access
+
+    for (int i = 0; i < maxFrames; i++) {
+        id<MTLTexture> frameTexture = [self.device newTextureWithDescriptor:desc];
+        if (!frameTexture) {
+            std::cout << "[FrameCache] Failed to create texture for frame " << i << std::endl;
+            return NO;
+        }
+        [self.frameTextureCache addObject:frameTexture];
+        [self.frameCacheValid addObject:@NO];  // Not cached yet
+    }
+
+    std::cout << "[FrameCache] Initialized " << maxFrames << " frame textures ("
+              << self.canvasWidth << "x" << self.canvasHeight << ")" << std::endl;
+    return YES;
+}
+
+- (BOOL)cacheCurrentFrameToGPU:(int)frameIndex {
+    if (!self.frameTextureCache || frameIndex < 0 || frameIndex >= self.maxFrames) return NO;
+    if (!self.canvasTexture) return NO;
+
+    id<MTLTexture> targetTexture = self.frameTextureCache[frameIndex];
+    if (!targetTexture) return NO;
+
+    // Use blit encoder to copy canvas to frame texture (GPU-to-GPU, very fast)
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+
+    [blitEncoder copyFromTexture:self.canvasTexture
+                     sourceSlice:0
+                     sourceLevel:0
+                    sourceOrigin:MTLOriginMake(0, 0, 0)
+                      sourceSize:MTLSizeMake(self.canvasWidth, self.canvasHeight, 1)
+                       toTexture:targetTexture
+                destinationSlice:0
+                destinationLevel:0
+               destinationOrigin:MTLOriginMake(0, 0, 0)];
+
+    [blitEncoder endEncoding];
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];  // Ensure copy is done
+
+    // Mark as valid
+    self.frameCacheValid[frameIndex] = @YES;
+    return YES;
+}
+
+- (BOOL)switchToCachedFrame:(int)frameIndex {
+    if (!self.frameTextureCache || frameIndex < 0 || frameIndex >= self.maxFrames) return NO;
+
+    id<MTLTexture> sourceTexture = self.frameTextureCache[frameIndex];
+    if (!sourceTexture || !self.canvasTexture) return NO;
+
+    // Copy cached frame to canvas (GPU-to-GPU, instant - no CPU involved!)
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+
+    [blitEncoder copyFromTexture:sourceTexture
+                     sourceSlice:0
+                     sourceLevel:0
+                    sourceOrigin:MTLOriginMake(0, 0, 0)
+                      sourceSize:MTLSizeMake(self.canvasWidth, self.canvasHeight, 1)
+                       toTexture:self.canvasTexture
+                destinationSlice:0
+                destinationLevel:0
+               destinationOrigin:MTLOriginMake(0, 0, 0)];
+
+    [blitEncoder endEncoding];
+    [commandBuffer commit];
+    // Don't wait - let GPU do it asynchronously for smoothest experience
+
+    self.activeFrameIndex = frameIndex;
+    return YES;
+}
+
+- (BOOL)isFrameCached:(int)frameIndex {
+    if (!self.frameTextureCache || !self.frameCacheValid) return NO;
+    if (frameIndex < 0 || frameIndex >= self.maxFrames) return NO;
+    return [self.frameCacheValid[frameIndex] boolValue];
+}
+
+- (void)clearFrameCache {
+    [self.frameTextureCache removeAllObjects];
+    self.frameTextureCache = nil;
+    [self.frameCacheValid removeAllObjects];
+    self.frameCacheValid = nil;
+    self.maxFrames = 0;
+    self.activeFrameIndex = 0;
 }
 
 @end
@@ -1323,8 +1474,9 @@ bool MetalStampRenderer::init(void* sdl_window, int width, int height) {
         return false;
     }
 
-    width_ = width;
-    height_ = height;
+    // Store canvas dimensions (not screen dimensions)
+    width_ = impl_.canvasWidth;
+    height_ = impl_.canvasHeight;
     initialized_ = true;
     return true;
 }
@@ -1681,6 +1833,35 @@ void MetalStampRenderer::set_canvas_transform(float panX, float panY, float scal
 
     [impl_ setCanvasTransformPanX:panX panY:panY scale:scale rotation:rotation
                           pivotX:pivotX pivotY:pivotY];
+}
+
+// =============================================================================
+// Frame Cache Methods - For instant animation frame switching (GPU-to-GPU)
+// =============================================================================
+
+bool MetalStampRenderer::init_frame_cache(int maxFrames) {
+    if (!is_ready()) return false;
+    return [impl_ initFrameCache:maxFrames];
+}
+
+bool MetalStampRenderer::cache_frame_to_gpu(int frameIndex) {
+    if (!is_ready()) return false;
+    return [impl_ cacheCurrentFrameToGPU:frameIndex];
+}
+
+bool MetalStampRenderer::switch_to_cached_frame(int frameIndex) {
+    if (!is_ready()) return false;
+    return [impl_ switchToCachedFrame:frameIndex];
+}
+
+bool MetalStampRenderer::is_frame_cached(int frameIndex) {
+    if (!is_ready()) return false;
+    return [impl_ isFrameCached:frameIndex];
+}
+
+void MetalStampRenderer::clear_frame_cache() {
+    if (!is_ready()) return;
+    [impl_ clearFrameCache];
 }
 
 // =============================================================================
@@ -2486,6 +2667,45 @@ METAL_EXPORT void metal_stamp_restore_snapshot(const uint8_t* pixels, int size, 
 
 METAL_EXPORT void metal_stamp_free_snapshot(uint8_t* pixels) {
     if (pixels) free(pixels);
+}
+
+// =============================================================================
+// Frame Cache API - For instant animation frame switching
+// =============================================================================
+
+METAL_EXPORT bool metal_stamp_init_frame_cache(int maxFrames) {
+    if (!metal_stamp::g_metal_renderer) return false;
+    return metal_stamp::g_metal_renderer->init_frame_cache(maxFrames);
+}
+
+METAL_EXPORT bool metal_stamp_cache_frame_to_gpu(int frameIndex) {
+    if (!metal_stamp::g_metal_renderer) return false;
+    return metal_stamp::g_metal_renderer->cache_frame_to_gpu(frameIndex);
+}
+
+METAL_EXPORT bool metal_stamp_switch_to_cached_frame(int frameIndex) {
+    if (!metal_stamp::g_metal_renderer) return false;
+    return metal_stamp::g_metal_renderer->switch_to_cached_frame(frameIndex);
+}
+
+METAL_EXPORT bool metal_stamp_is_frame_cached(int frameIndex) {
+    if (!metal_stamp::g_metal_renderer) return false;
+    return metal_stamp::g_metal_renderer->is_frame_cached(frameIndex);
+}
+
+METAL_EXPORT void metal_stamp_clear_frame_cache() {
+    if (!metal_stamp::g_metal_renderer) return;
+    metal_stamp::g_metal_renderer->clear_frame_cache();
+}
+
+METAL_EXPORT int metal_stamp_get_canvas_width() {
+    if (!metal_stamp::g_metal_renderer) return 0;
+    return metal_stamp::g_metal_renderer->get_canvas_width();
+}
+
+METAL_EXPORT int metal_stamp_get_canvas_height() {
+    if (!metal_stamp::g_metal_renderer) return 0;
+    return metal_stamp::g_metal_renderer->get_canvas_height();
 }
 
 } // extern "C"

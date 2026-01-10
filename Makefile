@@ -1376,6 +1376,8 @@ drawing-ios-jit-sim-run: drawing-ios-jit-sim-build drawing-ios-compile-server-si
 	xcrun simctl boot 'iPad Pro 13-inch (M4)' 2>/dev/null || true
 	@echo "Terminating old app instance (if running)..."
 	-xcrun simctl terminate 'iPad Pro 13-inch (M4)' com.vybe.DrawingMobile-JIT-Sim 2>/dev/null || true
+	-pkill -f "DrawingMobile-JIT-Sim" 2>/dev/null || true
+	@sleep 1
 	@echo "Installing DrawingMobile..."
 	xcrun simctl install 'iPad Pro 13-inch (M4)' $$(find ~/Library/Developer/Xcode/DerivedData -name 'DrawingMobile-JIT-Sim.app' -type d ! -path "*/Index.noindex/*" 2>/dev/null | head -1)
 	@echo "Launching app..."

@@ -248,6 +248,44 @@ static void call_jank_main_impl() {
     }
 }
 
+// Call vybe.app.drawing.metal/-main (just starts nREPL for Metal test mode)
+static void call_jank_metal_main() {
+    try {
+        jank::runtime::context::binding_scope bindings;
+
+        auto require_var = jank::runtime::__rt_ctx->find_var(
+            jank::runtime::make_box<jank::runtime::obj::symbol>("clojure.core/require")
+        );
+        if (require_var.is_nil()) {
+            std::cerr << "[metal] Could not find clojure.core/require" << std::endl;
+            return;
+        }
+
+        std::cout << "[metal] Loading vybe.app.drawing.metal..." << std::endl;
+        jank::runtime::dynamic_call(
+            require_var->deref(),
+            jank::runtime::make_box<jank::runtime::obj::symbol>("vybe.app.drawing.metal")
+        );
+
+        auto main_var = jank::runtime::__rt_ctx->intern_var("vybe.app.drawing.metal", "-main");
+        if (!main_var.is_ok()) {
+            std::cerr << "[metal] Could not find vybe.app.drawing.metal/-main" << std::endl;
+            return;
+        }
+
+        std::cout << "[metal] Starting nREPL on port 5580..." << std::endl;
+        jank::runtime::dynamic_call(
+            main_var.expect_ok()->deref(),
+            jank::runtime::make_box<jank::runtime::obj::integer>(5580)
+        );
+
+    } catch (jtl::ref<jank::error::base> const& e) {
+        std::cerr << "[metal] nREPL error: " << e->message << std::endl;
+    } catch (std::exception& e) {
+        std::cerr << "[metal] nREPL error: " << e.what() << std::endl;
+    }
+}
+
 // =============================================================================
 // Metal Test Mode - Pure C++ SDL + Metal rendering (no jank)
 // =============================================================================
@@ -1195,10 +1233,12 @@ struct ThreeFingerGesture {
 // =============================================================================
 
 struct FrameStore {
-    std::vector<std::vector<uint8_t>> frames;  // Canvas snapshots per frame
+    std::vector<std::vector<uint8_t>> frames;  // CPU backup snapshots per frame
     int currentFrame = 0;
     int canvasWidth = 0;
     int canvasHeight = 0;
+    bool gpuCacheReady = false;
+    static const int MAX_FRAMES = 12;  // Looom-style wheel
 };
 
 static FrameStore g_frameStore;
@@ -1207,54 +1247,72 @@ static void framestore_init(int w, int h) {
     g_frameStore.canvasWidth = w;
     g_frameStore.canvasHeight = h;
     g_frameStore.frames.clear();
-    g_frameStore.frames.push_back({});  // Start with one empty frame
+    g_frameStore.frames.resize(FrameStore::MAX_FRAMES);  // Pre-allocate 12 frames
     g_frameStore.currentFrame = 0;
+
+    // Initialize GPU frame cache for instant switching
+    g_frameStore.gpuCacheReady = metal_stamp_init_frame_cache(FrameStore::MAX_FRAMES);
+    if (g_frameStore.gpuCacheReady) {
+        NSLog(@"[FrameStore] GPU frame cache initialized (%d frames)", FrameStore::MAX_FRAMES);
+    } else {
+        NSLog(@"[FrameStore] GPU frame cache FAILED - falling back to CPU");
+    }
 }
 
 static void framestore_save_current() {
-    if (g_frameStore.currentFrame >= 0 && g_frameStore.currentFrame < (int)g_frameStore.frames.size()) {
-        uint8_t* pixels = nullptr;
-        int size = metal_stamp_capture_snapshot(&pixels);
-        if (pixels && size > 0) {
-            g_frameStore.frames[g_frameStore.currentFrame].assign(pixels, pixels + size);
-            metal_stamp_free_snapshot(pixels);
-            NSLog(@"[FrameStore] Saved frame %d (%d bytes)",
-                  g_frameStore.currentFrame, size);
-        }
+    int frame = g_frameStore.currentFrame;
+    if (frame < 0 || frame >= FrameStore::MAX_FRAMES) return;
+
+    // Always cache to GPU for instant switching
+    if (g_frameStore.gpuCacheReady) {
+        metal_stamp_cache_frame_to_gpu(frame);
+    }
+
+    // Also save CPU backup (for persistence/undo)
+    uint8_t* pixels = nullptr;
+    int size = metal_stamp_capture_snapshot(&pixels);
+    if (pixels && size > 0) {
+        g_frameStore.frames[frame].assign(pixels, pixels + size);
+        metal_stamp_free_snapshot(pixels);
     }
 }
 
 static void framestore_load_frame(int index) {
-    if (index < 0) return;
+    if (index < 0 || index >= FrameStore::MAX_FRAMES) return;
 
-    // Expand frames vector if needed
-    while (index >= (int)g_frameStore.frames.size()) {
-        g_frameStore.frames.push_back({});
+    // Try GPU cache first (INSTANT - no CPU->GPU transfer!)
+    if (g_frameStore.gpuCacheReady && metal_stamp_is_frame_cached(index)) {
+        metal_stamp_switch_to_cached_frame(index);
+        g_frameStore.currentFrame = index;
+        return;
     }
 
+    // Fall back to CPU restore
     auto& pixels = g_frameStore.frames[index];
     if (!pixels.empty()) {
         metal_stamp_restore_snapshot(pixels.data(), (int)pixels.size(),
                                      g_frameStore.canvasWidth, g_frameStore.canvasHeight);
-        NSLog(@"[FrameStore] Loaded frame %d", index);
+        // Also cache to GPU for next time
+        if (g_frameStore.gpuCacheReady) {
+            metal_stamp_cache_frame_to_gpu(index);
+        }
     } else {
         // Empty frame - clear canvas to paper white
         metal_stamp_clear_canvas(0.95f, 0.95f, 0.92f, 1.0f);
-        NSLog(@"[FrameStore] New empty frame %d", index);
+        // Cache the empty frame too
+        if (g_frameStore.gpuCacheReady) {
+            metal_stamp_cache_frame_to_gpu(index);
+        }
     }
     g_frameStore.currentFrame = index;
 }
 
 static void framestore_goto_frame(int index) {
     if (index == g_frameStore.currentFrame) return;
+    if (index < 0 || index >= FrameStore::MAX_FRAMES) return;
 
     // Save current frame first
     framestore_save_current();
-
-    // Add new frames if needed
-    while (index >= (int)g_frameStore.frames.size()) {
-        g_frameStore.frames.push_back({});
-    }
 
     // Load target frame
     framestore_load_frame(index);
@@ -1664,6 +1722,16 @@ static int metal_test_main() {
     }
     std::cout << "Metal renderer initialized!" << std::endl;
 
+    // Initialize jank runtime and start nREPL via vybe.app.drawing.metal namespace
+    std::cout << "Initializing jank runtime for nREPL..." << std::endl;
+    if (init_jank_runtime_on_large_stack()) {
+        std::cout << "Jank runtime initialized!" << std::endl;
+        // Call vybe.app.drawing.metal/-main to start nREPL
+        call_jank_metal_main();
+    } else {
+        std::cerr << "Warning: Failed to initialize jank runtime (nREPL unavailable)" << std::endl;
+    }
+
     // Initialize undo tree for branching undo history
     metal_stamp_undo_init();
     std::cout << "Undo tree initialized!" << std::endl;
@@ -1826,10 +1894,30 @@ static int metal_test_main() {
     // Initialize Canvas Transform and Gesture State
     // =============================================================================
 
+    // Calculate default transform to fit and center canvas on screen
+    // Canvas is 4K (3840x2160), screen may have different aspect ratio
+    const float canvasWidth = 3840.0f;
+    const float canvasHeight = 2160.0f;
+    float scaleX = (float)width / canvasWidth;
+    float scaleY = (float)height / canvasHeight;
+    float defaultScale = fminf(scaleX, scaleY);  // Fit entire canvas
+
+    // Calculate pan to center the canvas
+    // Math: for screenCenter to map to canvasCenter in shader:
+    // pan = (screenCenter - canvasCenter) * scale
+    float screenCenterX = width / 2.0f;
+    float screenCenterY = height / 2.0f;
+    float canvasCenterX = canvasWidth / 2.0f;
+    float canvasCenterY = canvasHeight / 2.0f;
+    float defaultPanX = (screenCenterX - canvasCenterX) * defaultScale;
+    float defaultPanY = (screenCenterY - canvasCenterY) * defaultScale;
+
+    NSLog(@"[Canvas] Default transform: scale=%.3f, pan=(%.1f, %.1f)", defaultScale, defaultPanX, defaultPanY);
+
     CanvasTransform canvasTransform = {
-        .panX = 0.0f,
-        .panY = 0.0f,
-        .scale = 1.0f,
+        .panX = defaultPanX,
+        .panY = defaultPanY,
+        .scale = defaultScale,
         .rotation = 0.0f,
         .pivotX = width / 2.0f,
         .pivotY = height / 2.0f
@@ -1867,11 +1955,11 @@ static int metal_test_main() {
         .isAnimating = false,
         .startTimeMs = 0,
         .durationMs = 250.0f,  // 250ms for smooth but snappy feel
-        .startPanX = 0, .startPanY = 0,
-        .startScale = 1.0f,
+        .startPanX = defaultPanX, .startPanY = defaultPanY,
+        .startScale = defaultScale,
         .startRotation = 0.0f,
-        .targetPanX = 0, .targetPanY = 0,
-        .targetScale = 1.0f,
+        .targetPanX = defaultPanX, .targetPanY = defaultPanY,
+        .targetScale = defaultScale,
         .targetRotation = 0.0f
     };
 
@@ -2232,7 +2320,6 @@ static int metal_test_main() {
                         // Load frame without saving (save happened at drag start)
                         if (newFrame != framestore_get_current_frame()) {
                             framestore_load_frame(newFrame);
-                            NSLog(@"[FrameWheel] Frame %d (rotation=%.3f)", newFrame, frameWheel.rotation);
                         }
                     }
                     break;
@@ -2333,10 +2420,10 @@ static int metal_test_main() {
                                     resetAnim.startScale = canvasTransform.scale;
                                     resetAnim.startRotation = canvasTransform.rotation;
 
-                                    // Target: default view
-                                    resetAnim.targetPanX = 0.0f;
-                                    resetAnim.targetPanY = 0.0f;
-                                    resetAnim.targetScale = 1.0f;
+                                    // Target: default view (centered canvas with fitScale)
+                                    resetAnim.targetPanX = defaultPanX;
+                                    resetAnim.targetPanY = defaultPanY;
+                                    resetAnim.targetScale = defaultScale;
                                     resetAnim.targetRotation = 0.0f;
 
                                     std::cout << "🔄 Quick-pinch: Animating to default view..." << std::endl;

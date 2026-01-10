@@ -63,7 +63,10 @@
     - [x] fix device crash (nodes max of 10 maybe)
   - [x] all brushes loaded?
   - [ ] animation
-    - [ ]
+    - [x] wheel
+    - [x] fix wheel image loading hiccup (e.g. by GPU pre-caching)
+    - [ ] fix device loading
+    - [ ] draw while moving the wheel
   - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders

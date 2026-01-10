@@ -198,6 +198,13 @@ public:
     std::vector<uint8_t> capture_delta_snapshot(int x, int y, int w, int h);
     bool restore_delta_snapshot(const std::vector<uint8_t>& pixels, int x, int y, int w, int h);
 
+    // Frame cache for instant animation frame switching (GPU-to-GPU)
+    bool init_frame_cache(int maxFrames);
+    bool cache_frame_to_gpu(int frameIndex);
+    bool switch_to_cached_frame(int frameIndex);
+    bool is_frame_cached(int frameIndex);
+    void clear_frame_cache();
+
     // Get canvas dimensions
     int get_canvas_width() const { return width_; }
     int get_canvas_height() const { return height_; }
@@ -388,5 +395,30 @@ void metal_stamp_undo_cancel_stroke();
 int metal_stamp_capture_snapshot(uint8_t** out_pixels);
 void metal_stamp_restore_snapshot(const uint8_t* pixels, int size, int width, int height);
 void metal_stamp_free_snapshot(uint8_t* pixels);
+
+// =============================================================================
+// Frame Cache API - For instant animation frame switching (GPU-to-GPU)
+// =============================================================================
+// These functions use GPU texture caching for instant frame switching during
+// wheel rotation. Much faster than CPU->GPU snapshot restore.
+
+// Initialize frame cache with maxFrames textures (e.g., 12 for Looom-style wheel)
+bool metal_stamp_init_frame_cache(int maxFrames);
+
+// Cache current canvas to GPU texture at frameIndex (call after drawing on frame)
+bool metal_stamp_cache_frame_to_gpu(int frameIndex);
+
+// Switch to cached frame INSTANTLY (GPU-to-GPU copy, no CPU involved)
+bool metal_stamp_switch_to_cached_frame(int frameIndex);
+
+// Check if frame has been cached
+bool metal_stamp_is_frame_cached(int frameIndex);
+
+// Clear all cached frame textures
+void metal_stamp_clear_frame_cache();
+
+// Canvas size getters
+int metal_stamp_get_canvas_width();
+int metal_stamp_get_canvas_height();
 
 } // extern "C"

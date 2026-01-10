@@ -1,0 +1,43 @@
+(ns vybe.app.drawing.metal
+  "Minimal namespace for Metal test mode - just starts nREPL."
+  (:require [jank.nrepl-server.server :as server]
+            ["vybe/app/drawing/native/metal_renderer.h" :as metal :scope ""]))
+
+(defn -main
+  "Start nREPL server for Metal test mode. Default port 5580."
+  ([] (-main 5580))
+  ([nrepl-port]
+   (println "")
+   (println "========================================")
+   (println "   Metal Test Mode - nREPL Only")
+   (println "========================================")
+   (println "")
+
+   (server/start-server {:port nrepl-port :bind "0.0.0.0"})
+   (println (str "nREPL server started on port " nrepl-port))))
+
+;; Frame cache control functions for testing
+(defn init-frame-cache!
+  "Initialize GPU frame cache with n frames (default 12)."
+  ([] (init-frame-cache! 12))
+  ([n] (metal/metal_stamp_init_frame_cache n)))
+
+(defn cache-frame!
+  "Cache current canvas to GPU texture at frame index."
+  [frame-idx]
+  (metal/metal_stamp_cache_frame_to_gpu frame-idx))
+
+(defn switch-frame!
+  "Switch to cached frame (GPU-to-GPU, instant)."
+  [frame-idx]
+  (metal/metal_stamp_switch_to_cached_frame frame-idx))
+
+(defn frame-cached?
+  "Check if frame is cached."
+  [frame-idx]
+  (metal/metal_stamp_is_frame_cached frame-idx))
+
+(defn clear-frame-cache!
+  "Clear all cached frames."
+  []
+  (metal/metal_stamp_clear_frame_cache))
