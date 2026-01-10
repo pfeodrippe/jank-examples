@@ -472,7 +472,9 @@ fragment half4 canvas_blit_fragment(
     }
 
     float4 color = canvasTexture.sample(canvasSampler, in.uv);
-    return half4(color);
+    // Force alpha to 1.0 to prevent CAMetalLayer compositing with background
+    // This fixes the issue where canvas appears darker when alpha < 1.0
+    return half4(half3(color.rgb), half(1.0));
 }
 
 // =============================================================================

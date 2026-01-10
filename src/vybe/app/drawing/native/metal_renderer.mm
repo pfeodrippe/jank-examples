@@ -519,14 +519,16 @@ struct CanvasTransformUniforms {
     pipelineDesc.fragmentFunction = fragmentFunc;
     pipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
-    // Enable alpha blending (Porter-Duff "over")
+    // Enable alpha blending (Porter-Duff "over" for RGB, preserve alpha for canvas)
+    // RGB: src * src.a + dst * (1 - src.a) - standard alpha blend for color
+    // Alpha: keep destination alpha at 1.0 - prevents canvas darkening when blitted to gray background
     pipelineDesc.colorAttachments[0].blendingEnabled = YES;
     pipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
     pipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
     pipelineDesc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-    pipelineDesc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+    pipelineDesc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;  // Don't modify dest alpha
     pipelineDesc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-    pipelineDesc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    pipelineDesc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;  // Keep dest alpha = 1.0
 
     self.stampPipeline = [self.device newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
     if (!self.stampPipeline) {

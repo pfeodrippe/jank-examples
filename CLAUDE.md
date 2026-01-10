@@ -68,3 +68,9 @@ Rule 10 - **Use tee for commands with potential failures**
 - This avoids running slow commands twice just to see the full error output
 - Example: `make ios-aot-sim-run 2>&1 | tee /tmp/ios_build.txt`
 - Then read the file with `Read` tool or `cat /tmp/ios_build.txt` if needed
+
+Rule 11 - **Check long-running commands every 60 seconds**
+- NEVER set timeout > 60 seconds for build commands
+- Use `block: false` or `timeout: 60000` and check periodically
+- Check status, if still running wait another 60s, repeat until done
+- This allows user to see progress and interrupt if needed

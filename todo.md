@@ -65,8 +65,12 @@
   - [ ] animation
     - [x] wheel
     - [x] fix wheel image loading hiccup (e.g. by GPU pre-caching)
-    - [ ] fix device loading
+    - [x] fix device loading
+    - [ ] bg colour
+    - [ ] loom-like control for frames (one finger)
     - [ ] draw while moving the wheel
+    - [ ] fix undo/redo for frames
+    - [ ] save only diff?
   - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders

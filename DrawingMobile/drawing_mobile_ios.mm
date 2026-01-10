@@ -341,6 +341,12 @@ static SDL_FingerID g_brushPickerDragFingerId = 0; // Finger used for scrolling
 // Eraser mode state
 static bool g_eraserMode = false;  // When true, paint with background color
 
+// Paper background color (off-white, matches weave :bg-color [0.95 0.95 0.92 1.0])
+static const float PAPER_BG_R = 0.95f;
+static const float PAPER_BG_G = 0.95f;
+static const float PAPER_BG_B = 0.92f;
+static const float PAPER_BG_A = 1.0f;
+
 // Objective-C delegate for PHPicker
 @interface TexturePickerDelegate : NSObject <PHPickerViewControllerDelegate>
 @property (nonatomic, assign) TextureType textureType;
@@ -1307,8 +1313,8 @@ static void framestore_load_frame(int index) {
             metal_stamp_cache_frame_to_gpu(index);
         }
     } else {
-        // Empty frame - clear canvas to paper white
-        metal_stamp_clear_canvas(0.95f, 0.95f, 0.92f, 1.0f);
+        // Empty frame - clear canvas to paper background
+        metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
         // Cache the empty frame too
         if (g_frameStore.gpuCacheReady) {
             metal_stamp_cache_frame_to_gpu(index);
@@ -1893,8 +1899,8 @@ static int metal_test_main() {
     metal_stamp_set_brush_opacity(brushOpacity);
     metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
 
-    // Clear canvas to white
-    metal_stamp_clear_canvas(1.0f, 1.0f, 1.0f, 1.0f);
+    // Clear canvas to off-white paper (same as weave bg-color)
+    metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
 
     // Initialize frame store for animation
     framestore_init(width, height);
@@ -2104,8 +2110,8 @@ static int metal_test_main() {
                             // Toggle eraser mode
                             g_eraserMode = !g_eraserMode;
                             if (g_eraserMode) {
-                                // Set brush color to white (background color)
-                                metal_stamp_set_brush_color(1.0f, 1.0f, 1.0f, 1.0f);
+                                // Set brush color to off-white paper (same as canvas background)
+                                metal_stamp_set_brush_color(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
                                 NSLog(@"[Eraser] Eraser mode ON");
                             } else {
                                 // Restore to current color picker color
@@ -2462,16 +2468,15 @@ static int metal_test_main() {
                         if (std::abs(dx) > SWIPE_THRESHOLD && std::abs(dx) > std::abs(dy) * 2) {
                             // It was a swipe! Cancel drawing and navigate frames
                             metal_stamp_undo_cancel_stroke();
-                            const float bgR = 0.95f, bgG = 0.95f, bgB = 0.92f, bgA = 1.0f;
                             if (dx < 0) {
                                 anim_next_frame();
-                                metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
                                 anim_render_onion_skin();
                                 anim_render_current_frame();
                                 std::cout << ">> Swipe: Next frame " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
                             } else {
                                 anim_prev_frame();
-                                metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
                                 anim_render_onion_skin();
                                 anim_render_current_frame();
                                 std::cout << "<< Swipe: Prev frame " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
@@ -2500,19 +2505,17 @@ static int metal_test_main() {
 
                             if (std::abs(dx) > SWIPE_THRESHOLD && std::abs(dx) > std::abs(dy)) {
                                 // Horizontal swipe detected
-                                // Use paper-white background (same as default)
-                                const float bgR = 0.95f, bgG = 0.95f, bgB = 0.92f, bgA = 1.0f;
                                 if (dx < 0) {
                                     // Swipe left = next frame
                                     anim_next_frame();
-                                    metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                    metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
                                     anim_render_onion_skin();
                                     anim_render_current_frame();
                                     std::cout << ">> Next frame: " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
                                 } else {
                                     // Swipe right = prev frame
                                     anim_prev_frame();
-                                    metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                    metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
                                     anim_render_onion_skin();
                                     anim_render_current_frame();
                                     std::cout << "<< Prev frame: " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
@@ -2662,7 +2665,8 @@ static int metal_test_main() {
                         // Toggle eraser mode (pen)
                         g_eraserMode = !g_eraserMode;
                         if (g_eraserMode) {
-                            metal_stamp_set_brush_color(1.0f, 1.0f, 1.0f, 1.0f);
+                            // Set brush color to off-white paper (same as canvas background)
+                            metal_stamp_set_brush_color(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
                             NSLog(@"[Eraser] Eraser mode ON (pen)");
                         } else {
                             metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
