@@ -14,6 +14,8 @@
 #include <SDL3/SDL.h>
 #include <vector>
 #include <iostream>
+#include <algorithm>
+#include <cmath>
 
 // Metal stamp renderer (GPU-accelerated drawing)
 // Uses extern "C" functions for JIT compatibility
@@ -50,7 +52,7 @@ struct Vertex2D {
 // =============================================================================
 
 struct InputEvent {
-    int type;        // 0=down, 1=move, 2=up
+    int type;        // 0=down, 1=move, 2=up, 3=next_frame, 4=prev_frame, 5=toggle_play, 6=undo, 7=redo
     float x, y;      // Screen position
     float pressure;  // 0.0-1.0 (Apple Pencil or simulated)
     bool is_pencil;  // true if Apple Pencil, false if finger/mouse
@@ -93,6 +95,19 @@ struct CanvasState {
     // Touch tracking (to handle only one finger at a time)
     SDL_FingerID activeFingerID = 0;
     bool touchActive = false;
+
+    // Multi-touch tracking for gestures
+    int activeTouchCount = 0;
+    uint64_t twoFingerTapStartTime = 0;
+    bool twoFingerTapPending = false;
+
+    // Pencil mode (default: only Apple Pencil draws, finger controls frames)
+    bool pencilModeEnabled = true;
+
+    // Finger gesture tracking (for frame navigation)
+    float fingerStartX = 0;
+    float fingerStartY = 0;
+    bool fingerGestureActive = false;
 
     bool initialized = false;
 
@@ -301,7 +316,6 @@ inline int poll_events() {
             // SDL3 touch coords are NORMALIZED (0-1) - multiply by render size
             case SDL_EVENT_FINGER_DOWN:
                 {
-                    // Touch coords are normalized 0-1, convert to render pixels
                     float x = event.tfinger.x * s->render_width;
                     float y = event.tfinger.y * s->render_height;
 
@@ -354,6 +368,22 @@ inline int poll_events() {
                             0.0f,
                             false
                         };
+                    }
+                }
+                break;
+
+            // Keyboard events for frame navigation (desktop/simulator)
+            case SDL_EVENT_KEY_DOWN:
+                if (s->eventCount < MAX_EVENTS) {
+                    if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_PERIOD) {
+                        // Right arrow or '.' = next frame
+                        s->events[s->eventCount++] = { 3, 0, 0, 0, false };
+                    } else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_COMMA) {
+                        // Left arrow or ',' = prev frame
+                        s->events[s->eventCount++] = { 4, 0, 0, 0, false };
+                    } else if (event.key.key == SDLK_SPACE) {
+                        // Space = toggle playback
+                        s->events[s->eventCount++] = { 5, 0, 0, 0, false };
                     }
                 }
                 break;
@@ -767,5 +797,86 @@ inline void metal_render_stroke() {
 inline void metal_present() {
     metal_stamp_present();
 }
+
+// =============================================================================
+// Animation Thread System (Looom-style animated layers)
+// Wrapper functions for animation_thread.h extern "C" API
+// =============================================================================
+
+// Include animation header for C API declarations
+#include "animation_thread.h"
+
+// Weave management
+inline void anim_init() { anim_weave_init(); }
+inline void anim_cleanup() { anim_weave_cleanup(); }
+inline void anim_clear() { anim_weave_clear(); }
+
+// Thread management
+inline int32_t add_anim_thread() { return anim_add_thread(); }
+inline void delete_anim_thread(int32_t index) { anim_delete_thread(index); }
+inline void select_anim_thread(int32_t index) { anim_select_thread(index); }
+inline int32_t get_active_thread_index() { return anim_get_active_thread_index(); }
+inline int32_t get_thread_count() { return anim_get_thread_count(); }
+
+// Frame management
+inline void add_anim_frame() { anim_add_frame(); }
+inline void add_anim_frame_after_current() { anim_add_frame_after_current(); }
+inline void delete_current_anim_frame() { anim_delete_current_frame(); }
+inline void duplicate_current_anim_frame() { anim_duplicate_current_frame(); }
+inline void clear_current_anim_frame() { anim_clear_current_frame(); }
+inline void next_anim_frame() { anim_next_frame(); }
+inline void prev_anim_frame() { anim_prev_frame(); }
+inline void goto_anim_frame(int32_t index) { anim_goto_frame(index); }
+inline int32_t get_current_frame_index() { return anim_get_current_frame_index(); }
+inline int32_t get_anim_frame_count() { return anim_get_frame_count(); }
+
+// Thread properties
+inline void set_anim_thread_fps(float fps) { anim_set_thread_fps(fps); }
+inline float get_anim_thread_fps() { return anim_get_thread_fps(); }
+inline void set_anim_thread_play_mode(int32_t mode) { anim_set_thread_play_mode(mode); }
+inline int32_t get_anim_thread_play_mode() { return anim_get_thread_play_mode(); }
+inline void set_anim_thread_visible(bool visible) { anim_set_thread_visible(visible); }
+inline bool get_anim_thread_visible() { return anim_get_thread_visible(); }
+inline void set_anim_thread_color(float r, float g, float b) { anim_set_thread_color(r, g, b); }
+
+// Playback control
+inline void play_anim() { anim_play(); }
+inline void pause_anim() { anim_pause(); }
+inline void toggle_anim_playback() { anim_toggle_playback(); }
+inline void stop_anim() { anim_stop(); }
+inline bool is_anim_playing() { return anim_is_playing(); }
+inline void set_anim_global_speed(float speed) { anim_set_global_speed(speed); }
+inline float get_anim_global_speed() { return anim_get_global_speed(); }
+inline void update_anim(float deltaTime) { anim_update(deltaTime); }
+
+// Onion skin
+inline void set_anim_onion_skin_mode(int32_t mode) { anim_set_onion_skin_mode(mode); }
+inline int32_t get_anim_onion_skin_mode() { return anim_get_onion_skin_mode(); }
+inline void set_anim_onion_skin_frames(int32_t before, int32_t after) { anim_set_onion_skin_frames(before, after); }
+inline void set_anim_onion_skin_opacity(float opacity) { anim_set_onion_skin_opacity(opacity); }
+
+// Set brush settings for animation recording (call before begin_anim_stroke)
+inline void set_anim_brush(float size, float hardness, float opacity, float spacing,
+                           int32_t shapeTexId, int32_t grainTexId, float grainScale, int shapeInverted,
+                           float sizePressure, float opacityPressure,
+                           float sizeJitter, float opacityJitter, float rotationJitter, float scatter) {
+    anim_set_brush(size, hardness, opacity, spacing, shapeTexId, grainTexId, grainScale, shapeInverted,
+                   sizePressure, opacityPressure, sizeJitter, opacityJitter, rotationJitter, scatter);
+}
+inline void set_anim_stroke_color(float r, float g, float b, float a) { anim_set_stroke_color(r, g, b, a); }
+
+// Stroke recording to animation frames
+inline void begin_anim_stroke(float x, float y, float pressure) { anim_begin_stroke(x, y, pressure); }
+inline void add_anim_stroke_point(float x, float y, float pressure) { anim_add_stroke_point(x, y, pressure); }
+inline void end_anim_stroke() { anim_end_stroke(); }
+inline void cancel_anim_stroke() { anim_cancel_stroke(); }
+
+// Get stroke count for current animation frame
+inline int32_t get_current_anim_frame_stroke_count() { return anim_get_current_frame_stroke_count(); }
+
+// Frame rendering - replay stored strokes to Metal canvas
+inline void render_anim_current_frame() { anim_render_current_frame(); }
+inline void render_anim_frame(int32_t frameIndex) { anim_render_frame(frameIndex); }
+inline void render_anim_onion_skin() { anim_render_onion_skin(); }
 
 } // namespace dc

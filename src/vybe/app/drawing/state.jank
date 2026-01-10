@@ -94,15 +94,24 @@
   (let [thread (get-active-thread)
         stroke (core/make-stroke (:color thread) (:line-width thread))
         point (core/make-point x y pressure (canvas/get_time_ms))
-        [r g b a] (:color thread)]
+        [r g b a] (:color thread)
+        line-width (:line-width thread)]
     (reset! *current-stroke (core/add-point-to-stroke stroke point))
     (reset! *current-stroke-triangles [])
     (reset! *current-stroke-tessellated-count 0)
     (reset! *drawing? true)
     ;; Start Metal stroke
-    (canvas/metal_set_brush_size (:line-width thread))
+    (canvas/metal_set_brush_size line-width)
     (canvas/metal_set_brush_color (float r) (float g) (float b) (float a))
-    (canvas/metal_begin_stroke (float x) (float y) (float pressure))))
+    (canvas/metal_begin_stroke (float x) (float y) (float pressure))
+    ;; Set brush and color for animation recording
+    (canvas/set_anim_brush (float line-width) 0.0 1.0 0.15  ; size, hardness, opacity, spacing
+                           (int 0) (int 0) 1.0 (int 0)      ; shape/grain tex, grainScale, inverted
+                           1.0 0.0                           ; sizePressure, opacityPressure
+                           0.0 0.0 0.0 0.0)                  ; jitters, scatter
+    (canvas/set_anim_stroke_color (float r) (float g) (float b) (float a))
+    ;; Also record to animation system
+    (canvas/begin_anim_stroke (float x) (float y) (float pressure))))
 
 ;; Maximum distance between points before we interpolate
 (def +max-point-distance+ 15.0)
@@ -142,7 +151,9 @@
             ;; Normal distance - just add
             (swap! *current-stroke core/add-point-to-stroke new-point)))))
     ;; Add point to Metal stroke (Metal does its own interpolation)
-    (canvas/metal_add_stroke_point (float x) (float y) (float pressure))))
+    (canvas/metal_add_stroke_point (float x) (float y) (float pressure))
+    ;; Also record to animation system
+    (canvas/add_anim_stroke_point (float x) (float y) (float pressure))))
 
 (defn end-drawing! []
   (when @*drawing?
@@ -157,7 +168,9 @@
       (reset! *current-stroke {})
       (reset! *drawing? false)
       ;; End Metal stroke - commits to canvas texture
-      (canvas/metal_end_stroke))))
+      (canvas/metal_end_stroke)
+      ;; Also end animation stroke - stores in current animation frame
+      (canvas/end_anim_stroke))))
 
 (defn get-current-stroke []
   @*current-stroke)
@@ -238,3 +251,127 @@
   (reset! *current-stroke {})
   (reset! *drawing? false)
   (mark-canvas-dirty!))
+
+;; =============================================================================
+;; Animation frame navigation (syncs C++ animation system with jank state)
+;; =============================================================================
+
+(defn anim-next-frame!
+  "Go to next animation frame. Creates new frame if at end."
+  []
+  (let [current-idx (canvas/get_current_frame_index)
+        frame-count (canvas/get_anim_frame_count)]
+    (if (>= (inc current-idx) frame-count)
+      ;; At end - add new frame
+      (canvas/add_anim_frame_after_current)
+      ;; Go to next
+      (canvas/next_anim_frame))
+    ;; Clear Metal canvas and re-render the new frame's strokes
+    (let [[r g b a] (get-bg-color)]
+      (canvas/metal_clear_canvas (float r) (float g) (float b) (float a)))
+    ;; Render onion skin (ghost frames) first
+    (canvas/render_anim_onion_skin)
+    ;; Then render current frame's strokes
+    (canvas/render_anim_current_frame)
+    ;; Also sync jank state
+    (next-frame!)
+    (mark-canvas-dirty!)
+    {:frame (canvas/get_current_frame_index)
+     :total (canvas/get_anim_frame_count)
+     :strokes (canvas/get_current_anim_frame_stroke_count)}))
+
+(defn anim-prev-frame!
+  "Go to previous animation frame."
+  []
+  (canvas/prev_anim_frame)
+  ;; Clear Metal canvas and re-render the new frame's strokes
+  (let [[r g b a] (get-bg-color)]
+    (canvas/metal_clear_canvas (float r) (float g) (float b) (float a)))
+  ;; Render onion skin (ghost frames) first
+  (canvas/render_anim_onion_skin)
+  ;; Then render current frame's strokes
+  (canvas/render_anim_current_frame)
+  ;; Also sync jank state
+  (prev-frame!)
+  (mark-canvas-dirty!)
+  {:frame (canvas/get_current_frame_index)
+   :total (canvas/get_anim_frame_count)
+   :strokes (canvas/get_current_anim_frame_stroke_count)})
+
+(defn anim-goto-frame!
+  "Jump to a specific animation frame."
+  [index]
+  (canvas/goto_anim_frame (int index))
+  ;; Clear Metal canvas and re-render the new frame's strokes
+  (let [[r g b a] (get-bg-color)]
+    (canvas/metal_clear_canvas (float r) (float g) (float b) (float a)))
+  ;; Render onion skin (ghost frames) first
+  (canvas/render_anim_onion_skin)
+  ;; Then render current frame's strokes
+  (canvas/render_anim_current_frame)
+  (mark-canvas-dirty!)
+  {:frame (canvas/get_current_frame_index)
+   :total (canvas/get_anim_frame_count)
+   :strokes (canvas/get_current_anim_frame_stroke_count)})
+
+(defn anim-status
+  "Get current animation status."
+  []
+  {:frame (canvas/get_current_frame_index)
+   :total (canvas/get_anim_frame_count)
+   :strokes (canvas/get_current_anim_frame_stroke_count)
+   :threads (canvas/get_thread_count)
+   :fps (canvas/get_anim_thread_fps)
+   :playing? (canvas/is_anim_playing)})
+
+;; =============================================================================
+;; Animation Playback
+;; =============================================================================
+
+(defn anim-play!
+  "Start animation playback."
+  []
+  (canvas/play_anim)
+  {:playing? true})
+
+(defn anim-pause!
+  "Pause animation playback."
+  []
+  (canvas/pause_anim)
+  {:playing? false})
+
+(defn anim-toggle-play!
+  "Toggle animation playback."
+  []
+  (canvas/toggle_anim_playback)
+  {:playing? (canvas/is_anim_playing)})
+
+(defn anim-set-fps!
+  "Set animation FPS."
+  [fps]
+  (canvas/set_anim_thread_fps (float fps))
+  {:fps (canvas/get_anim_thread_fps)})
+
+(defn anim-set-onion-skin!
+  "Set onion skin mode (0=off, 1=before, 2=after, 3=both)."
+  [mode]
+  (canvas/set_anim_onion_skin_mode (int mode))
+  {:onion-mode (canvas/get_anim_onion_skin_mode)})
+
+;; Track previous frame for playback rendering
+(defonce *prev-anim-frame (atom -1))
+
+(defn anim-update-playback!
+  "Update animation playback. Call each frame. Returns true if frame changed."
+  [delta-time]
+  (when (canvas/is_anim_playing)
+    (let [prev-frame @*prev-anim-frame
+          _ (canvas/update_anim (float delta-time))
+          new-frame (canvas/get_current_frame_index)]
+      (when (not= prev-frame new-frame)
+        ;; Frame changed - re-render
+        (let [[r g b a] (get-bg-color)]
+          (canvas/metal_clear_canvas (float r) (float g) (float b) (float a)))
+        (canvas/render_anim_current_frame)
+        (reset! *prev-anim-frame new-frame)
+        true))))

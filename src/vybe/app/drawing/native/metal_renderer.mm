@@ -2464,4 +2464,28 @@ METAL_EXPORT void metal_stamp_undo_cancel_stroke() {
     metal_stamp::undo_cancel_stroke();
 }
 
+// Canvas snapshot functions for frame-based animation
+METAL_EXPORT int metal_stamp_capture_snapshot(uint8_t** out_pixels) {
+    if (!metal_stamp::g_metal_renderer || !out_pixels) return 0;
+    auto snapshot = metal_stamp::g_metal_renderer->capture_canvas_snapshot();
+    if (snapshot.empty()) return 0;
+
+    int size = (int)snapshot.size();
+    *out_pixels = (uint8_t*)malloc(size);
+    if (*out_pixels) {
+        memcpy(*out_pixels, snapshot.data(), size);
+    }
+    return size;
+}
+
+METAL_EXPORT void metal_stamp_restore_snapshot(const uint8_t* pixels, int size, int width, int height) {
+    if (!metal_stamp::g_metal_renderer || !pixels || size <= 0) return;
+    std::vector<uint8_t> data(pixels, pixels + size);
+    metal_stamp::g_metal_renderer->restore_canvas_snapshot(data, width, height);
+}
+
+METAL_EXPORT void metal_stamp_free_snapshot(uint8_t* pixels) {
+    if (pixels) free(pixels);
+}
+
 } // extern "C"

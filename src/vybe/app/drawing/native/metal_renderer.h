@@ -383,4 +383,10 @@ void metal_stamp_undo_add_stroke_point(float x, float y, float pressure);
 void metal_stamp_undo_end_stroke();
 void metal_stamp_undo_cancel_stroke();
 
+// Canvas snapshot functions (for frame-based animation)
+// Returns pixel data size, fills buffer if provided (caller must free)
+int metal_stamp_capture_snapshot(uint8_t** out_pixels);
+void metal_stamp_restore_snapshot(const uint8_t* pixels, int size, int width, int height);
+void metal_stamp_free_snapshot(uint8_t* pixels);
+
 } // extern "C"

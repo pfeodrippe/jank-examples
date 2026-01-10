@@ -13,6 +13,11 @@
 (def +event-down+ 0)
 (def +event-move+ 1)
 (def +event-up+ 2)
+(def +event-next-frame+ 3)
+(def +event-prev-frame+ 4)
+(def +event-toggle-play+ 5)
+(def +event-undo+ 6)
+(def +event-redo+ 7)
 
 ;; =============================================================================
 ;; Process input events from native layer
@@ -31,6 +36,11 @@
           0 (state/start-drawing! x y pressure)   ; down
           1 (state/add-drawing-point! x y pressure) ; move
           2 (state/end-drawing!)                   ; up
+          3 (do (println (str ">> Next frame: " (state/anim-next-frame!)))) ; next frame
+          4 (do (println (str "<< Prev frame: " (state/anim-prev-frame!)))) ; prev frame
+          5 (do (println (str "Play/Pause: " (state/anim-toggle-play!)))) ; toggle play
+          6 (do (println "Undo (TODO)"))          ; undo
+          7 (do (println "Redo (TODO)"))          ; redo
           nil)))))
 
 ;; =============================================================================

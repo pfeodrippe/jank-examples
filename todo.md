@@ -62,7 +62,6 @@
     - [x] pen pressure
     - [x] fix device crash (nodes max of 10 maybe)
   - [x] all brushes loaded?
-  - [ ] procreate brushes we don't have
   - [ ] animation
     - [ ]
   - [ ] mix brushes ?
@@ -73,6 +72,7 @@
   - [ ] macos (nREPL?) integration
     - [ ] can check more frames
   - [ ] divide brushes in set sections
+  - [ ] drawing tutorials
 - [ ] dynamic dependencies (e.g. using clang-repl) at runtime (without using precompiled shared objs)
 - [ ] add jolt to sdf project
 - [ ] ios
@@ -95,6 +95,7 @@
 - [ ] ios release mode
 - [ ] "no object_ref allowed" mode
 - [ ] "strip down" mode (e.g. direct translation for small functions)
+- [ ] procreate brushes we don't have
 
 ## Jank
 

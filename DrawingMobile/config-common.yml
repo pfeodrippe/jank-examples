@@ -102,6 +102,9 @@ targetTemplates:
         compilerFlags: ["-x", "objective-c++", "-fobjc-arc"]
       # Undo tree (branching undo history)
       - path: ../src/vybe/app/drawing/native/undo_tree.cpp
+      # Animation thread system (Looom-style animated layers)
+      - path: ../src/vybe/app/drawing/native/animation_thread.mm
+        compilerFlags: ["-x", "objective-c++"]
       # Metal shaders (compiled to .metallib by Xcode)
       - path: ../src/vybe/app/drawing/native/stamp_shaders.metal
       # Common resources (bundled with app)

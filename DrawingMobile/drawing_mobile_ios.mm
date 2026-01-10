@@ -19,6 +19,7 @@
 
 #include <SDL3/SDL.h>
 #include "../src/vybe/app/drawing/native/metal_renderer.h"
+#include "../src/vybe/app/drawing/native/animation_thread.h"
 #import "brush_importer.h"
 
 // jank runtime headers
@@ -1189,6 +1190,174 @@ struct ThreeFingerGesture {
     Uint64 startTimeMs;
 };
 
+// =============================================================================
+// Simple Frame Storage (snapshot-based animation)
+// =============================================================================
+
+struct FrameStore {
+    std::vector<std::vector<uint8_t>> frames;  // Canvas snapshots per frame
+    int currentFrame = 0;
+    int canvasWidth = 0;
+    int canvasHeight = 0;
+};
+
+static FrameStore g_frameStore;
+
+static void framestore_init(int w, int h) {
+    g_frameStore.canvasWidth = w;
+    g_frameStore.canvasHeight = h;
+    g_frameStore.frames.clear();
+    g_frameStore.frames.push_back({});  // Start with one empty frame
+    g_frameStore.currentFrame = 0;
+}
+
+static void framestore_save_current() {
+    if (g_frameStore.currentFrame >= 0 && g_frameStore.currentFrame < (int)g_frameStore.frames.size()) {
+        uint8_t* pixels = nullptr;
+        int size = metal_stamp_capture_snapshot(&pixels);
+        if (pixels && size > 0) {
+            g_frameStore.frames[g_frameStore.currentFrame].assign(pixels, pixels + size);
+            metal_stamp_free_snapshot(pixels);
+            NSLog(@"[FrameStore] Saved frame %d (%d bytes)",
+                  g_frameStore.currentFrame, size);
+        }
+    }
+}
+
+static void framestore_load_frame(int index) {
+    if (index < 0) return;
+
+    // Expand frames vector if needed
+    while (index >= (int)g_frameStore.frames.size()) {
+        g_frameStore.frames.push_back({});
+    }
+
+    auto& pixels = g_frameStore.frames[index];
+    if (!pixels.empty()) {
+        metal_stamp_restore_snapshot(pixels.data(), (int)pixels.size(),
+                                     g_frameStore.canvasWidth, g_frameStore.canvasHeight);
+        NSLog(@"[FrameStore] Loaded frame %d", index);
+    } else {
+        // Empty frame - clear canvas to paper white
+        metal_stamp_clear_canvas(0.95f, 0.95f, 0.92f, 1.0f);
+        NSLog(@"[FrameStore] New empty frame %d", index);
+    }
+    g_frameStore.currentFrame = index;
+}
+
+static void framestore_goto_frame(int index) {
+    if (index == g_frameStore.currentFrame) return;
+
+    // Save current frame first
+    framestore_save_current();
+
+    // Add new frames if needed
+    while (index >= (int)g_frameStore.frames.size()) {
+        g_frameStore.frames.push_back({});
+    }
+
+    // Load target frame
+    framestore_load_frame(index);
+}
+
+static int framestore_get_frame_count() {
+    return (int)g_frameStore.frames.size();
+}
+
+static int framestore_get_current_frame() {
+    return g_frameStore.currentFrame;
+}
+
+// =============================================================================
+// Frame Wheel UI (Looom-style frame navigation)
+// =============================================================================
+
+struct FrameWheel {
+    float centerX, centerY;  // Center position (screen coords)
+    float radius;            // Outer radius
+    float innerRadius;       // Inner radius (donut shape)
+    bool isDragging;
+    float dragStartAngle;     // Where finger touched (in radians)
+    int dragStartFrame;       // Which frame we were on when drag started
+    float dragStartRotation;  // Visual rotation when drag started (the wheel image position)
+    float rotation;           // Current visual rotation angle
+};
+
+// Screen width for coordinate conversion (set in main loop)
+static int g_screenWidth = 0;
+
+// Draw frame wheel - Looom-style solid circle with frame holes
+// Uses wheel.centerX/centerY directly (same coords as touch handling)
+static void drawFrameWheel(const FrameWheel& wheel, int totalFrames, int currentFrame, float rotation) {
+    const float PI = 3.14159265f;
+
+    // Bigger wheel size
+    float bigRadius = wheel.radius * 1.3f;
+
+    // Draw solid dark circle background (approximated with segments)
+    const int bgSegments = 16;
+    for (int i = 0; i < bgSegments; i++) {
+        float angle1 = (float)i / bgSegments * 2.0f * PI;
+        float angle2 = (float)(i + 1) / bgSegments * 2.0f * PI;
+
+        float x1 = wheel.centerX + cosf(angle1) * bigRadius;
+        float y1 = wheel.centerY + sinf(angle1) * bigRadius;
+        float x2 = wheel.centerX + cosf(angle2) * bigRadius;
+        float y2 = wheel.centerY + sinf(angle2) * bigRadius;
+
+        float minX = std::min({wheel.centerX, x1, x2});
+        float maxX = std::max({wheel.centerX, x1, x2});
+        float minY = std::min({wheel.centerY, y1, y2});
+        float maxY = std::max({wheel.centerY, y1, y2});
+
+        metal_stamp_queue_ui_rect(minX, minY, maxX - minX + 1, maxY - minY + 1,
+                                  0.25f, 0.25f, 0.3f, 0.95f, 0.0f);
+    }
+
+    // Draw frame "holes" around the edge - rotate with wheel
+    int maxFrames = 12;
+    float holeRadius = bigRadius * 0.72f;
+    float holeSize = 16.0f;
+
+    for (int f = 0; f < maxFrames; f++) {
+        // Apply rotation so holes visually spin with the wheel
+        float frameAngle = rotation + (float)f / maxFrames * 2.0f * PI - PI/2.0f;
+        float hx = wheel.centerX + cosf(frameAngle) * holeRadius;
+        float hy = wheel.centerY + sinf(frameAngle) * holeRadius;
+
+        // Frame 0 is ORANGE for reference, others are white/gray
+        if (f == 0) {
+            // Orange marker for frame 0
+            metal_stamp_queue_ui_rect(hx - holeSize/2, hy - holeSize/2, holeSize, holeSize,
+                                      1.0f, 0.5f, 0.0f, 1.0f, holeSize/2);
+        } else {
+            float brightness = (f < totalFrames) ? 0.9f : 0.5f;
+            metal_stamp_queue_ui_rect(hx - holeSize/2, hy - holeSize/2, holeSize, holeSize,
+                                      brightness, brightness, brightness, 1.0f, holeSize/2);
+        }
+    }
+
+    // Draw fixed indicator at top (shows current frame position)
+    float indicatorSize = 10.0f;
+    metal_stamp_queue_ui_rect(wheel.centerX - indicatorSize/2, wheel.centerY - bigRadius - 12,
+                              indicatorSize, indicatorSize, 1.0f, 0.2f, 0.2f, 1.0f, indicatorSize/2);
+}
+
+// Check if point is in frame wheel (full circle)
+// Wheel position is in SCREEN coordinates (same as touch events)
+static bool isPointInFrameWheel(const FrameWheel& wheel, float px, float py) {
+    float dx = px - wheel.centerX;
+    float dy = py - wheel.centerY;
+    float dist = sqrtf(dx * dx + dy * dy);
+    float bigRadius = wheel.radius * 1.3f;  // Match visual size
+    return dist <= bigRadius + 20;  // Full circle with padding
+}
+
+// Get angle from wheel center to point (screen coordinates)
+static float getWheelAngle(const FrameWheel& wheel, float px, float py) {
+    return atan2f(py - wheel.centerY, px - wheel.centerX);
+}
+
 // Helper: Calculate distance between two points
 static float pointDistance(float x1, float y1, float x2, float y2) {
     float dx = x2 - x1;
@@ -1479,6 +1648,7 @@ static int metal_test_main() {
     int width, height;
     SDL_GetWindowSizeInPixels(window, &width, &height);
     std::cout << "Window size: " << width << "x" << height << std::endl;
+    g_screenWidth = width;  // Set for frame wheel coordinate conversion
 
     // Get pixel density for converting pen coordinates (in points) to pixels
     // Pen events use window coordinates (points), not physical pixels
@@ -1648,6 +1818,10 @@ static int metal_test_main() {
     // Clear canvas to white
     metal_stamp_clear_canvas(1.0f, 1.0f, 1.0f, 1.0f);
 
+    // Initialize frame store for animation
+    framestore_init(width, height);
+    NSLog(@"[FrameStore] Initialized with canvas %dx%d", width, height);
+
     // =============================================================================
     // Initialize Canvas Transform and Gesture State
     // =============================================================================
@@ -1711,6 +1885,21 @@ static int metal_test_main() {
     float last_x = 0, last_y = 0;
     float pen_pressure = 1.0f;  // Track Apple Pencil pressure from axis events
     bool pencil_detected = false;  // Set true when Apple Pencil is used - disables finger drawing
+
+    // Frame wheel for animation frame navigation (Looom-style)
+    // Position in SCREEN coordinates (same as touch events)
+    // Metal UI conversion happens in drawFrameWheel
+    FrameWheel frameWheel = {
+        .centerX = width - 100.0f,    // Right side (screen coords)
+        .centerY = height - 140.0f,   // Bottom (screen coords)
+        .radius = 70.0f,              // Bigger wheel
+        .innerRadius = 25.0f,
+        .isDragging = false,
+        .dragStartAngle = 0.0f,
+        .dragStartFrame = 0,
+        .dragStartRotation = 0.0f,
+        .rotation = 0.0f
+    };
 
     // Main loop
     bool running = true;
@@ -1799,17 +1988,8 @@ static int metal_test_main() {
                             handledByUI = true;
                         }
 
-                        if (isPointInTextureButton(shapeTextureButton, x, y)) {
-                            // Show shape texture picker
-                            std::cout << "Shape texture button tapped - showing picker" << std::endl;
-                            showTexturePicker(window, TextureTypeShape);
-                            handledByUI = true;
-                        } else if (isPointInTextureButton(grainTextureButton, x, y)) {
-                            // Show grain texture picker
-                            std::cout << "Grain texture button tapped - showing picker" << std::endl;
-                            showTexturePicker(window, TextureTypeGrain);
-                            handledByUI = true;
-                        } else if (isPointInBrushPicker(brushPicker, x, y)) {
+                        // Texture buttons removed - frame wheel handles this area now
+                        if (isPointInBrushPicker(brushPicker, x, y)) {
                             // Start tracking touch for scroll/tap detection
                             g_brushPickerIsDragging = true;
                             g_brushPickerDragFingerId = fingerId;
@@ -1839,6 +2019,20 @@ static int metal_test_main() {
                             // Tap outside picker closes it
                             brushPicker.isOpen = false;
                             NSLog(@"[BrushPicker] Closed (tap outside)");
+                            handledByUI = true;
+                        }
+
+                        // Frame wheel touch handling (single finger)
+                        if (!handledByUI && isPointInFrameWheel(frameWheel, x, y)) {
+                            frameWheel.isDragging = true;
+                            frameWheel.dragStartAngle = getWheelAngle(frameWheel, x, y);
+                            frameWheel.dragStartFrame = framestore_get_current_frame();
+                            // Save where the wheel image is NOW - don't recalculate!
+                            frameWheel.dragStartRotation = frameWheel.rotation;
+                            // Save current frame pixels before switching to others
+                            framestore_save_current();
+                            NSLog(@"[FrameWheel] Started dragging from frame %d, rotation=%.3f (saved)",
+                                  frameWheel.dragStartFrame, frameWheel.rotation);
                             handledByUI = true;
                         }
 
@@ -2013,6 +2207,33 @@ static int metal_test_main() {
                         opacitySlider.value = 1.0f - std::max(0.0f, std::min(1.0f, relY));
                         brushOpacity = opacitySlider.minVal + opacitySlider.value * (opacitySlider.maxVal - opacitySlider.minVal);
                         metal_stamp_set_brush_opacity(brushOpacity);
+                    } else if (frameWheel.isDragging) {
+                        // Calculate angle change from drag start
+                        float currentAngle = getWheelAngle(frameWheel, x, y);
+                        float angleDelta = currentAngle - frameWheel.dragStartAngle;
+
+                        // Normalize to -PI to PI
+                        const float PI = 3.14159265f;
+                        while (angleDelta > PI) angleDelta -= 2 * PI;
+                        while (angleDelta < -PI) angleDelta += 2 * PI;
+
+                        // Visual rotation: wheel follows finger movement
+                        // ADD angleDelta so the wheel visually follows the finger direction
+                        frameWheel.rotation = frameWheel.dragStartRotation + angleDelta;
+
+                        // Frame selection is DISCRETE (12 positions)
+                        // When wheel rotates clockwise, LOWER frame numbers come to top
+                        // So positive angleDelta (clockwise) = SUBTRACT from frame number
+                        int frameDelta = (int)roundf(angleDelta / (2.0f * PI / 12.0f));
+                        int newFrame = frameWheel.dragStartFrame - frameDelta;  // SUBTRACT to match visual
+                        while (newFrame < 0) newFrame += 12;
+                        newFrame = newFrame % 12;
+
+                        // Load frame without saving (save happened at drag start)
+                        if (newFrame != framestore_get_current_frame()) {
+                            framestore_load_frame(newFrame);
+                            NSLog(@"[FrameWheel] Frame %d (rotation=%.3f)", newFrame, frameWheel.rotation);
+                        }
                     }
                     break;
                 }
@@ -2130,14 +2351,77 @@ static int metal_test_main() {
                         }
                     }
                     // Handle single-finger drawing end (for simulator testing)
+                    // Also check for swipe gesture - if it was a horizontal swipe, navigate frames instead
                     else if (is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
-                        std::cout << "Finger drawing ended" << std::endl;
-                        metal_stamp_undo_end_stroke();
+                        float endX = event.tfinger.x * width;
+                        float endY = event.tfinger.y * height;
+                        float startX = pendingFinger0_x * width;
+                        float startY = pendingFinger0_y * height;
+                        float dx = endX - startX;
+                        float dy = endY - startY;
+                        const float SWIPE_THRESHOLD = 150.0f;  // pixels - slightly higher for drawing mode
+
+                        // Check if this was a horizontal swipe
+                        if (std::abs(dx) > SWIPE_THRESHOLD && std::abs(dx) > std::abs(dy) * 2) {
+                            // It was a swipe! Cancel drawing and navigate frames
+                            metal_stamp_undo_cancel_stroke();
+                            const float bgR = 0.95f, bgG = 0.95f, bgB = 0.92f, bgA = 1.0f;
+                            if (dx < 0) {
+                                anim_next_frame();
+                                metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                anim_render_onion_skin();
+                                anim_render_current_frame();
+                                std::cout << ">> Swipe: Next frame " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
+                            } else {
+                                anim_prev_frame();
+                                metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                anim_render_onion_skin();
+                                anim_render_current_frame();
+                                std::cout << "<< Swipe: Prev frame " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
+                            }
+                        } else {
+                            // Normal drawing end
+                            std::cout << "Finger drawing ended" << std::endl;
+                            metal_stamp_undo_end_stroke();
+                        }
                         is_drawing = false;
                         hasFinger0 = false;
                     }
                     // Handle pending single finger release (non-drawing)
                     else if (hasFinger0 && fingerId == pendingFinger0_id) {
+                        // Single-finger swipe navigates frames (works in pencil mode or simulator)
+                        // In real use: pencil draws, finger swipes frames
+                        // In simulator: finger swipes if not drawing
+                        if (pencil_detected || !is_drawing) {
+                            float endX = event.tfinger.x * width;
+                            float endY = event.tfinger.y * height;
+                            float startX = pendingFinger0_x * width;
+                            float startY = pendingFinger0_y * height;
+                            float dx = endX - startX;
+                            float dy = endY - startY;
+                            const float SWIPE_THRESHOLD = 100.0f;  // pixels
+
+                            if (std::abs(dx) > SWIPE_THRESHOLD && std::abs(dx) > std::abs(dy)) {
+                                // Horizontal swipe detected
+                                // Use paper-white background (same as default)
+                                const float bgR = 0.95f, bgG = 0.95f, bgB = 0.92f, bgA = 1.0f;
+                                if (dx < 0) {
+                                    // Swipe left = next frame
+                                    anim_next_frame();
+                                    metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                    anim_render_onion_skin();
+                                    anim_render_current_frame();
+                                    std::cout << ">> Next frame: " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
+                                } else {
+                                    // Swipe right = prev frame
+                                    anim_prev_frame();
+                                    metal_stamp_clear_canvas(bgR, bgG, bgB, bgA);
+                                    anim_render_onion_skin();
+                                    anim_render_current_frame();
+                                    std::cout << "<< Prev frame: " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
+                                }
+                            }
+                        }
                         hasFinger0 = false;
                     }
                     // Handle UI slider release
@@ -2173,6 +2457,15 @@ static int metal_test_main() {
                         }
 
                         g_brushPickerIsDragging = false;
+                    }
+                    // Handle frame wheel release
+                    else if (frameWheel.isDragging) {
+                        frameWheel.isDragging = false;
+                        // Keep rotation at current frame position (don't reset!)
+                        int currentFrame = framestore_get_current_frame();
+                        const float PI = 3.14159265f;
+                        frameWheel.rotation = -(float)currentFrame / 12.0f * 2.0f * PI;
+                        NSLog(@"[FrameWheel] Released on frame %d", currentFrame);
                     }
                     break;
                 }
@@ -2252,14 +2545,7 @@ static int metal_test_main() {
                         // Tap outside picker closes it (pen)
                         colorPicker.isOpen = false;
                         std::cout << "Color picker closed (tap outside, pen)" << std::endl;
-                    } else if (isPointInTextureButton(shapeTextureButton, screenX, screenY)) {
-                        // Show shape texture picker (pen)
-                        std::cout << "Shape texture button tapped (pen) - showing picker" << std::endl;
-                        showTexturePicker(window, TextureTypeShape);
-                    } else if (isPointInTextureButton(grainTextureButton, screenX, screenY)) {
-                        // Show grain texture picker (pen)
-                        std::cout << "Grain texture button tapped (pen) - showing picker" << std::endl;
-                        showTexturePicker(window, TextureTypeGrain);
+                    // Texture buttons removed - frame wheel handles this area now
                     } else if (isPointInBrushPicker(brushPicker, screenX, screenY)) {
                         // Handle tap on brush picker (pen)
                         int brushIdx = getBrushAtPoint(brushPicker, screenX, screenY);
@@ -2444,9 +2730,7 @@ static int metal_test_main() {
         // Color picker panel (if open)
         drawColorPicker(colorPicker);
 
-        // Texture buttons (bottom center)
-        drawTextureButton(shapeTextureButton, "Shape");
-        drawTextureButton(grainTextureButton, "Grain");
+        // Texture buttons removed - using frame wheel instead
 
         // Brush picker button
         drawBrushButton(brushButton);
@@ -2456,6 +2740,11 @@ static int metal_test_main() {
 
         // Brush picker panel (if open)
         drawBrushPicker(brushPicker, height);
+
+        // Frame wheel for animation (Looom-style)
+        int totalFrames = framestore_get_frame_count();
+        int currentFrame = framestore_get_current_frame();
+        drawFrameWheel(frameWheel, totalFrames, currentFrame, frameWheel.rotation);
 
         // Present with UI overlay
         metal_stamp_present();
