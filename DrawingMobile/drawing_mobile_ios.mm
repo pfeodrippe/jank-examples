@@ -1389,6 +1389,72 @@ struct FrameWheel {
     int dragStartFrame;       // Which frame we were on when drag started
 };
 
+// =============================================================================
+// Pulley - Looom-style time navigation (appears at finger touch location)
+// =============================================================================
+
+struct Pulley {
+    bool active;              // Is pulley currently shown
+    bool pending;             // Waiting for delay before showing
+    Uint64 touchStartMs;      // When finger first touched
+    float startX, startY;     // Initial finger position
+    float centerX, centerY;   // Pulley center (left of finger touch)
+    float fingerX, fingerY;   // Current finger position (for drawing indicator)
+    int startFrame;           // Frame when touch began
+    float radius;             // Visual radius of pulley
+};
+
+static Pulley g_pulley = {
+    .active = false,
+    .pending = false,
+    .touchStartMs = 0,
+    .startX = 0, .startY = 0,
+    .centerX = 0, .centerY = 0,
+    .fingerX = 0, .fingerY = 0,
+    .startFrame = 0,
+    .radius = 180.0f  // 3x larger for visibility
+};
+
+// Delay before pulley appears (ms) - quick swipe before this = frame change
+static const Uint64 PULLEY_DELAY_MS = 150;
+
+// Draw pulley at current position (circle with indicator line to finger)
+static void drawPulley(const Pulley& pulley, int currentFrame, int totalFrames) {
+    if (!pulley.active) return;
+
+    const float PI = 3.14159265f;
+
+    // Draw circle outline using small dots
+    const int segments = 24;
+    const float dotSize = 4.0f;
+    for (int i = 0; i < segments; i++) {
+        float angle = (float)i / segments * 2.0f * PI;
+        float x = pulley.centerX + cosf(angle) * pulley.radius - dotSize / 2;
+        float y = pulley.centerY + sinf(angle) * pulley.radius - dotSize / 2;
+        // Dark gray dots forming circle outline
+        metal_stamp_queue_ui_rect(x, y, dotSize, dotSize, 0.3f, 0.3f, 0.3f, 0.7f, dotSize / 2);
+    }
+
+    // Draw center dot
+    metal_stamp_queue_ui_rect(pulley.centerX - 5, pulley.centerY - 5, 10, 10,
+                              0.2f, 0.2f, 0.2f, 0.8f, 5);
+
+    // Draw indicator line from center towards finger (using dots)
+    float angle = atan2f(pulley.fingerY - pulley.centerY, pulley.fingerX - pulley.centerX);
+    const int lineDots = 8;
+    for (int i = 1; i <= lineDots; i++) {
+        float t = (float)i / lineDots * pulley.radius * 0.85f;
+        float dotX = pulley.centerX + cosf(angle) * t - 3;
+        float dotY = pulley.centerY + sinf(angle) * t - 3;
+        metal_stamp_queue_ui_rect(dotX, dotY, 6, 6, 0.1f, 0.1f, 0.1f, 0.9f, 3);
+    }
+}
+
+// Get angle from pulley center to point
+static float getPulleyAngle(const Pulley& pulley, float x, float y) {
+    return atan2f(y - pulley.centerY, x - pulley.centerX);
+}
+
 // Screen width for coordinate conversion (set in main loop)
 static int g_screenWidth = 0;
 
@@ -2053,12 +2119,10 @@ static int metal_test_main() {
                     break;
 
                 case SDL_EVENT_FINGER_DOWN: {
-                    // PALM REJECTION: Skip ALL finger input while pencil is drawing
-                    if (pencil_detected && is_drawing) {
-                        break;
-                    }
+                    // NOTE: No palm rejection here - finger is used for PULLEY control
+                    // even while pencil is drawing. Pulley = time navigation with finger.
 
-                    // Finger events: Used for UI interaction and two-finger gestures
+                    // Finger events: Used for UI interaction, gestures, and PULLEY
                     // Drawing is done via Apple Pencil (pen events) only
 
                     // Log raw normalized finger coordinates
@@ -2211,25 +2275,29 @@ static int metal_test_main() {
                                 // Ignore finger touches while drawing with pencil
                             }
                             else if (!hasFinger0) {
-                                // First finger down - start drawing OR wait for second finger
+                                // First finger down - activate PULLEY for time navigation
                                 hasFinger0 = true;
                                 pendingFinger0_id = fingerId;
                                 pendingFinger0_x = event.tfinger.x;
                                 pendingFinger0_y = event.tfinger.y;
 
-                                // Start drawing with single finger (for simulator testing only)
-                                // On real device with Apple Pencil, finger drawing is disabled
-                                if (!pencil_detected) {
-                                    float canvasX, canvasY;
-                                    screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
-                                    metal_stamp_undo_begin_stroke(canvasX, canvasY, 1.0f);
-                                    last_x = canvasX;
-                                    last_y = canvasY;
-                                    is_drawing = true;
-                                    std::cout << "Finger drawing started at " << canvasX << ", " << canvasY << std::endl;
-                                }
+                                // Start PENDING pulley - will activate after delay
+                                g_pulley.pending = true;
+                                g_pulley.active = false;
+                                g_pulley.touchStartMs = SDL_GetTicks();
+                                g_pulley.startX = x;
+                                g_pulley.startY = y;
+                                g_pulley.fingerX = x;
+                                g_pulley.fingerY = y;
+                                g_pulley.startFrame = framestore_get_current_frame();
+                                NSLog(@"[Pulley] Pending at (%.1f, %.1f), frame %d", x, y, g_pulley.startFrame);
                             } else if (pendingFinger0_id != fingerId) {
-                                // Second finger down - STOP drawing and start two-finger gesture!
+                                // Second finger down - STOP pulley and start two-finger gesture!
+                                if (g_pulley.active || g_pulley.pending) {
+                                    g_pulley.active = false;
+                                    g_pulley.pending = false;
+                                    NSLog(@"[Pulley] Deactivated - switching to gesture");
+                                }
                                 if (is_drawing) {
                                     metal_stamp_undo_cancel_stroke();  // Cancel incomplete stroke
                                     is_drawing = false;
@@ -2266,10 +2334,7 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_FINGER_MOTION: {
-                    // PALM REJECTION: Skip ALL finger motion while pencil is drawing
-                    if (pencil_detected && is_drawing) {
-                        break;
-                    }
+                    // NOTE: No palm rejection - finger controls PULLEY even while pencil draws
 
                     float x = event.tfinger.x * width;
                     float y = event.tfinger.y * height;
@@ -2315,6 +2380,66 @@ static int metal_test_main() {
                             metal_stamp_undo_add_stroke_point(canvasX, canvasY, 1.0f);
                             last_x = canvasX;
                             last_y = canvasY;
+                        }
+                    }
+                    // Handle PULLEY PENDING - check for quick swipe or activate after delay
+                    else if (g_pulley.pending && hasFinger0 && fingerId == pendingFinger0_id) {
+                        pendingFinger0_x = event.tfinger.x;
+                        pendingFinger0_y = event.tfinger.y;
+                        g_pulley.fingerX = x;
+                        g_pulley.fingerY = y;
+
+                        float deltaY = y - g_pulley.startY;
+                        const float SWIPE_THRESHOLD = 60.0f;
+                        Uint64 elapsed = SDL_GetTicks() - g_pulley.touchStartMs;
+
+                        // Quick vertical swipe BEFORE delay = frame change, no pulley
+                        if (elapsed < PULLEY_DELAY_MS && std::abs(deltaY) > SWIPE_THRESHOLD) {
+                            g_pulley.pending = false;
+                            if (deltaY > 0) {
+                                frame_next();
+                                NSLog(@"[Pulley] Quick swipe DOWN -> frame %d", framestore_get_current_frame());
+                            } else {
+                                frame_prev();
+                                NSLog(@"[Pulley] Quick swipe UP -> frame %d", framestore_get_current_frame());
+                            }
+                        }
+                        // Delay passed - activate pulley
+                        else if (elapsed >= PULLEY_DELAY_MS) {
+                            g_pulley.pending = false;
+                            g_pulley.active = true;
+                            g_pulley.centerX = g_pulley.startX - g_pulley.radius;
+                            g_pulley.centerY = g_pulley.startY;
+                            framestore_save_current();  // Save NOW when pulley activates
+                            NSLog(@"[Pulley] Activated after delay, center(%.1f, %.1f)",
+                                  g_pulley.centerX, g_pulley.centerY);
+                        }
+                    }
+                    // Handle PULLEY ACTIVE - rotation controls frame
+                    else if (g_pulley.active && hasFinger0 && fingerId == pendingFinger0_id) {
+                        pendingFinger0_x = event.tfinger.x;
+                        pendingFinger0_y = event.tfinger.y;
+                        g_pulley.fingerX = x;
+                        g_pulley.fingerY = y;
+
+                        // Pure rotation scrubbing - angle from center to finger controls frame
+                        float currentAngle = getPulleyAngle(g_pulley, x, y);
+                        const float PI = 3.14159265f;
+
+                        // Normalize to -PI to PI
+                        while (currentAngle > PI) currentAngle -= 2 * PI;
+                        while (currentAngle < -PI) currentAngle += 2 * PI;
+
+                        // Map angle to frame offset (12 frames = 2*PI)
+                        // 0 radians (3 o'clock) = startFrame
+                        int frameDelta = (int)roundf(currentAngle / (2.0f * PI / 12.0f));
+                        int newFrame = g_pulley.startFrame + frameDelta;
+                        while (newFrame < 0) newFrame += 12;
+                        newFrame = newFrame % 12;
+
+                        // Switch frame if different
+                        if (newFrame != framestore_get_current_frame()) {
+                            framestore_load_frame(newFrame);
                         }
                     }
                     // Update pending finger position (in case it becomes part of gesture)
@@ -2367,10 +2492,7 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_FINGER_UP: {
-                    // PALM REJECTION: Skip finger release while pencil is drawing
-                    if (pencil_detected && is_drawing) {
-                        break;
-                    }
+                    // NOTE: No palm rejection - finger controls PULLEY even while pencil draws
 
                     SDL_FingerID fingerId = event.tfinger.fingerID;
 
@@ -2514,39 +2636,15 @@ static int metal_test_main() {
                         is_drawing = false;
                         hasFinger0 = false;
                     }
-                    // Handle pending single finger release (non-drawing)
+                    // Handle PULLEY release - deactivate pulley or cancel pending
+                    else if ((g_pulley.active || g_pulley.pending) && hasFinger0 && fingerId == pendingFinger0_id) {
+                        g_pulley.active = false;
+                        g_pulley.pending = false;
+                        hasFinger0 = false;
+                        NSLog(@"[Pulley] Deactivated on finger up, frame %d", framestore_get_current_frame());
+                    }
+                    // Handle pending single finger release (non-drawing, legacy swipe)
                     else if (hasFinger0 && fingerId == pendingFinger0_id) {
-                        // Single-finger swipe navigates frames (works in pencil mode or simulator)
-                        // In real use: pencil draws, finger swipes frames
-                        // In simulator: finger swipes if not drawing
-                        if (pencil_detected || !is_drawing) {
-                            float endX = event.tfinger.x * width;
-                            float endY = event.tfinger.y * height;
-                            float startX = pendingFinger0_x * width;
-                            float startY = pendingFinger0_y * height;
-                            float dx = endX - startX;
-                            float dy = endY - startY;
-                            const float SWIPE_THRESHOLD = 100.0f;  // pixels
-
-                            if (std::abs(dx) > SWIPE_THRESHOLD && std::abs(dx) > std::abs(dy)) {
-                                // Horizontal swipe detected
-                                if (dx < 0) {
-                                    // Swipe left = next frame
-                                    anim_next_frame();
-                                    metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
-                                    anim_render_onion_skin();
-                                    anim_render_current_frame();
-                                    std::cout << ">> Next frame: " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
-                                } else {
-                                    // Swipe right = prev frame
-                                    anim_prev_frame();
-                                    metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
-                                    anim_render_onion_skin();
-                                    anim_render_current_frame();
-                                    std::cout << "<< Prev frame: " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
-                                }
-                            }
-                        }
                         hasFinger0 = false;
                     }
                     // Handle UI slider release
@@ -2870,6 +2968,9 @@ static int metal_test_main() {
         const float PI = 3.14159265f;
         float rotation = -(float)currentFrame / (float)totalFrames * 2.0f * PI;
         drawFrameWheel(frameWheel, totalFrames, currentFrame, rotation);
+
+        // Draw pulley if active (Looom-style time navigation)
+        drawPulley(g_pulley, currentFrame, totalFrames);
 
         // Present with UI overlay
         metal_stamp_present();
