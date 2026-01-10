@@ -15,6 +15,7 @@ namespace animation {
 static Weave* g_weave = nullptr;
 static AnimStroke* g_currentStroke = nullptr;
 static float g_strokeStartTime = 0.0f;
+static FrameChangeCallback g_frameChangeCallback = nullptr;
 
 Weave& getCurrentWeave() {
     if (!g_weave) {
@@ -150,6 +151,9 @@ void anim_next_frame() {
     animation::AnimThread* thread = animation::getCurrentWeave().getActiveThread();
     if (thread) {
         thread->nextFrame();
+        if (animation::g_frameChangeCallback) {
+            animation::g_frameChangeCallback(thread->currentFrameIndex);
+        }
     }
 }
 
@@ -157,6 +161,9 @@ void anim_prev_frame() {
     animation::AnimThread* thread = animation::getCurrentWeave().getActiveThread();
     if (thread) {
         thread->prevFrame();
+        if (animation::g_frameChangeCallback) {
+            animation::g_frameChangeCallback(thread->currentFrameIndex);
+        }
     }
 }
 
@@ -164,7 +171,14 @@ void anim_goto_frame(int32_t index) {
     animation::AnimThread* thread = animation::getCurrentWeave().getActiveThread();
     if (thread) {
         thread->goToFrame(index);
+        if (animation::g_frameChangeCallback) {
+            animation::g_frameChangeCallback(thread->currentFrameIndex);
+        }
     }
+}
+
+void anim_set_frame_change_callback(FrameChangeCallback callback) {
+    animation::g_frameChangeCallback = callback;
 }
 
 int32_t anim_get_current_frame_index() {

@@ -41,3 +41,29 @@
   "Clear all cached frames."
   []
   (metal/metal_stamp_clear_frame_cache))
+
+;; Frame functions (uses same 12-frame system as wheel)
+(defn frame-current
+  "Get current frame index (0-11)."
+  []
+  (metal/frame_current))
+
+(defn frame-next!
+  "Go to next frame."
+  []
+  (metal/frame_next))
+
+(defn frame-prev!
+  "Go to previous frame."
+  []
+  (metal/frame_prev))
+
+(defn frame-goto!
+  "Go to specific frame (0-11)."
+  [idx]
+  (metal/frame_goto idx))
+
+(defn frame-count
+  "Get total frame count (12)."
+  []
+  (metal/frame_count))

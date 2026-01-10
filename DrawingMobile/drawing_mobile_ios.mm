@@ -1343,6 +1343,40 @@ static int framestore_get_current_frame() {
 }
 
 // =============================================================================
+// FrameStore C API (for REPL - uses same system as wheel)
+// =============================================================================
+
+extern "C" {
+
+void frame_next() {
+    int next = (g_frameStore.currentFrame + 1) % FrameStore::MAX_FRAMES;
+    framestore_save_current();
+    framestore_load_frame(next);
+}
+
+void frame_prev() {
+    int prev = (g_frameStore.currentFrame - 1 + FrameStore::MAX_FRAMES) % FrameStore::MAX_FRAMES;
+    framestore_save_current();
+    framestore_load_frame(prev);
+}
+
+void frame_goto(int index) {
+    if (index < 0 || index >= FrameStore::MAX_FRAMES) return;
+    framestore_save_current();
+    framestore_load_frame(index);
+}
+
+int frame_current() {
+    return g_frameStore.currentFrame;
+}
+
+int frame_count() {
+    return FrameStore::MAX_FRAMES;
+}
+
+} // extern "C"
+
+// =============================================================================
 // Frame Wheel UI (Looom-style frame navigation)
 // =============================================================================
 
@@ -1353,8 +1387,6 @@ struct FrameWheel {
     bool isDragging;
     float dragStartAngle;     // Where finger touched (in radians)
     int dragStartFrame;       // Which frame we were on when drag started
-    float dragStartRotation;  // Visual rotation when drag started (the wheel image position)
-    float rotation;           // Current visual rotation angle
 };
 
 // Screen width for coordinate conversion (set in main loop)
@@ -2000,9 +2032,7 @@ static int metal_test_main() {
         .innerRadius = 25.0f,
         .isDragging = false,
         .dragStartAngle = 0.0f,
-        .dragStartFrame = 0,
-        .dragStartRotation = 0.0f,
-        .rotation = 0.0f
+        .dragStartFrame = 0
     };
 
     // Main loop
@@ -2132,11 +2162,10 @@ static int metal_test_main() {
                             frameWheel.dragStartAngle = getWheelAngle(frameWheel, x, y);
                             frameWheel.dragStartFrame = framestore_get_current_frame();
                             // Save where the wheel image is NOW - don't recalculate!
-                            frameWheel.dragStartRotation = frameWheel.rotation;
                             // Save current frame pixels before switching to others
                             framestore_save_current();
-                            NSLog(@"[FrameWheel] Started dragging from frame %d, rotation=%.3f (saved)",
-                                  frameWheel.dragStartFrame, frameWheel.rotation);
+                            NSLog(@"[FrameWheel] Started dragging from frame %d",
+                                  frameWheel.dragStartFrame);
                             handledByUI = true;
                         }
 
@@ -2320,10 +2349,6 @@ static int metal_test_main() {
                         const float PI = 3.14159265f;
                         while (angleDelta > PI) angleDelta -= 2 * PI;
                         while (angleDelta < -PI) angleDelta += 2 * PI;
-
-                        // Visual rotation: wheel follows finger movement
-                        // ADD angleDelta so the wheel visually follows the finger direction
-                        frameWheel.rotation = frameWheel.dragStartRotation + angleDelta;
 
                         // Frame selection is DISCRETE (12 positions)
                         // When wheel rotates clockwise, LOWER frame numbers come to top
@@ -2561,11 +2586,7 @@ static int metal_test_main() {
                     // Handle frame wheel release
                     else if (frameWheel.isDragging) {
                         frameWheel.isDragging = false;
-                        // Keep rotation at current frame position (don't reset!)
-                        int currentFrame = framestore_get_current_frame();
-                        const float PI = 3.14159265f;
-                        frameWheel.rotation = -(float)currentFrame / 12.0f * 2.0f * PI;
-                        NSLog(@"[FrameWheel] Released on frame %d", currentFrame);
+                        NSLog(@"[FrameWheel] Released on frame %d", framestore_get_current_frame());
                     }
                     break;
                 }
@@ -2843,9 +2864,12 @@ static int metal_test_main() {
         drawBrushPicker(brushPicker, height);
 
         // Frame wheel for animation (Looom-style)
+        // Rotation is derived from current frame - no separate state
         int totalFrames = framestore_get_frame_count();
         int currentFrame = framestore_get_current_frame();
-        drawFrameWheel(frameWheel, totalFrames, currentFrame, frameWheel.rotation);
+        const float PI = 3.14159265f;
+        float rotation = -(float)currentFrame / (float)totalFrames * 2.0f * PI;
+        drawFrameWheel(frameWheel, totalFrames, currentFrame, rotation);
 
         // Present with UI overlay
         metal_stamp_present();

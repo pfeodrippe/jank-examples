@@ -538,6 +538,10 @@ void anim_goto_frame(int32_t index);
 int32_t anim_get_current_frame_index();
 int32_t anim_get_frame_count();
 
+// Frame change callback (for syncing with external systems like UI wheel)
+typedef void (*FrameChangeCallback)(int32_t newFrameIndex);
+void anim_set_frame_change_callback(FrameChangeCallback callback);
+
 // Thread properties (operates on active thread)
 void anim_set_thread_fps(float fps);
 float anim_get_thread_fps();

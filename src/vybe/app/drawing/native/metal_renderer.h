@@ -421,4 +421,14 @@ void metal_stamp_clear_frame_cache();
 int metal_stamp_get_canvas_width();
 int metal_stamp_get_canvas_height();
 
+// =============================================================================
+// FrameStore C API - For REPL (uses same 12-frame system as wheel)
+// =============================================================================
+
+void frame_next();
+void frame_prev();
+void frame_goto(int index);
+int frame_current();
+int frame_count();
+
 } // extern "C"
