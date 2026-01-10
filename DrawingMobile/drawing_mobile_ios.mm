@@ -80,10 +80,20 @@ struct jank_init_result {
     bool success = false;
 };
 
+// Forward declaration - call_jank_metal_main() is defined later
+static void call_jank_metal_main();
+
 static void* jank_init_thread_func(void* arg) {
     auto* result = static_cast<jank_init_result*>(arg);
 
     bool success = init_jank_runtime_impl();
+
+    // Also call jank_metal_main on this large-stack thread!
+    // The require call triggers deep JIT recursion that needs 8MB stack.
+    if (success) {
+        std::cout << "[drawing_mobile] Calling jank metal main on large stack thread..." << std::endl;
+        call_jank_metal_main();
+    }
 
     {
         std::lock_guard<std::mutex> lock(result->mtx);
@@ -1723,11 +1733,11 @@ static int metal_test_main() {
     std::cout << "Metal renderer initialized!" << std::endl;
 
     // Initialize jank runtime and start nREPL via vybe.app.drawing.metal namespace
+    // NOTE: call_jank_metal_main() is now called inside init_jank_runtime_on_large_stack()
+    // because the require call triggers deep JIT recursion that needs 8MB stack.
     std::cout << "Initializing jank runtime for nREPL..." << std::endl;
     if (init_jank_runtime_on_large_stack()) {
-        std::cout << "Jank runtime initialized!" << std::endl;
-        // Call vybe.app.drawing.metal/-main to start nREPL
-        call_jank_metal_main();
+        std::cout << "Jank runtime initialized and nREPL started!" << std::endl;
     } else {
         std::cerr << "Warning: Failed to initialize jank runtime (nREPL unavailable)" << std::endl;
     }
