@@ -132,6 +132,15 @@ struct MSLStrokeUniforms {
 @property (nonatomic, assign) int activeFrameIndex;
 @property (nonatomic, assign) int maxFrames;  // Default 12 for Looom-style wheel
 
+// Onion skin properties (animation overlay)
+@property (nonatomic, assign) BOOL onionSkinEnabled;
+@property (nonatomic, assign) int onionSkinPrevCount;   // Show N previous frames (1-5)
+@property (nonatomic, assign) int onionSkinNextCount;   // Show N next frames (1-5)
+@property (nonatomic, assign) float onionSkinOpacity;   // Base opacity (0.0-1.0)
+@property (nonatomic, assign) simd_float4 onionSkinPrevColor;  // Tint for past frames (reddish)
+@property (nonatomic, assign) simd_float4 onionSkinNextColor;  // Tint for future frames (bluish)
+@property (nonatomic, strong) id<MTLRenderPipelineState> onionSkinPipeline;
+
 - (BOOL)initWithWindow:(SDL_Window*)window width:(int)w height:(int)h;
 - (void)cleanup;
 - (BOOL)createPipelines;
@@ -192,6 +201,10 @@ struct MSLStrokeUniforms {
 - (BOOL)isFrameCached:(int)frameIndex;
 - (void)clearFrameCache;
 
+// Onion skin rendering (animation overlay)
+- (void)drawOnionSkinFramesToTexture:(id<MTLTexture>)targetTexture;
+- (void)drawCanvasToTextureWithLoad:(id<MTLTexture>)targetTexture;  // Load existing content
+
 @end
 
 // UI Rect parameters (matches shader struct)
@@ -218,6 +231,19 @@ struct CanvasTransformUniforms {
     simd_float2 pivot;         // Transform pivot in pixels
     simd_float2 viewportSize;  // Screen/viewport size in pixels
     simd_float2 canvasSize;    // Canvas texture size in pixels (may differ from viewport)
+};
+
+// Onion skin uniforms (matches shader struct)
+struct OnionSkinUniforms {
+    simd_float2 pan;
+    float scale;
+    float rotation;
+    simd_float2 pivot;
+    simd_float2 viewportSize;
+    simd_float2 canvasSize;
+    float opacity;
+    float _padding;
+    simd_float4 tintColor;
 };
 
 @implementation MetalStampRendererImpl {
@@ -707,6 +733,42 @@ struct CanvasTransformUniforms {
     } else {
         METAL_LOG("Canvas blit shaders not found in library (vertex=%p fragment=%p)", canvasBlitVertexFunc, canvasBlitFragmentFunc);
     }
+
+    // Create onion skin pipeline (for animation frame overlays)
+    id<MTLFunction> onionSkinVertexFunc = [library newFunctionWithName:@"onion_skin_vertex"];
+    id<MTLFunction> onionSkinFragmentFunc = [library newFunctionWithName:@"onion_skin_fragment"];
+    if (onionSkinVertexFunc && onionSkinFragmentFunc) {
+        MTLRenderPipelineDescriptor* onionSkinPipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
+        onionSkinPipelineDesc.vertexFunction = onionSkinVertexFunc;
+        onionSkinPipelineDesc.fragmentFunction = onionSkinFragmentFunc;
+        onionSkinPipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+        // Alpha blending for overlay compositing
+        onionSkinPipelineDesc.colorAttachments[0].blendingEnabled = YES;
+        onionSkinPipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+        onionSkinPipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+        onionSkinPipelineDesc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        onionSkinPipelineDesc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+        onionSkinPipelineDesc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        onionSkinPipelineDesc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+
+        self.onionSkinPipeline = [self.device newRenderPipelineStateWithDescriptor:onionSkinPipelineDesc error:&error];
+        if (!self.onionSkinPipeline) {
+            METAL_LOG("Failed to create onion skin pipeline: %s", [[error localizedDescription] UTF8String]);
+        } else {
+            METAL_LOG("Created onion skin pipeline");
+        }
+    } else {
+        METAL_LOG("Onion skin shaders not found in library");
+    }
+
+    // Initialize onion skin settings (enabled by default for animation workflow)
+    self.onionSkinEnabled = YES;
+    self.onionSkinPrevCount = 2;
+    self.onionSkinNextCount = 1;
+    self.onionSkinOpacity = 0.35f;
+    self.onionSkinPrevColor = simd_make_float4(1.0f, 0.4f, 0.4f, 1.0f);  // Reddish
+    self.onionSkinNextColor = simd_make_float4(0.4f, 0.6f, 1.0f, 1.0f);  // Bluish
 
     METAL_LOG("Created render pipelines");
     return YES;
@@ -1484,6 +1546,120 @@ struct CanvasTransformUniforms {
     self.activeFrameIndex = 0;
 }
 
+// =============================================================================
+// Onion Skin Rendering
+// =============================================================================
+
+- (void)drawOnionSkinFramesToTexture:(id<MTLTexture>)targetTexture {
+    if (!self.onionSkinEnabled || !self.onionSkinPipeline) return;
+    if (!self.frameTextureCache || self.frameTextureCache.count == 0) return;
+
+    int currentFrame = self.activeFrameIndex;
+    int totalFrames = (int)self.frameTextureCache.count;
+
+    // Collect frames to draw (farthest first for proper layering)
+    NSMutableArray<NSNumber*>* framesToDraw = [NSMutableArray array];
+    NSMutableArray<NSNumber*>* frameOpacities = [NSMutableArray array];
+    NSMutableArray<NSNumber*>* frameIsPrev = [NSMutableArray array];  // YES = prev, NO = next
+
+    // Previous frames (farthest first)
+    for (int i = self.onionSkinPrevCount; i >= 1; i--) {
+        int frameIdx = (currentFrame - i + totalFrames) % totalFrames;
+        if (frameIdx != currentFrame && [self isFrameCached:frameIdx]) {
+            [framesToDraw addObject:@(frameIdx)];
+            // Opacity falls off with distance
+            float opacityFalloff = 1.0f - ((float)(i - 1) / (float)MAX(1, self.onionSkinPrevCount));
+            [frameOpacities addObject:@(self.onionSkinOpacity * opacityFalloff)];
+            [frameIsPrev addObject:@YES];
+        }
+    }
+
+    // Next frames (closest first, after all previous frames)
+    for (int i = 1; i <= self.onionSkinNextCount; i++) {
+        int frameIdx = (currentFrame + i) % totalFrames;
+        if (frameIdx != currentFrame && [self isFrameCached:frameIdx]) {
+            [framesToDraw addObject:@(frameIdx)];
+            float opacityFalloff = 1.0f - ((float)(i - 1) / (float)MAX(1, self.onionSkinNextCount));
+            [frameOpacities addObject:@(self.onionSkinOpacity * opacityFalloff)];
+            [frameIsPrev addObject:@NO];
+        }
+    }
+
+    if (framesToDraw.count == 0) return;
+
+    // Draw each onion skin frame
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+
+    for (NSUInteger i = 0; i < framesToDraw.count; i++) {
+        int frameIdx = [framesToDraw[i] intValue];
+        float opacity = [frameOpacities[i] floatValue];
+        BOOL isPrev = [frameIsPrev[i] boolValue];
+        simd_float4 tintColor = isPrev ? self.onionSkinPrevColor : self.onionSkinNextColor;
+
+        id<MTLTexture> frameTexture = self.frameTextureCache[frameIdx];
+        if (!frameTexture) continue;
+
+        // Setup render pass (load existing content, don't clear)
+        MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+        passDesc.colorAttachments[0].texture = targetTexture;
+        passDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
+        [encoder setRenderPipelineState:self.onionSkinPipeline];
+
+        // Set uniforms (same transform as current canvas)
+        OnionSkinUniforms uniforms = {
+            .pan = _canvasTransform.pan,
+            .scale = _canvasTransform.scale,
+            .rotation = _canvasTransform.rotation,
+            .pivot = _canvasTransform.pivot,
+            .viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight),
+            .canvasSize = simd_make_float2(self.canvasWidth, self.canvasHeight),
+            .opacity = opacity,
+            ._padding = 0,
+            .tintColor = tintColor
+        };
+
+        [encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+        [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+        [encoder setFragmentTexture:frameTexture atIndex:0];
+        [encoder setFragmentSamplerState:self.textureSampler atIndex:0];
+
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        [encoder endEncoding];
+    }
+
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+}
+
+- (void)drawCanvasToTextureWithLoad:(id<MTLTexture>)targetTexture {
+    if (!self.canvasBlitPipeline) return;
+
+    // Update viewport and canvas sizes
+    _canvasTransform.viewportSize = simd_make_float2(self.drawableWidth, self.drawableHeight);
+    _canvasTransform.canvasSize = simd_make_float2(self.canvasWidth, self.canvasHeight);
+
+    id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+
+    MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+    passDesc.colorAttachments[0].texture = targetTexture;
+    passDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;  // Preserve existing content (onion skin)
+    passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:passDesc];
+    [encoder setRenderPipelineState:self.canvasBlitPipeline];
+    [encoder setVertexBytes:&_canvasTransform length:sizeof(CanvasTransformUniforms) atIndex:0];
+    [encoder setFragmentTexture:self.canvasTexture atIndex:0];
+    [encoder setFragmentSamplerState:self.textureSampler atIndex:0];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+    [encoder endEncoding];
+
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+}
+
 @end
 
 // =============================================================================
@@ -1845,8 +2021,18 @@ void MetalStampRenderer::present() {
             return;
         }
 
-        // Check if we need to use transformed draw or direct blit
-        if ([impl_ hasCanvasTransform] && impl_.canvasBlitPipeline) {
+        // Check if onion skin is enabled
+        if (impl_.onionSkinEnabled && impl_.onionSkinPipeline) {
+            // Onion skin mode:
+            // 1. Draw current canvas (clears to background, shows current drawing)
+            [impl_ drawCanvasToTexture:drawable.texture];
+
+            // 2. Draw onion skin frames on top (semi-transparent overlays)
+            // The shader filters out paper-white pixels, so only drawn content shows
+            [impl_ drawOnionSkinFramesToTexture:drawable.texture];
+        }
+        // Normal mode (no onion skin)
+        else if ([impl_ hasCanvasTransform] && impl_.canvasBlitPipeline) {
             // Use transformed canvas draw
             [impl_ drawCanvasToTexture:drawable.texture];
         } else {
@@ -1888,6 +2074,63 @@ int MetalStampRenderer::get_current_stroke_point_count() const {
 
 int MetalStampRenderer::get_points_rendered() const {
     return is_ready() ? impl_.pointsRendered : 0;
+}
+
+// =============================================================================
+// Onion Skin Methods
+// =============================================================================
+
+void MetalStampRenderer::set_onion_skin_enabled(bool enabled) {
+    if (impl_) {
+        impl_.onionSkinEnabled = enabled;
+        std::cout << "[OnionSkin] " << (enabled ? "ENABLED" : "DISABLED") << std::endl;
+    }
+}
+
+bool MetalStampRenderer::get_onion_skin_enabled() const {
+    return impl_ ? impl_.onionSkinEnabled : false;
+}
+
+void MetalStampRenderer::set_onion_skin_prev_count(int count) {
+    if (impl_) {
+        impl_.onionSkinPrevCount = std::max(0, std::min(count, 5));
+    }
+}
+
+int MetalStampRenderer::get_onion_skin_prev_count() const {
+    return impl_ ? impl_.onionSkinPrevCount : 0;
+}
+
+void MetalStampRenderer::set_onion_skin_next_count(int count) {
+    if (impl_) {
+        impl_.onionSkinNextCount = std::max(0, std::min(count, 5));
+    }
+}
+
+int MetalStampRenderer::get_onion_skin_next_count() const {
+    return impl_ ? impl_.onionSkinNextCount : 0;
+}
+
+void MetalStampRenderer::set_onion_skin_opacity(float opacity) {
+    if (impl_) {
+        impl_.onionSkinOpacity = std::max(0.0f, std::min(opacity, 1.0f));
+    }
+}
+
+float MetalStampRenderer::get_onion_skin_opacity() const {
+    return impl_ ? impl_.onionSkinOpacity : 0.0f;
+}
+
+void MetalStampRenderer::set_onion_skin_prev_color(float r, float g, float b, float a) {
+    if (impl_) {
+        impl_.onionSkinPrevColor = simd_make_float4(r, g, b, a);
+    }
+}
+
+void MetalStampRenderer::set_onion_skin_next_color(float r, float g, float b, float a) {
+    if (impl_) {
+        impl_.onionSkinNextColor = simd_make_float4(r, g, b, a);
+    }
 }
 
 void MetalStampRenderer::queue_ui_rect(float x, float y, float width, float height,
@@ -2887,6 +3130,74 @@ METAL_EXPORT int metal_stamp_get_canvas_width() {
 METAL_EXPORT int metal_stamp_get_canvas_height() {
     if (!metal_stamp::g_metal_renderer) return 0;
     return metal_stamp::g_metal_renderer->get_canvas_height();
+}
+
+// =============================================================================
+// Onion Skin API
+// =============================================================================
+
+METAL_EXPORT void metal_stamp_set_onion_skin_enabled(bool enabled) {
+    if (metal_stamp::g_metal_renderer) {
+        metal_stamp::g_metal_renderer->set_onion_skin_enabled(enabled);
+    }
+}
+
+METAL_EXPORT bool metal_stamp_get_onion_skin_enabled() {
+    if (metal_stamp::g_metal_renderer) {
+        return metal_stamp::g_metal_renderer->get_onion_skin_enabled();
+    }
+    return false;
+}
+
+METAL_EXPORT void metal_stamp_set_onion_skin_prev_count(int count) {
+    if (metal_stamp::g_metal_renderer) {
+        metal_stamp::g_metal_renderer->set_onion_skin_prev_count(count);
+    }
+}
+
+METAL_EXPORT void metal_stamp_set_onion_skin_next_count(int count) {
+    if (metal_stamp::g_metal_renderer) {
+        metal_stamp::g_metal_renderer->set_onion_skin_next_count(count);
+    }
+}
+
+METAL_EXPORT void metal_stamp_set_onion_skin_opacity(float opacity) {
+    if (metal_stamp::g_metal_renderer) {
+        metal_stamp::g_metal_renderer->set_onion_skin_opacity(opacity);
+    }
+}
+
+METAL_EXPORT void metal_stamp_set_onion_skin_prev_color(float r, float g, float b, float a) {
+    if (metal_stamp::g_metal_renderer) {
+        metal_stamp::g_metal_renderer->set_onion_skin_prev_color(r, g, b, a);
+    }
+}
+
+METAL_EXPORT void metal_stamp_set_onion_skin_next_color(float r, float g, float b, float a) {
+    if (metal_stamp::g_metal_renderer) {
+        metal_stamp::g_metal_renderer->set_onion_skin_next_color(r, g, b, a);
+    }
+}
+
+METAL_EXPORT int metal_stamp_get_onion_skin_prev_count() {
+    if (metal_stamp::g_metal_renderer) {
+        return metal_stamp::g_metal_renderer->get_onion_skin_prev_count();
+    }
+    return 0;
+}
+
+METAL_EXPORT int metal_stamp_get_onion_skin_next_count() {
+    if (metal_stamp::g_metal_renderer) {
+        return metal_stamp::g_metal_renderer->get_onion_skin_next_count();
+    }
+    return 0;
+}
+
+METAL_EXPORT float metal_stamp_get_onion_skin_opacity() {
+    if (metal_stamp::g_metal_renderer) {
+        return metal_stamp::g_metal_renderer->get_onion_skin_opacity();
+    }
+    return 0.0f;
 }
 
 } // extern "C"

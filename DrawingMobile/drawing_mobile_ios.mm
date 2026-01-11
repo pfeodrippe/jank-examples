@@ -730,6 +730,54 @@ static void drawEraserButton(const EraserButtonConfig& btn, bool isActive) {
 }
 
 // =============================================================================
+// Onion Skin Toggle Button
+// =============================================================================
+
+struct OnionSkinButtonConfig {
+    float x, y;
+    float size;
+};
+
+static bool isPointInOnionSkinButton(const OnionSkinButtonConfig& btn, float px, float py) {
+    return px >= btn.x && px <= btn.x + btn.size &&
+           py >= btn.y && py <= btn.y + btn.size;
+}
+
+static void drawOnionSkinButton(const OnionSkinButtonConfig& btn, bool isActive) {
+    // Background - changes color when active
+    if (isActive) {
+        // Active: orange/amber glow (animation-ready indicator)
+        metal_stamp_queue_ui_rect(btn.x - 3, btn.y - 3, btn.size + 6, btn.size + 6,
+                                  0.95f, 0.6f, 0.2f, 0.95f, 12.0f);
+        metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
+                                  0.3f, 0.25f, 0.2f, 0.95f, 10.0f);
+    } else {
+        // Inactive: dark gray
+        metal_stamp_queue_ui_rect(btn.x - 3, btn.y - 3, btn.size + 6, btn.size + 6,
+                                  0.3f, 0.3f, 0.35f, 0.6f, 12.0f);
+        metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
+                                  0.15f, 0.15f, 0.18f, 0.95f, 10.0f);
+    }
+
+    // Onion skin icon - layered circles representing animation frames
+    float cx = btn.x + btn.size * 0.5f;
+    float cy = btn.y + btn.size * 0.5f;
+    float r = btn.size * 0.25f;
+
+    // Previous frame (reddish, offset left)
+    metal_stamp_queue_ui_rect(cx - r * 1.6f - r * 0.8f, cy - r * 0.8f, r * 1.6f, r * 1.6f,
+                              1.0f, 0.4f, 0.4f, isActive ? 0.7f : 0.3f, r * 0.8f);
+
+    // Current frame (white/bright, center)
+    metal_stamp_queue_ui_rect(cx - r * 0.8f, cy - r * 0.8f, r * 1.6f, r * 1.6f,
+                              1.0f, 1.0f, 1.0f, isActive ? 1.0f : 0.5f, r * 0.8f);
+
+    // Next frame (bluish, offset right)
+    metal_stamp_queue_ui_rect(cx + r * 0.0f, cy - r * 0.8f, r * 1.6f, r * 1.6f,
+                              0.4f, 0.6f, 1.0f, isActive ? 0.7f : 0.3f, r * 0.8f);
+}
+
+// =============================================================================
 // Brush Picker Panel Configuration (constants needed by text rendering)
 // =============================================================================
 
@@ -1252,6 +1300,26 @@ struct ThreeFingerGesture {
     float finger0_currX, finger0_currY;
     float finger1_currX, finger1_currY;
     float finger2_currX, finger2_currY;
+
+    // Timing for tap detection
+    Uint64 startTimeMs;
+};
+
+struct FourFingerGesture {
+    bool isActive;
+    SDL_FingerID finger0_id, finger1_id, finger2_id, finger3_id;
+
+    // Starting positions (normalized 0-1)
+    float finger0_startX, finger0_startY;
+    float finger1_startX, finger1_startY;
+    float finger2_startX, finger2_startY;
+    float finger3_startX, finger3_startY;
+
+    // Current positions (normalized 0-1)
+    float finger0_currX, finger0_currY;
+    float finger1_currX, finger1_currY;
+    float finger2_currX, finger2_currY;
+    float finger3_currX, finger3_currY;
 
     // Timing for tap detection
     Uint64 startTimeMs;
@@ -1998,6 +2066,13 @@ static int metal_test_main() {
         .size = ERASER_BUTTON_SIZE
     };
 
+    // Onion skin toggle button - right of eraser
+    OnionSkinButtonConfig onionSkinButton = {
+        .x = eraserButton.x + eraserButton.size + 20.0f,
+        .y = eraserButton.y,
+        .size = ERASER_BUTTON_SIZE  // Same size as eraser button
+    };
+
     // Initialize brush picker panel - position in center of screen
     float brushPickerWidth = BRUSH_PICKER_COLS * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP) + BRUSH_PICKER_PADDING * 2 - BRUSH_PICKER_ITEM_GAP;
     float brushPickerHeight = 800.0f;  // Show more brushes
@@ -2097,6 +2172,20 @@ static int metal_test_main() {
         .finger0_currX = 0, .finger0_currY = 0,
         .finger1_currX = 0, .finger1_currY = 0,
         .finger2_currX = 0, .finger2_currY = 0,
+        .startTimeMs = 0
+    };
+
+    FourFingerGesture fourFingerGesture = {
+        .isActive = false,
+        .finger0_id = 0, .finger1_id = 0, .finger2_id = 0, .finger3_id = 0,
+        .finger0_startX = 0, .finger0_startY = 0,
+        .finger1_startX = 0, .finger1_startY = 0,
+        .finger2_startX = 0, .finger2_startY = 0,
+        .finger3_startX = 0, .finger3_startY = 0,
+        .finger0_currX = 0, .finger0_currY = 0,
+        .finger1_currX = 0, .finger1_currY = 0,
+        .finger2_currX = 0, .finger2_currY = 0,
+        .finger3_currX = 0, .finger3_currY = 0,
         .startTimeMs = 0
     };
 
@@ -2268,6 +2357,12 @@ static int metal_test_main() {
                                 NSLog(@"[Eraser] Eraser mode OFF");
                             }
                             handledByUI = true;
+                        } else if (isPointInOnionSkinButton(onionSkinButton, x, y)) {
+                            // Toggle onion skin
+                            bool current = metal_stamp_get_onion_skin_enabled();
+                            metal_stamp_set_onion_skin_enabled(!current);
+                            NSLog(@"[OnionSkin] %s", current ? "OFF" : "ON");
+                            handledByUI = true;
                         } else if (brushPicker.isOpen) {
                             // Tap outside picker closes it
                             brushPicker.isOpen = false;
@@ -2320,6 +2415,36 @@ static int metal_test_main() {
                             threeFingerGesture.finger2_currY = threeFingerGesture.finger2_startY;
                             threeFingerGesture.startTimeMs = SDL_GetTicks();
                             std::cout << "Three-finger gesture started (for redo)" << std::endl;
+                        }
+                        // Check for fourth finger during three-finger gesture (for onion skin toggle)
+                        else if (threeFingerGesture.isActive && !fourFingerGesture.isActive &&
+                            fingerId != threeFingerGesture.finger0_id &&
+                            fingerId != threeFingerGesture.finger1_id &&
+                            fingerId != threeFingerGesture.finger2_id) {
+                            // Fourth finger down - start four-finger gesture (for onion skin)
+                            fourFingerGesture.isActive = true;
+                            fourFingerGesture.finger0_id = threeFingerGesture.finger0_id;
+                            fourFingerGesture.finger1_id = threeFingerGesture.finger1_id;
+                            fourFingerGesture.finger2_id = threeFingerGesture.finger2_id;
+                            fourFingerGesture.finger3_id = fingerId;
+                            fourFingerGesture.finger0_startX = threeFingerGesture.finger0_currX;
+                            fourFingerGesture.finger0_startY = threeFingerGesture.finger0_currY;
+                            fourFingerGesture.finger1_startX = threeFingerGesture.finger1_currX;
+                            fourFingerGesture.finger1_startY = threeFingerGesture.finger1_currY;
+                            fourFingerGesture.finger2_startX = threeFingerGesture.finger2_currX;
+                            fourFingerGesture.finger2_startY = threeFingerGesture.finger2_currY;
+                            fourFingerGesture.finger3_startX = event.tfinger.x;
+                            fourFingerGesture.finger3_startY = event.tfinger.y;
+                            fourFingerGesture.finger0_currX = fourFingerGesture.finger0_startX;
+                            fourFingerGesture.finger0_currY = fourFingerGesture.finger0_startY;
+                            fourFingerGesture.finger1_currX = fourFingerGesture.finger1_startX;
+                            fourFingerGesture.finger1_currY = fourFingerGesture.finger1_startY;
+                            fourFingerGesture.finger2_currX = fourFingerGesture.finger2_startX;
+                            fourFingerGesture.finger2_currY = fourFingerGesture.finger2_startY;
+                            fourFingerGesture.finger3_currX = fourFingerGesture.finger3_startX;
+                            fourFingerGesture.finger3_currY = fourFingerGesture.finger3_startY;
+                            fourFingerGesture.startTimeMs = SDL_GetTicks();
+                            std::cout << "🧅 Four-finger gesture started (for onion skin toggle)" << std::endl;
                         }
                         else if (!gesture.isActive) {
                             // NOTE: SDL_HINT_PEN_TOUCH_EVENTS="0" prevents pencil from generating
@@ -2398,8 +2523,24 @@ static int metal_test_main() {
                     float y = event.tfinger.y * height;
                     SDL_FingerID fingerId = event.tfinger.fingerID;
 
+                    // Handle four-finger gesture motion (onion skin)
+                    if (fourFingerGesture.isActive) {
+                        if (fingerId == fourFingerGesture.finger0_id) {
+                            fourFingerGesture.finger0_currX = event.tfinger.x;
+                            fourFingerGesture.finger0_currY = event.tfinger.y;
+                        } else if (fingerId == fourFingerGesture.finger1_id) {
+                            fourFingerGesture.finger1_currX = event.tfinger.x;
+                            fourFingerGesture.finger1_currY = event.tfinger.y;
+                        } else if (fingerId == fourFingerGesture.finger2_id) {
+                            fourFingerGesture.finger2_currX = event.tfinger.x;
+                            fourFingerGesture.finger2_currY = event.tfinger.y;
+                        } else if (fingerId == fourFingerGesture.finger3_id) {
+                            fourFingerGesture.finger3_currX = event.tfinger.x;
+                            fourFingerGesture.finger3_currY = event.tfinger.y;
+                        }
+                    }
                     // Handle three-finger gesture motion
-                    if (threeFingerGesture.isActive) {
+                    else if (threeFingerGesture.isActive) {
                         if (fingerId == threeFingerGesture.finger0_id) {
                             threeFingerGesture.finger0_currX = event.tfinger.x;
                             threeFingerGesture.finger0_currY = event.tfinger.y;
@@ -2554,8 +2695,47 @@ static int metal_test_main() {
                     const Uint64 TAP_MAX_DURATION_MS = 200;    // Max duration for a tap
                     const float TAP_MAX_MOVEMENT = 20.0f;     // Max movement in pixels for a tap
 
+                    // Handle four-finger gesture release (for onion skin toggle)
+                    if (fourFingerGesture.isActive) {
+                        if (fingerId == fourFingerGesture.finger0_id ||
+                            fingerId == fourFingerGesture.finger1_id ||
+                            fingerId == fourFingerGesture.finger2_id ||
+                            fingerId == fourFingerGesture.finger3_id) {
+
+                            Uint64 gestureDuration = SDL_GetTicks() - fourFingerGesture.startTimeMs;
+
+                            // Check if it was a tap (short duration, minimal movement)
+                            float move0 = pointDistance(
+                                fourFingerGesture.finger0_startX * width, fourFingerGesture.finger0_startY * height,
+                                fourFingerGesture.finger0_currX * width, fourFingerGesture.finger0_currY * height);
+                            float move1 = pointDistance(
+                                fourFingerGesture.finger1_startX * width, fourFingerGesture.finger1_startY * height,
+                                fourFingerGesture.finger1_currX * width, fourFingerGesture.finger1_currY * height);
+                            float move2 = pointDistance(
+                                fourFingerGesture.finger2_startX * width, fourFingerGesture.finger2_startY * height,
+                                fourFingerGesture.finger2_currX * width, fourFingerGesture.finger2_currY * height);
+                            float move3 = pointDistance(
+                                fourFingerGesture.finger3_startX * width, fourFingerGesture.finger3_startY * height,
+                                fourFingerGesture.finger3_currX * width, fourFingerGesture.finger3_currY * height);
+
+                            float maxMove = std::max({move0, move1, move2, move3});
+
+                            if (gestureDuration < TAP_MAX_DURATION_MS && maxMove < TAP_MAX_MOVEMENT) {
+                                // Four-finger tap detected - Toggle Onion Skin!
+                                bool currentEnabled = metal_stamp_get_onion_skin_enabled();
+                                metal_stamp_set_onion_skin_enabled(!currentEnabled);
+                                std::cout << "🧅 Four-finger tap: Onion Skin " << (currentEnabled ? "OFF" : "ON") << std::endl;
+                            }
+
+                            fourFingerGesture.isActive = false;
+                            threeFingerGesture.isActive = false;  // Also end three-finger gesture
+                            gesture.isActive = false;  // Also end two-finger gesture
+                            hasFinger0 = false;
+                            std::cout << "Four-finger gesture ended" << std::endl;
+                        }
+                    }
                     // Handle three-finger gesture release (for redo)
-                    if (threeFingerGesture.isActive) {
+                    else if (threeFingerGesture.isActive) {
                         if (fingerId == threeFingerGesture.finger0_id ||
                             fingerId == threeFingerGesture.finger1_id ||
                             fingerId == threeFingerGesture.finger2_id) {
@@ -2819,6 +2999,11 @@ static int metal_test_main() {
                             metal_stamp_set_brush_color(colorPicker.currentR, colorPicker.currentG, colorPicker.currentB, 1.0f);
                             NSLog(@"[Eraser] Eraser mode OFF (pen)");
                         }
+                    } else if (isPointInOnionSkinButton(onionSkinButton, screenX, screenY)) {
+                        // Toggle onion skin (pen)
+                        bool current = metal_stamp_get_onion_skin_enabled();
+                        metal_stamp_set_onion_skin_enabled(!current);
+                        NSLog(@"[OnionSkin] %s (pen)", current ? "OFF" : "ON");
                     } else if (brushPicker.isOpen) {
                         // Tap outside picker closes it (pen)
                         brushPicker.isOpen = false;
@@ -2838,6 +3023,10 @@ static int metal_test_main() {
                         if (threeFingerGesture.isActive) {
                             threeFingerGesture.isActive = false;
                             NSLog(@"[PalmReject] Cancelled three-finger gesture - pencil drawing started");
+                        }
+                        if (fourFingerGesture.isActive) {
+                            fourFingerGesture.isActive = false;
+                            NSLog(@"[PalmReject] Cancelled four-finger gesture - pencil drawing started");
                         }
 
                         metal_stamp_undo_begin_stroke(canvasX, canvasY, pen_pressure);
@@ -2999,6 +3188,9 @@ static int metal_test_main() {
 
         // Eraser toggle button
         drawEraserButton(eraserButton, g_eraserMode);
+
+        // Onion skin toggle button
+        drawOnionSkinButton(onionSkinButton, metal_stamp_get_onion_skin_enabled());
 
         // Brush picker panel (if open)
         drawBrushPicker(brushPicker, height);

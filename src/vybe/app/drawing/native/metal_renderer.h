@@ -287,6 +287,21 @@ public:
     // Get total points rendered this frame
     int get_points_rendered() const;
 
+    // =========================================================================
+    // Onion Skin (Animation overlay)
+    // =========================================================================
+
+    void set_onion_skin_enabled(bool enabled);
+    bool get_onion_skin_enabled() const;
+    void set_onion_skin_prev_count(int count);
+    int get_onion_skin_prev_count() const;
+    void set_onion_skin_next_count(int count);
+    int get_onion_skin_next_count() const;
+    void set_onion_skin_opacity(float opacity);
+    float get_onion_skin_opacity() const;
+    void set_onion_skin_prev_color(float r, float g, float b, float a);
+    void set_onion_skin_next_color(float r, float g, float b, float a);
+
 private:
     // Prevent copying
     MetalStampRenderer(const MetalStampRenderer&) = delete;
@@ -456,6 +471,28 @@ void metal_stamp_clear_frame_cache();
 // Canvas size getters
 int metal_stamp_get_canvas_width();
 int metal_stamp_get_canvas_height();
+
+// =============================================================================
+// Onion Skin API - Animation frame overlay
+// =============================================================================
+
+// Enable/disable onion skin rendering
+void metal_stamp_set_onion_skin_enabled(bool enabled);
+bool metal_stamp_get_onion_skin_enabled();
+
+// Number of previous/next frames to show (0-5)
+void metal_stamp_set_onion_skin_prev_count(int count);
+void metal_stamp_set_onion_skin_next_count(int count);
+int metal_stamp_get_onion_skin_prev_count();
+int metal_stamp_get_onion_skin_next_count();
+
+// Base opacity for onion skin frames (0.0-1.0)
+void metal_stamp_set_onion_skin_opacity(float opacity);
+float metal_stamp_get_onion_skin_opacity();
+
+// Tint colors for previous/next frames (RGBA, 0.0-1.0)
+void metal_stamp_set_onion_skin_prev_color(float r, float g, float b, float a);
+void metal_stamp_set_onion_skin_next_color(float r, float g, float b, float a);
 
 // =============================================================================
 // FrameStore C API - For REPL (uses same 12-frame system as wheel)

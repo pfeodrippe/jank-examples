@@ -555,3 +555,87 @@ fragment half4 ui_textured_rect_fragment(UIVertexOut in [[stage_in]],
     float4 result = texColor * params.tint;
     return half4(result);
 }
+
+// =============================================================================
+// Onion Skin Overlay Shader
+// =============================================================================
+// Renders previous/next animation frames as semi-transparent tinted overlays
+// to help animators see motion continuity.
+
+struct OnionSkinUniforms {
+    float2 pan;           // Pan offset in pixels
+    float scale;          // Zoom level
+    float rotation;       // Rotation in radians
+    float2 pivot;         // Transform pivot in pixels
+    float2 viewportSize;  // Screen/viewport size in pixels
+    float2 canvasSize;    // Canvas texture size
+    float opacity;        // 0.0 - 1.0
+    float4 tintColor;     // RGBA tint (red for past, blue for future)
+};
+
+vertex CanvasBlitVertexOut onion_skin_vertex(
+    uint vid [[vertex_id]],
+    constant OnionSkinUniforms& transform [[buffer(0)]]
+) {
+    // Full-screen quad corners (NDC)
+    float2 corners[4] = {
+        float2(-1, -1),  // BL
+        float2( 1, -1),  // BR
+        float2(-1,  1),  // TL
+        float2( 1,  1)   // TR
+    };
+
+    float2 pos = corners[vid];
+
+    // Convert NDC to screen pixel coordinates
+    float2 screenPos;
+    screenPos.x = (pos.x + 1.0) * 0.5 * transform.viewportSize.x;
+    screenPos.y = (1.0 - pos.y) * 0.5 * transform.viewportSize.y;
+
+    // Apply inverse transform to get canvas position
+    float2 p = screenPos - transform.pivot;
+    p = p - transform.pan;
+    p = p / transform.scale;
+    float c = cos(-transform.rotation);
+    float s = sin(-transform.rotation);
+    p = float2(p.x * c - p.y * s, p.x * s + p.y * c);
+    p = p + transform.pivot;
+
+    // Convert to UV (0 to 1)
+    float2 uv = p / transform.canvasSize;
+
+    CanvasBlitVertexOut out;
+    out.position = float4(corners[vid], 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+fragment half4 onion_skin_fragment(
+    CanvasBlitVertexOut in [[stage_in]],
+    texture2d<float> frameTexture [[texture(0)]],
+    sampler frameSampler [[sampler(0)]],
+    constant OnionSkinUniforms& uniforms [[buffer(0)]]
+) {
+    // Out of bounds = transparent
+    if (in.uv.x < 0.0 || in.uv.x > 1.0 || in.uv.y < 0.0 || in.uv.y > 1.0) {
+        return half4(0, 0, 0, 0);
+    }
+
+    float4 color = frameTexture.sample(frameSampler, in.uv);
+
+    // Skip near-white pixels (paper background) - don't show them in onion skin
+    // This makes only the drawn content visible, not the paper
+    float brightness = (color.r + color.g + color.b) / 3.0;
+    if (brightness > 0.92) {
+        return half4(0, 0, 0, 0);
+    }
+
+    // Apply tint: blend original color with tint color
+    // This preserves the drawing structure while adding color coding
+    float3 tinted = color.rgb * uniforms.tintColor.rgb;
+
+    // Apply opacity (with falloff already baked into uniforms.opacity)
+    float alpha = (1.0 - brightness * 0.5) * uniforms.opacity * uniforms.tintColor.a;
+
+    return half4(half3(tinted), half(alpha));
+}
