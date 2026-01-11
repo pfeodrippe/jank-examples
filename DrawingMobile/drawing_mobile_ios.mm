@@ -482,6 +482,12 @@ static const float PAPER_BG_A = 1.0f;
 // Global delegate instance (must persist while picker is shown)
 static TexturePickerDelegate* g_pickerDelegate = nil;
 
+// =============================================================================
+// Pulley Gesture Logic (unified - no separate swipe detection)
+// =============================================================================
+// Pulley appears IMMEDIATELY on finger down. First movement changes one frame,
+// then 800ms lockout before rotation scrubbing begins.
+
 // Function to show texture picker
 static void showTexturePicker(SDL_Window* window, TextureType type) {
     if (!window) {
@@ -1254,6 +1260,7 @@ struct FrameStore {
     int canvasWidth = 0;
     int canvasHeight = 0;
     bool gpuCacheReady = false;
+    bool dirty = false;  // True if current frame was modified (needs save before switching)
     static const int MAX_FRAMES = 12;  // Looom-style wheel
 };
 
@@ -1275,22 +1282,36 @@ static void framestore_init(int w, int h) {
     }
 }
 
+// Fast save - only GPU cache (for frame switching)
+static void framestore_save_current_fast() {
+    int frame = g_frameStore.currentFrame;
+    if (frame < 0 || frame >= FrameStore::MAX_FRAMES) return;
+
+    // GPU->GPU copy is INSTANT
+    if (g_frameStore.gpuCacheReady) {
+        metal_stamp_cache_frame_to_gpu(frame);
+    }
+}
+
+// Full save - GPU cache + CPU backup (only call after drawing completes)
 static void framestore_save_current() {
     int frame = g_frameStore.currentFrame;
     if (frame < 0 || frame >= FrameStore::MAX_FRAMES) return;
 
-    // Always cache to GPU for instant switching
+    // GPU cache (instant)
     if (g_frameStore.gpuCacheReady) {
         metal_stamp_cache_frame_to_gpu(frame);
     }
 
-    // Also save CPU backup (for persistence/undo)
+    // CPU backup (slow - only for persistence)
     uint8_t* pixels = nullptr;
     int size = metal_stamp_capture_snapshot(&pixels);
     if (pixels && size > 0) {
         g_frameStore.frames[frame].assign(pixels, pixels + size);
         metal_stamp_free_snapshot(pixels);
     }
+
+    g_frameStore.dirty = false;
 }
 
 static void framestore_load_frame(int index) {
@@ -1327,10 +1348,7 @@ static void framestore_goto_frame(int index) {
     if (index == g_frameStore.currentFrame) return;
     if (index < 0 || index >= FrameStore::MAX_FRAMES) return;
 
-    // Save current frame first
-    framestore_save_current();
-
-    // Load target frame
+    // No save needed - frame was saved after drawing ended!
     framestore_load_frame(index);
 }
 
@@ -1350,19 +1368,19 @@ extern "C" {
 
 void frame_next() {
     int next = (g_frameStore.currentFrame + 1) % FrameStore::MAX_FRAMES;
-    framestore_save_current();
+    // No save needed - frame was saved after drawing ended!
     framestore_load_frame(next);
 }
 
 void frame_prev() {
     int prev = (g_frameStore.currentFrame - 1 + FrameStore::MAX_FRAMES) % FrameStore::MAX_FRAMES;
-    framestore_save_current();
+    // No save needed - frame was saved after drawing ended!
     framestore_load_frame(prev);
 }
 
 void frame_goto(int index) {
     if (index < 0 || index >= FrameStore::MAX_FRAMES) return;
-    framestore_save_current();
+    // No save needed - frame was saved after drawing ended!
     framestore_load_frame(index);
 }
 
@@ -1395,28 +1413,30 @@ struct FrameWheel {
 
 struct Pulley {
     bool active;              // Is pulley currently shown
-    bool pending;             // Waiting for delay before showing
-    Uint64 touchStartMs;      // When finger first touched
-    float startX, startY;     // Initial finger position
+    bool firstMoveDone;       // Has first frame change happened?
+    Uint64 lockoutUntilMs;    // No more frame changes until this time (800ms after first move)
+    float startX, startY;     // Initial finger position (for first move detection)
     float centerX, centerY;   // Pulley center (left of finger touch)
     float fingerX, fingerY;   // Current finger position (for drawing indicator)
-    int startFrame;           // Frame when touch began
+    float referenceAngle;     // Reference angle for rotation scrubbing (set after lockout)
+    int startFrame;           // Frame when rotation reference was set
     float radius;             // Visual radius of pulley
 };
 
 static Pulley g_pulley = {
     .active = false,
-    .pending = false,
-    .touchStartMs = 0,
+    .firstMoveDone = false,
+    .lockoutUntilMs = 0,
     .startX = 0, .startY = 0,
     .centerX = 0, .centerY = 0,
     .fingerX = 0, .fingerY = 0,
+    .referenceAngle = 0,
     .startFrame = 0,
     .radius = 180.0f  // 3x larger for visibility
 };
 
-// Delay before pulley appears (ms) - quick swipe before this = frame change
-static const Uint64 PULLEY_DELAY_MS = 150;
+// Lockout period after first frame change (ms)
+static const Uint64 PULLEY_LOCKOUT_MS = 800;
 
 // Draw pulley at current position (circle with indicator line to finger)
 static void drawPulley(const Pulley& pulley, int currentFrame, int totalFrames) {
@@ -2225,9 +2245,7 @@ static int metal_test_main() {
                             frameWheel.isDragging = true;
                             frameWheel.dragStartAngle = getWheelAngle(frameWheel, x, y);
                             frameWheel.dragStartFrame = framestore_get_current_frame();
-                            // Save where the wheel image is NOW - don't recalculate!
-                            // Save current frame pixels before switching to others
-                            framestore_save_current();
+                            // No save needed - frame was saved after drawing ended!
                             NSLog(@"[FrameWheel] Started dragging from frame %d",
                                   frameWheel.dragStartFrame);
                             handledByUI = true;
@@ -2275,27 +2293,31 @@ static int metal_test_main() {
                                 // Ignore finger touches while drawing with pencil
                             }
                             else if (!hasFinger0) {
-                                // First finger down - activate PULLEY for time navigation
+                                // First finger down - activate PULLEY IMMEDIATELY
                                 hasFinger0 = true;
                                 pendingFinger0_id = fingerId;
                                 pendingFinger0_x = event.tfinger.x;
                                 pendingFinger0_y = event.tfinger.y;
 
-                                // Start PENDING pulley - will activate after delay
-                                g_pulley.pending = true;
-                                g_pulley.active = false;
-                                g_pulley.touchStartMs = SDL_GetTicks();
+                                // Activate pulley IMMEDIATELY - no delay!
+                                // NOTE: Do NOT call framestore_save_current() here - it takes 500ms!
+                                // Frame will be saved on first movement when actually needed.
+                                g_pulley.active = true;
+                                g_pulley.firstMoveDone = false;
+                                g_pulley.lockoutUntilMs = 0;
                                 g_pulley.startX = x;
                                 g_pulley.startY = y;
                                 g_pulley.fingerX = x;
                                 g_pulley.fingerY = y;
+                                g_pulley.centerX = x - g_pulley.radius;  // Pulley center to the left
+                                g_pulley.centerY = y;
+                                g_pulley.referenceAngle = 0;  // Will be set after lockout
                                 g_pulley.startFrame = framestore_get_current_frame();
-                                NSLog(@"[Pulley] Pending at (%.1f, %.1f), frame %d", x, y, g_pulley.startFrame);
+                                NSLog(@"[Pulley] IMMEDIATE activation at (%.1f, %.1f), frame %d", x, y, g_pulley.startFrame);
                             } else if (pendingFinger0_id != fingerId) {
                                 // Second finger down - STOP pulley and start two-finger gesture!
-                                if (g_pulley.active || g_pulley.pending) {
+                                if (g_pulley.active) {
                                     g_pulley.active = false;
-                                    g_pulley.pending = false;
                                     NSLog(@"[Pulley] Deactivated - switching to gesture");
                                 }
                                 if (is_drawing) {
@@ -2382,64 +2404,70 @@ static int metal_test_main() {
                             last_y = canvasY;
                         }
                     }
-                    // Handle PULLEY PENDING - check for quick swipe or activate after delay
-                    else if (g_pulley.pending && hasFinger0 && fingerId == pendingFinger0_id) {
-                        pendingFinger0_x = event.tfinger.x;
-                        pendingFinger0_y = event.tfinger.y;
-                        g_pulley.fingerX = x;
-                        g_pulley.fingerY = y;
-
-                        float deltaY = y - g_pulley.startY;
-                        const float SWIPE_THRESHOLD = 60.0f;
-                        Uint64 elapsed = SDL_GetTicks() - g_pulley.touchStartMs;
-
-                        // Quick vertical swipe BEFORE delay = frame change, no pulley
-                        if (elapsed < PULLEY_DELAY_MS && std::abs(deltaY) > SWIPE_THRESHOLD) {
-                            g_pulley.pending = false;
-                            if (deltaY > 0) {
-                                frame_next();
-                                NSLog(@"[Pulley] Quick swipe DOWN -> frame %d", framestore_get_current_frame());
-                            } else {
-                                frame_prev();
-                                NSLog(@"[Pulley] Quick swipe UP -> frame %d", framestore_get_current_frame());
-                            }
-                        }
-                        // Delay passed - activate pulley
-                        else if (elapsed >= PULLEY_DELAY_MS) {
-                            g_pulley.pending = false;
-                            g_pulley.active = true;
-                            g_pulley.centerX = g_pulley.startX - g_pulley.radius;
-                            g_pulley.centerY = g_pulley.startY;
-                            framestore_save_current();  // Save NOW when pulley activates
-                            NSLog(@"[Pulley] Activated after delay, center(%.1f, %.1f)",
-                                  g_pulley.centerX, g_pulley.centerY);
-                        }
-                    }
-                    // Handle PULLEY ACTIVE - rotation controls frame
+                    // Handle PULLEY ACTIVE - unified gesture handling
+                    // 1. First movement → change one frame, start 800ms lockout
+                    // 2. During lockout → no frame changes
+                    // 3. After lockout → rotation scrubbing
                     else if (g_pulley.active && hasFinger0 && fingerId == pendingFinger0_id) {
                         pendingFinger0_x = event.tfinger.x;
                         pendingFinger0_y = event.tfinger.y;
                         g_pulley.fingerX = x;
                         g_pulley.fingerY = y;
 
-                        // Pure rotation scrubbing - angle from center to finger controls frame
-                        float currentAngle = getPulleyAngle(g_pulley, x, y);
+                        Uint64 now = SDL_GetTicks();
                         const float PI = 3.14159265f;
 
-                        // Normalize to -PI to PI
-                        while (currentAngle > PI) currentAngle -= 2 * PI;
-                        while (currentAngle < -PI) currentAngle += 2 * PI;
+                        if (!g_pulley.firstMoveDone) {
+                            // PHASE 1: First movement detection (vertical)
+                            float deltaY = y - g_pulley.startY;
+                            const float FIRST_MOVE_THRESHOLD = 20.0f;  // 20px threshold
 
-                        // Map angle to frame offset (12 frames = 2*PI)
-                        // 0 radians (3 o'clock) = startFrame
-                        int frameDelta = (int)roundf(currentAngle / (2.0f * PI / 12.0f));
-                        int newFrame = g_pulley.startFrame + frameDelta;
-                        while (newFrame < 0) newFrame += 12;
-                        newFrame = newFrame % 12;
+                            if (fabsf(deltaY) > FIRST_MOVE_THRESHOLD) {
+                                // First significant movement - change one frame
+                                // NOTE: frame_next/frame_prev already save current frame internally
+                                if (deltaY > 0) {
+                                    frame_next();
+                                    NSLog(@"[Pulley] First move DOWN -> frame %d", framestore_get_current_frame());
+                                } else {
+                                    frame_prev();
+                                    NSLog(@"[Pulley] First move UP -> frame %d", framestore_get_current_frame());
+                                }
+                                g_pulley.firstMoveDone = true;
+                                g_pulley.lockoutUntilMs = now + PULLEY_LOCKOUT_MS;
+                            }
+                        }
+                        else if (now < g_pulley.lockoutUntilMs) {
+                            // PHASE 2: Lockout period - no frame changes
+                            // Just track finger position for visual feedback
+                        }
+                        else {
+                            // PHASE 3: After lockout - rotation scrubbing
+                            // On first frame after lockout, set reference angle
+                            if (g_pulley.referenceAngle == 0 && g_pulley.lockoutUntilMs > 0) {
+                                g_pulley.referenceAngle = getPulleyAngle(g_pulley, x, y);
+                                g_pulley.startFrame = framestore_get_current_frame();
+                                NSLog(@"[Pulley] Lockout ended, rotation reference set at angle %.2f, frame %d",
+                                      g_pulley.referenceAngle, g_pulley.startFrame);
+                            }
 
-                        // Switch frame if different
-                        if (newFrame != framestore_get_current_frame()) {
-                            framestore_load_frame(newFrame);
+                            // Rotation scrubbing - angle from center to finger controls frame
+                            float currentAngle = getPulleyAngle(g_pulley, x, y);
+                            float angleDelta = currentAngle - g_pulley.referenceAngle;
+
+                            // Normalize to -PI to PI
+                            while (angleDelta > PI) angleDelta -= 2 * PI;
+                            while (angleDelta < -PI) angleDelta += 2 * PI;
+
+                            // Map angle delta to frame offset (12 frames = 2*PI)
+                            int frameDelta = (int)roundf(angleDelta / (2.0f * PI / 12.0f));
+                            int newFrame = g_pulley.startFrame + frameDelta;
+                            while (newFrame < 0) newFrame += 12;
+                            newFrame = newFrame % 12;
+
+                            // Switch frame if different
+                            if (newFrame != framestore_get_current_frame()) {
+                                framestore_load_frame(newFrame);
+                            }
                         }
                     }
                     // Update pending finger position (in case it becomes part of gesture)
@@ -2632,14 +2660,15 @@ static int metal_test_main() {
                             // Normal drawing end
                             std::cout << "Finger drawing ended" << std::endl;
                             metal_stamp_undo_end_stroke();
+                            // Save to GPU cache AFTER drawing
+                            framestore_save_current_fast();
                         }
                         is_drawing = false;
                         hasFinger0 = false;
                     }
-                    // Handle PULLEY release - deactivate pulley or cancel pending
-                    else if ((g_pulley.active || g_pulley.pending) && hasFinger0 && fingerId == pendingFinger0_id) {
+                    // Handle PULLEY release - deactivate pulley
+                    else if (g_pulley.active && hasFinger0 && fingerId == pendingFinger0_id) {
                         g_pulley.active = false;
-                        g_pulley.pending = false;
                         hasFinger0 = false;
                         NSLog(@"[Pulley] Deactivated on finger up, frame %d", framestore_get_current_frame());
                     }
@@ -2868,6 +2897,8 @@ static int metal_test_main() {
                         std::cout << "Pen up - ending stroke" << std::endl;
                         metal_stamp_undo_end_stroke();
                         is_drawing = false;
+                        // Save to GPU cache AFTER drawing - so frame switching is instant!
+                        framestore_save_current_fast();
                     }
                     pen_pressure = 1.0f;  // Reset pressure
                     break;

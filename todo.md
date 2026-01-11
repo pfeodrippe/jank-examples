@@ -66,8 +66,9 @@
     - [x] wheel
     - [x] fix wheel image loading hiccup (e.g. by GPU pre-caching)
     - [x] fix device loading
-    - [ ] bg colour
-    - [ ] loom-like control for frames (one finger)
+    - [x] bg colour
+    - [x] loom-like control for frames (one finger)
+    - [ ] make swipe up/down faster
     - [ ] draw while moving the wheel
     - [ ] fix undo/redo for frames
     - [ ] save only diff?
