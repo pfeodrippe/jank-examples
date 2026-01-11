@@ -68,10 +68,12 @@
     - [x] fix device loading
     - [x] bg colour
     - [x] loom-like control for frames (one finger)
-    - [ ] make swipe up/down faster
+    - [x] make swipe up/down faster
     - [ ] draw while moving the wheel
+    - [ ] when resetting the board (with the pinch), it's going to someething different from the init)
     - [ ] fix undo/redo for frames
     - [ ] save only diff?
+  - [ ] choose resolution
   - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders

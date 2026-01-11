@@ -18,6 +18,13 @@
 #include <algorithm>  // For std::max, std::min
 
 #include <SDL3/SDL.h>
+
+// Helper to check if a touch event comes from pen/mouse input (not a real finger)
+// SDL_PEN_TOUCHID = -2 (pen-generated), SDL_MOUSE_TOUCHID = -1 (mouse-generated)
+static inline bool isSyntheticTouchEvent(SDL_TouchID touchID) {
+    return touchID == (SDL_TouchID)-1 || touchID == (SDL_TouchID)-2;
+}
+
 #include "../src/vybe/app/drawing/native/metal_renderer.h"
 #include "../src/vybe/app/drawing/native/animation_thread.h"
 #import "brush_importer.h"
@@ -1822,6 +1829,10 @@ static int metal_test_main() {
     std::cout << "   METAL TEST MODE - Pure C++ Rendering" << std::endl;
     std::cout << "========================================" << std::endl;
 
+    // Disable pen events from generating touch events
+    // This prevents Apple Pencil from triggering finger events (which would activate pulley)
+    SDL_SetHint(SDL_HINT_PEN_TOUCH_EVENTS, "0");
+
     // Create SDL window
     SDL_Window* window = SDL_CreateWindow(
         "Metal Test",
@@ -2104,9 +2115,19 @@ static int metal_test_main() {
 
     // Track drawing state
     bool is_drawing = false;
+    bool needs_stroke_restart = false;  // Set when frame changes mid-stroke
     float last_x = 0, last_y = 0;
     float pen_pressure = 1.0f;  // Track Apple Pencil pressure from axis events
     bool pencil_detected = false;  // Set true when Apple Pencil is used - disables finger drawing
+
+    // Helper: end stroke before frame change (used by pulley)
+    auto endStrokeForFrameChange = [&]() {
+        if (is_drawing && !needs_stroke_restart) {
+            metal_stamp_undo_end_stroke();
+            framestore_save_current_fast();
+            needs_stroke_restart = true;
+        }
+    };
 
     // Frame wheel for animation frame navigation (Looom-style)
     // Position in SCREEN coordinates (same as touch events)
@@ -2139,6 +2160,15 @@ static int metal_test_main() {
                     break;
 
                 case SDL_EVENT_FINGER_DOWN: {
+                    // Log ALL finger events to debug pencil detection
+                    NSLog(@"[FINGER_DOWN] touchID=%lld (pen=-2)", (long long)event.tfinger.touchID);
+
+                    // Filter out synthetic touch events from pen input
+                    if (isSyntheticTouchEvent(event.tfinger.touchID)) {
+                        NSLog(@"[FINGER_DOWN] Filtered pen touch");
+                        break;
+                    }
+
                     // NOTE: No palm rejection here - finger is used for PULLEY control
                     // even while pencil is drawing. Pulley = time navigation with finger.
 
@@ -2146,8 +2176,8 @@ static int metal_test_main() {
                     // Drawing is done via Apple Pencil (pen events) only
 
                     // Log raw normalized finger coordinates
-                    NSLog(@"[DEBUG] Raw finger: (%.4f, %.4f) * (%d, %d)",
-                          event.tfinger.x, event.tfinger.y, width, height);
+                    NSLog(@"[DEBUG] Raw finger: (%.4f, %.4f) * (%d, %d) touchID=%lld",
+                          event.tfinger.x, event.tfinger.y, width, height, (long long)event.tfinger.touchID);
 
                     float x = event.tfinger.x * width;
                     float y = event.tfinger.y * height;
@@ -2287,12 +2317,9 @@ static int metal_test_main() {
                             std::cout << "Three-finger gesture started (for redo)" << std::endl;
                         }
                         else if (!gesture.isActive) {
-                            // When pencil is drawing, ignore finger events for gestures
-                            // (palm rejection - don't let hand touches interfere with pencil)
-                            if (pencil_detected && is_drawing) {
-                                // Ignore finger touches while drawing with pencil
-                            }
-                            else if (!hasFinger0) {
+                            // NOTE: SDL_HINT_PEN_TOUCH_EVENTS="0" prevents pencil from generating
+                            // finger events, so we don't need to filter them here.
+                            if (!hasFinger0) {
                                 // First finger down - activate PULLEY IMMEDIATELY
                                 hasFinger0 = true;
                                 pendingFinger0_id = fingerId;
@@ -2356,6 +2383,10 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_FINGER_MOTION: {
+                    if (isSyntheticTouchEvent(event.tfinger.touchID)) {
+                        break;
+                    }
+
                     // NOTE: No palm rejection - finger controls PULLEY even while pencil draws
 
                     float x = event.tfinger.x * width;
@@ -2388,22 +2419,7 @@ static int metal_test_main() {
                         // Update canvas transform from gesture
                         updateTransformFromGesture(canvasTransform, gesture, width, height);
                     }
-                    // Handle single-finger drawing (for simulator testing)
-                    else if (is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
-                        // Update pending finger position
-                        pendingFinger0_x = event.tfinger.x;
-                        pendingFinger0_y = event.tfinger.y;
-                        // Add stroke point with screen-to-canvas conversion
-                        float canvasX, canvasY;
-                        screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
-                        float dx = canvasX - last_x;
-                        float dy = canvasY - last_y;
-                        if (dx*dx + dy*dy > 1.0f) {
-                            metal_stamp_undo_add_stroke_point(canvasX, canvasY, 1.0f);
-                            last_x = canvasX;
-                            last_y = canvasY;
-                        }
-                    }
+                    // NOTE: Single-finger drawing removed - pencil only!
                     // Handle PULLEY ACTIVE - unified gesture handling
                     // 1. First movement → change one frame, start 800ms lockout
                     // 2. During lockout → no frame changes
@@ -2423,8 +2439,8 @@ static int metal_test_main() {
                             const float FIRST_MOVE_THRESHOLD = 20.0f;  // 20px threshold
 
                             if (fabsf(deltaY) > FIRST_MOVE_THRESHOLD) {
+                                endStrokeForFrameChange();
                                 // First significant movement - change one frame
-                                // NOTE: frame_next/frame_prev already save current frame internally
                                 if (deltaY > 0) {
                                     frame_next();
                                     NSLog(@"[Pulley] First move DOWN -> frame %d", framestore_get_current_frame());
@@ -2466,6 +2482,7 @@ static int metal_test_main() {
 
                             // Switch frame if different
                             if (newFrame != framestore_get_current_frame()) {
+                                endStrokeForFrameChange();
                                 framestore_load_frame(newFrame);
                             }
                         }
@@ -2520,6 +2537,10 @@ static int metal_test_main() {
                 }
 
                 case SDL_EVENT_FINGER_UP: {
+                    if (isSyntheticTouchEvent(event.tfinger.touchID)) {
+                        break;
+                    }
+
                     // NOTE: No palm rejection - finger controls PULLEY even while pencil draws
 
                     SDL_FingerID fingerId = event.tfinger.fingerID;
@@ -2628,44 +2649,7 @@ static int metal_test_main() {
                                       << ", pan: " << canvasTransform.panX << ", " << canvasTransform.panY << ")" << std::endl;
                         }
                     }
-                    // Handle single-finger drawing end (for simulator testing)
-                    // Also check for swipe gesture - if it was a horizontal swipe, navigate frames instead
-                    else if (is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
-                        float endX = event.tfinger.x * width;
-                        float endY = event.tfinger.y * height;
-                        float startX = pendingFinger0_x * width;
-                        float startY = pendingFinger0_y * height;
-                        float dx = endX - startX;
-                        float dy = endY - startY;
-                        const float SWIPE_THRESHOLD = 150.0f;  // pixels - slightly higher for drawing mode
-
-                        // Check if this was a horizontal swipe
-                        if (std::abs(dx) > SWIPE_THRESHOLD && std::abs(dx) > std::abs(dy) * 2) {
-                            // It was a swipe! Cancel drawing and navigate frames
-                            metal_stamp_undo_cancel_stroke();
-                            if (dx < 0) {
-                                anim_next_frame();
-                                metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
-                                anim_render_onion_skin();
-                                anim_render_current_frame();
-                                std::cout << ">> Swipe: Next frame " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
-                            } else {
-                                anim_prev_frame();
-                                metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
-                                anim_render_onion_skin();
-                                anim_render_current_frame();
-                                std::cout << "<< Swipe: Prev frame " << anim_get_current_frame_index() << "/" << anim_get_frame_count() << std::endl;
-                            }
-                        } else {
-                            // Normal drawing end
-                            std::cout << "Finger drawing ended" << std::endl;
-                            metal_stamp_undo_end_stroke();
-                            // Save to GPU cache AFTER drawing
-                            framestore_save_current_fast();
-                        }
-                        is_drawing = false;
-                        hasFinger0 = false;
-                    }
+                    // NOTE: Single-finger drawing removed - pencil only!
                     // Handle PULLEY release - deactivate pulley
                     else if (g_pulley.active && hasFinger0 && fingerId == pendingFinger0_id) {
                         g_pulley.active = false;
@@ -2740,6 +2724,7 @@ static int metal_test_main() {
                     // Pen coordinates are in window points, need to convert to pixels
                     float screenX = event.ptouch.x * pixelDensity;
                     float screenY = event.ptouch.y * pixelDensity;
+
                     // pen_pressure is set via SDL_EVENT_PEN_AXIS events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
@@ -2829,17 +2814,13 @@ static int metal_test_main() {
                         float canvasX, canvasY;
                         screenToCanvas(screenX, screenY, canvasTransform, width, height, canvasX, canvasY);
 
-                        // PALM REJECTION: Cancel any active finger gesture/tracking
-                        // This prevents palm touches from affecting pencil drawing
+                        // PALM REJECTION: Cancel canvas manipulation gestures (not pulley!)
+                        // Pulley (hasFinger0) should continue working alongside pencil drawing
                         if (gesture.isActive) {
                             gesture.isActive = false;
                             NSLog(@"[PalmReject] Cancelled two-finger gesture - pencil drawing started");
                         }
-                        if (hasFinger0) {
-                            hasFinger0 = false;
-                            pendingFinger0_id = 0;
-                            NSLog(@"[PalmReject] Cancelled finger tracking - pencil drawing started");
-                        }
+                        // NOTE: Do NOT cancel hasFinger0/pulley - it works alongside pencil!
                         if (threeFingerGesture.isActive) {
                             threeFingerGesture.isActive = false;
                             NSLog(@"[PalmReject] Cancelled three-finger gesture - pencil drawing started");
@@ -2857,6 +2838,7 @@ static int metal_test_main() {
                     // Pen coordinates are in window points, need to convert to pixels
                     float screenX = event.pmotion.x * pixelDensity;
                     float screenY = event.pmotion.y * pixelDensity;
+
                     // pen_pressure is updated via SDL_EVENT_PEN_AXIS events
                     if (pen_pressure <= 0.0f) pen_pressure = 1.0f;
 
@@ -2875,12 +2857,21 @@ static int metal_test_main() {
                         float canvasX, canvasY;
                         screenToCanvas(screenX, screenY, canvasTransform, width, height, canvasX, canvasY);
 
-                        float dx = canvasX - last_x;
-                        float dy = canvasY - last_y;
-                        if (dx*dx + dy*dy > 1.0f) {
-                            metal_stamp_undo_add_stroke_point(canvasX, canvasY, pen_pressure);
+                        // If frame changed mid-stroke, start a new stroke in the new frame
+                        if (needs_stroke_restart) {
+                            metal_stamp_undo_begin_stroke(canvasX, canvasY, pen_pressure);
                             last_x = canvasX;
                             last_y = canvasY;
+                            needs_stroke_restart = false;
+                            NSLog(@"[PEN] Restarted stroke in new frame at (%.1f, %.1f)", canvasX, canvasY);
+                        } else {
+                            float dx = canvasX - last_x;
+                            float dy = canvasY - last_y;
+                            if (dx*dx + dy*dy > 1.0f) {
+                                metal_stamp_undo_add_stroke_point(canvasX, canvasY, pen_pressure);
+                                last_x = canvasX;
+                                last_y = canvasY;
+                            }
                         }
                     }
                     break;
@@ -2894,11 +2885,17 @@ static int metal_test_main() {
                         opacitySlider.isDragging = false;
                         std::cout << "Opacity set to (pen): " << (int)(brushOpacity * 100) << "%" << std::endl;
                     } else if (is_drawing) {
-                        std::cout << "Pen up - ending stroke" << std::endl;
-                        metal_stamp_undo_end_stroke();
+                        // If stroke was already ended due to frame change, just clear flag
+                        if (needs_stroke_restart) {
+                            needs_stroke_restart = false;
+                            NSLog(@"[PEN] Pen up - stroke was already ended for frame change");
+                        } else {
+                            std::cout << "Pen up - ending stroke" << std::endl;
+                            metal_stamp_undo_end_stroke();
+                            // Save to GPU cache AFTER drawing - so frame switching is instant!
+                            framestore_save_current_fast();
+                        }
                         is_drawing = false;
-                        // Save to GPU cache AFTER drawing - so frame switching is instant!
-                        framestore_save_current_fast();
                     }
                     pen_pressure = 1.0f;  // Reset pressure
                     break;
