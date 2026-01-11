@@ -154,7 +154,20 @@ Reset `renderedPointCount = 0` in:
 - `commitStrokeToCanvas` - stroke committed
 - Initialization
 
-### Bug #3: Brush Type Not Applied During Replay
+### Bug #3: Pivot Point Not Reset During Canvas Reset
+
+**Problem**: During two-finger gestures, the pivot point is updated to the gesture center (where your fingers are). When resetting the view with a quick pinch, only pan/scale/rotation were being reset - the pivot stayed at the last gesture center instead of returning to screen center.
+
+**Fix**: Reset pivotX/pivotY to screen center immediately when starting the reset animation:
+
+```cpp
+// CRITICAL: Reset pivot to screen center immediately
+// (pivot changes during gestures but must return to center for correct default view)
+canvasTransform.pivotX = width / 2.0f;
+canvasTransform.pivotY = height / 2.0f;
+```
+
+### Bug #4: Brush Type Not Applied During Replay
 
 **Problem**: `set_brush()` only copied settings to `brush_` but did NOT update:
 - `impl_.currentBrushType` - used to select pipeline (crayon, watercolor, etc.)
@@ -199,7 +212,7 @@ void MetalStampRenderer::set_brush(const BrushSettings& settings) {
    - Reset `renderedPointCount` in `begin_stroke`, `commitStrokeToCanvas`, init
    - Update `set_brush()` to set `impl_.currentBrushType`, textures, `shapeInverted`
 
-## Summary of Five Fixes
+## Summary of Six Fixes
 
 | Bug | Symptom | Root Cause | Fix |
 |-----|---------|------------|-----|
@@ -208,6 +221,7 @@ void MetalStampRenderer::set_brush(const BrushSettings& settings) {
 | Brush not applied | Wrong brush type in replay | `set_brush()` didn't update impl_ | Update impl_ properties |
 | Missing `shape_inverted` | Brush appearance changes | Field not saved/restored in undo | Added to BrushSettings, save/restore |
 | Undo not persisted after frame switch | Undo lost when switching frames | Frame cache not updated after undo | Call `framestore_save_current_fast()` after undo/redo |
+| Pinch reset goes to wrong position | Canvas not centered after reset | Pivot point not reset to screen center | Reset pivotX/pivotY when starting reset animation |
 
 ## Testing
 
@@ -217,3 +231,5 @@ void MetalStampRenderer::set_brush(const BrushSettings& settings) {
 4. Multiple undo/redo cycles - no degradation
 5. **NEW**: Change brush type, undo - should replay with ORIGINAL brush
 6. **NEW**: Draw with different brushes, undo multiple times - each stroke should use its recorded brush
+7. **NEW**: Quick pinch to reset canvas - should return to exact initial position (centered)
+8. **NEW**: Pan/zoom canvas, then quick pinch - canvas should snap back to centered view identical to startup

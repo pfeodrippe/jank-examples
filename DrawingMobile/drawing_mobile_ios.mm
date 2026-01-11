@@ -2647,6 +2647,11 @@ static int metal_test_main() {
                                     resetAnim.targetScale = defaultScale;
                                     resetAnim.targetRotation = 0.0f;
 
+                                    // CRITICAL: Reset pivot to screen center immediately
+                                    // (pivot changes during gestures but must return to center for correct default view)
+                                    canvasTransform.pivotX = width / 2.0f;
+                                    canvasTransform.pivotY = height / 2.0f;
+
                                     std::cout << "🔄 Quick-pinch: Animating to default view..." << std::endl;
                                 }
                             }

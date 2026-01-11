@@ -2390,11 +2390,11 @@ METAL_EXPORT void metal_stamp_use_preset_splatter() {
 static void configure_undo_tree(undo_tree::UndoTree* tree) {
     if (!tree) return;
 
-    // Memory-efficient approach: snapshot every N strokes, replay in between
-    // On iPad Pro 13": canvas is ~3840x2160 = 33MB per snapshot
-    // With interval=10: max 5 snapshots = 165MB for 50 strokes per frame
+    // Pure replay approach - NO snapshots needed since replay is now deterministic
+    // Saves ~2 GB of memory (was: 12 frames × 5 snapshots × 33 MB)
+    // Undo/redo clears canvas and replays all strokes from root (fast on GPU)
     tree->setMaxNodes(50);         // 50 undo levels per frame
-    tree->setSnapshotInterval(10); // Checkpoint every 10 strokes
+    tree->setSnapshotInterval(0);  // DISABLED - pure replay, no snapshots
 
     // Snapshot callback - capture full canvas
     tree->setSnapshotCallback([]() -> std::shared_ptr<undo_tree::CanvasSnapshot> {

@@ -73,11 +73,13 @@
     - [x] memory usage for undo
     - [x] make it deterministic
     - [x] undo done in frame 1, going to frame 0 and returning to frame 1, the undo is not persisted
+    - [x] when resetting the board (with the pinch), it's going to something different from the init)
+    - [ ] onion skin
+    - [ ] smoother stroke
+    - [ ] play button
+    - [ ] save drawing and initial app screen with the saved drawings so far
+    - [ ] export animation
     - [ ] for the cal pencil, we are having blobs of ink sometimes (at the end, is it some pencil pressure noise?)
-    - [ ] when resetting the board (with the pinch), it's going to something different from the init)
-    - [ ] fix undo/redo for frames
-    - [ ] save only diff?
-  - [ ] play button
   - [ ] choose resolution
   - [ ] audio support
     - [ ] draw wave
