@@ -71,9 +71,8 @@
     - [x] make swipe up/down faster
     - [x] draw while moving the wheel
     - [x] memory usage for undo
-    - [ ] make it deterministic
-    - [ ] do we have some way of adding ios tests that test it visually?
-    - [ ] undo done in frame 1, going to frame 0 and returning to frame 1, the undo is not persisted
+    - [x] make it deterministic
+    - [x] undo done in frame 1, going to frame 0 and returning to frame 1, the undo is not persisted
     - [ ] for the cal pencil, we are having blobs of ink sometimes (at the end, is it some pencil pressure noise?)
     - [ ] when resetting the board (with the pinch), it's going to something different from the init)
     - [ ] fix undo/redo for frames
@@ -113,7 +112,8 @@
 - [ ] ios release mode
 - [ ] "no object_ref allowed" mode
 - [ ] "strip down" mode (e.g. direct translation for small functions)
-- [ ] procreate brushes we don't have
+- [ ] add procreate brushes we don't have
+- [ ] do we have some way of adding ios tests that test it visually?
 
 ## Jank
 

@@ -199,7 +199,7 @@ void MetalStampRenderer::set_brush(const BrushSettings& settings) {
    - Reset `renderedPointCount` in `begin_stroke`, `commitStrokeToCanvas`, init
    - Update `set_brush()` to set `impl_.currentBrushType`, textures, `shapeInverted`
 
-## Summary of Four Fixes
+## Summary of Five Fixes
 
 | Bug | Symptom | Root Cause | Fix |
 |-----|---------|------------|-----|
@@ -207,6 +207,7 @@ void MetalStampRenderer::set_brush(const BrushSettings& settings) {
 | Double-rendering | Washed out replay | Points rendered many times live, once replay | `renderedPointCount` tracking |
 | Brush not applied | Wrong brush type in replay | `set_brush()` didn't update impl_ | Update impl_ properties |
 | Missing `shape_inverted` | Brush appearance changes | Field not saved/restored in undo | Added to BrushSettings, save/restore |
+| Undo not persisted after frame switch | Undo lost when switching frames | Frame cache not updated after undo | Call `framestore_save_current_fast()` after undo/redo |
 
 ## Testing
 

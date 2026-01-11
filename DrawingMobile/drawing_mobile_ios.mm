@@ -2579,6 +2579,8 @@ static int metal_test_main() {
                                 // Three-finger tap detected - REDO!
                                 if (metal_stamp_can_redo()) {
                                     metal_stamp_redo();
+                                    // CRITICAL: Update frame cache after redo so frame switching preserves the redone state
+                                    framestore_save_current_fast();
                                     std::cout << "↩️ Three-finger tap: REDO!" << std::endl;
                                 } else {
                                     std::cout << "↩️ Three-finger tap: No redo available" << std::endl;
@@ -2616,6 +2618,8 @@ static int metal_test_main() {
                                 // Two-finger tap detected - UNDO!
                                 if (metal_stamp_can_undo()) {
                                     metal_stamp_undo();
+                                    // CRITICAL: Update frame cache after undo so frame switching preserves the undone state
+                                    framestore_save_current_fast();
                                     std::cout << "↪️ Two-finger tap: UNDO!" << std::endl;
                                 } else {
                                     std::cout << "↪️ Two-finger tap: No undo available" << std::endl;
