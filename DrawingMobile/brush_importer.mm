@@ -827,6 +827,8 @@ static int32_t g_nextBrushId = 1;
     }
 
     // Set brush type: 1 = textured brush (has shape or grain texture)
+    // NOTE: Texture IDs in brush_importer use -1 for "not loaded", and 1+ for loaded textures
+    // (metal_renderer uses 0 for "no texture", but texture IDs start at 1, so >= 0 is correct here)
     int brushType = (brush->shapeTextureId >= 0 || brush->grainTextureId >= 0) ? 1 : 0;
     metal_stamp_set_brush_type(brushType);
 

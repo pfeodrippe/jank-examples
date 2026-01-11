@@ -67,3 +67,78 @@
   "Get total frame count (12)."
   []
   (metal/frame_count))
+
+;; =========================================================================
+;; Drawing functions (for testing via nREPL)
+;; =========================================================================
+
+(defn draw-stroke!
+  "Draw a stroke from points. Each point is [x y] or [x y pressure].
+   Example: (draw-stroke! [[100 100] [200 100] [300 100]])"
+  [points]
+  (when (seq points)
+    (let [[x y p] (first points)
+          pressure (or p 1.0)]
+      (metal/metal_stamp_undo_begin_stroke (float x) (float y) (float pressure))
+      (doseq [[x y p] (rest points)]
+        (metal/metal_stamp_undo_add_stroke_point (float x) (float y) (float (or p 1.0))))
+      (metal/metal_stamp_undo_end_stroke)
+      (metal/metal_stamp_present))))
+
+(defn draw-line!
+  "Draw a simple line from [x1 y1] to [x2 y2]."
+  [x1 y1 x2 y2]
+  (draw-stroke! [[x1 y1] [x2 y2]]))
+
+;; =========================================================================
+;; Undo functions
+;; =========================================================================
+
+(defn undo!
+  "Undo last stroke on current frame."
+  []
+  (let [result (metal/metal_stamp_undo)]
+    (metal/metal_stamp_present)
+    result))
+
+(defn redo!
+  "Redo last undone stroke on current frame."
+  []
+  (let [result (metal/metal_stamp_redo)]
+    (metal/metal_stamp_present)
+    result))
+
+(defn can-undo?
+  "Check if undo is available on current frame."
+  []
+  (metal/metal_stamp_can_undo))
+
+(defn can-redo?
+  "Check if redo is available on current frame."
+  []
+  (metal/metal_stamp_can_redo))
+
+(defn undo-depth
+  "Get current undo depth on current frame."
+  []
+  (metal/metal_stamp_get_undo_depth))
+
+(defn total-undo-nodes
+  "Get total undo nodes on current frame."
+  []
+  (metal/metal_stamp_get_total_undo_nodes))
+
+(defn print-undo-tree!
+  "Print undo tree for debugging."
+  []
+  (metal/metal_stamp_undo_print_tree))
+
+(defn undo-frame
+  "Get current undo frame index."
+  []
+  (metal/metal_stamp_undo_get_frame))
+
+(defn undo-frame-count
+  "Get total undo frame count."
+  []
+  (metal/metal_stamp_undo_get_frame_count))

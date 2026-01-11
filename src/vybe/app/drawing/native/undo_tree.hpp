@@ -45,6 +45,7 @@ struct BrushSettings {
     int32_t grain_texture_id = 0;
     float grain_scale = 1.0f;
     bool grain_moving = true;
+    int shape_inverted = 0;  // 0 = WHITE=opaque, 1 = BLACK=opaque
 
     // Dynamics
     float rotation = 0.0f;
@@ -61,6 +62,7 @@ struct StrokeData {
     std::vector<StrokePoint> points;
     BrushSettings brush;
     uint64_t startTime;   // Absolute timestamp when stroke started
+    uint32_t randomSeed;  // For deterministic replay of jitter/scatter
 
     bool isEmpty() const { return points.empty(); }
     size_t pointCount() const { return points.size(); }

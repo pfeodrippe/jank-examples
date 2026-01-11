@@ -69,11 +69,19 @@
     - [x] bg colour
     - [x] loom-like control for frames (one finger)
     - [x] make swipe up/down faster
-    - [ ] draw while moving the wheel
-    - [ ] when resetting the board (with the pinch), it's going to someething different from the init)
+    - [x] draw while moving the wheel
+    - [x] memory usage for undo
+    - [ ] make it deterministic
+    - [ ] do we have some way of adding ios tests that test it visually?
+    - [ ] undo done in frame 1, going to frame 0 and returning to frame 1, the undo is not persisted
+    - [ ] for the cal pencil, we are having blobs of ink sometimes (at the end, is it some pencil pressure noise?)
+    - [ ] when resetting the board (with the pinch), it's going to something different from the init)
     - [ ] fix undo/redo for frames
     - [ ] save only diff?
+  - [ ] play button
   - [ ] choose resolution
+  - [ ] audio support
+    - [ ] draw wave
   - [ ] mix brushes ?
   - [ ] loom-like control
   - [ ] shaders

@@ -9,6 +9,7 @@
 #include "metal_renderer.h"
 #include "undo_tree.hpp"
 #include <vector>
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -22,6 +23,25 @@
 
 // SDL includes (for window access)
 #include <SDL3/SDL.h>
+
+// =============================================================================
+// Deterministic Pseudo-Random Number Generator (for reproducible jitter/scatter)
+// Uses a simple hash function - same seed + counter always produces same result
+// =============================================================================
+
+// Deterministic hash function based on seed and counter
+// Returns a float in range [0, 1)
+inline float deterministic_random(uint32_t seed, uint32_t counter) {
+    // Mix seed and counter using a simple hash (based on xxhash/murmur principles)
+    uint32_t h = seed;
+    h ^= counter;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    // Convert to float [0, 1)
+    return (float)(h & 0x00FFFFFF) / (float)0x01000000;
+}
 
 // =============================================================================
 // MSL Data Structures (must match stamp_shaders.metal)
@@ -98,6 +118,14 @@ struct MSLStrokeUniforms {
 @property (nonatomic, assign) BOOL strokeUseShape;
 @property (nonatomic, assign) BOOL strokeUseGrain;
 
+// Deterministic random state for reproducible jitter/scatter
+@property (nonatomic, assign) uint32_t strokeRandomSeed;   // Set at stroke begin
+@property (nonatomic, assign) uint32_t strokeRandomCounter; // Increments for each "random" value
+
+// Track which points have been rendered to avoid double-rendering
+// This is CRITICAL for matching original vs replay appearance
+@property (nonatomic, assign) size_t renderedPointCount;   // Points already rendered to canvas
+
 // Frame texture cache for instant frame switching (animation)
 @property (nonatomic, strong) NSMutableArray<id<MTLTexture>>* frameTextureCache;
 @property (nonatomic, strong) NSMutableArray<NSNumber*>* frameCacheValid;  // Track which frames have content
@@ -127,6 +155,7 @@ struct MSLStrokeUniforms {
 - (void)unloadTexture:(int32_t)textureId;
 
 // Rendering
+- (simd_float4)backgroundColor;
 - (void)clearCanvasWithColor:(simd_float4)color;
 - (void)renderPointsWithHardness:(float)hardness opacity:(float)opacity
                             flow:(float)flow grainScale:(float)grainScale
@@ -205,13 +234,20 @@ struct CanvasTransformUniforms {
     self.isDrawing = NO;
     self.pointCount = 0;
     self.pointsRendered = 0;
+    self.renderedPointCount = 0;
     self.grainOffset = simd_make_float2(0.0f, 0.0f);
-    self.nextTextureId = 1;  // 0 is reserved for "no texture"
+    // Texture ID convention: 0 = "no texture", valid IDs start at 1
+    // (brush_importer uses -1 for "not loaded", so both systems are compatible)
+    self.nextTextureId = 1;
     self.currentBrushType = 1;  // Default to Crayon brush!
     self.loadedTextures = [NSMutableDictionary dictionary];
     self.currentShapeTexture = nil;
     self.currentGrainTexture = nil;
-    _backgroundColor = simd_make_float4(0.95f, 0.95f, 0.92f, 1.0f);
+    _backgroundColor = simd_make_float4(
+        metal_stamp::DEFAULT_PAPER_COLOR_R,
+        metal_stamp::DEFAULT_PAPER_COLOR_G,
+        metal_stamp::DEFAULT_PAPER_COLOR_B,
+        metal_stamp::DEFAULT_PAPER_COLOR_A);
 
     // Initialize canvas transform to identity
     _canvasTransform.pan = simd_make_float2(0.0f, 0.0f);
@@ -829,6 +865,7 @@ struct CanvasTransformUniforms {
 }
 
 - (id<MTLTexture>)getTextureById:(int32_t)textureId {
+    // 0 = "no texture" by convention (valid IDs start at 1)
     if (textureId == 0) return nil;
     return self.loadedTextures[@(textureId)];
 }
@@ -911,25 +948,28 @@ struct CanvasTransformUniforms {
             from.y + (to.y - from.y) * t
         );
 
-        // Apply scatter (random offset perpendicular to stroke)
+        // Apply scatter (deterministic "random" offset perpendicular to stroke)
         if (scatter > 0.0f) {
-            float scatterAmount = ((float)rand() / RAND_MAX - 0.5f) * 2.0f * scatter;
-            float scatterNDC = scatterAmount * size / self.canvasWidth;  // Convert to NDC using canvas size
+            float r = deterministic_random(self.strokeRandomSeed, self.strokeRandomCounter++);
+            float scatterAmount = (r - 0.5f) * 2.0f * scatter;
+            float scatterNDC = scatterAmount * size / self.canvasWidth;
             pos.x += perpX * scatterNDC;
             pos.y += perpY * scatterNDC;
         }
 
-        // Apply size jitter
+        // Apply size jitter (deterministic)
         float finalSize = size;
         if (sizeJitter > 0.0f) {
-            float jitter = 1.0f + ((float)rand() / RAND_MAX - 0.5f) * 2.0f * sizeJitter;
+            float r = deterministic_random(self.strokeRandomSeed, self.strokeRandomCounter++);
+            float jitter = 1.0f + (r - 0.5f) * 2.0f * sizeJitter;
             finalSize *= jitter;
         }
 
-        // Apply opacity jitter
+        // Apply opacity jitter (deterministic)
         simd_float4 finalColor = color;
         if (opacityJitter > 0.0f) {
-            float jitter = 1.0f - ((float)rand() / RAND_MAX) * opacityJitter;
+            float r = deterministic_random(self.strokeRandomSeed, self.strokeRandomCounter++);
+            float jitter = 1.0f - r * opacityJitter;
             finalColor.w *= jitter;
         }
 
@@ -939,6 +979,10 @@ struct CanvasTransformUniforms {
         point.color = finalColor;
         _points.push_back(point);
     }
+}
+
+- (simd_float4)backgroundColor {
+    return _backgroundColor;
 }
 
 - (void)clearCanvasWithColor:(simd_float4)color {
@@ -962,9 +1006,13 @@ struct CanvasTransformUniforms {
 - (void)renderPointsWithHardness:(float)hardness opacity:(float)opacity
                             flow:(float)flow grainScale:(float)grainScale
                   useShapeTexture:(BOOL)useShape useGrainTexture:(BOOL)useGrain {
-    if (_points.empty()) return;
+    // Only render points we haven't rendered yet to avoid double-rendering
+    // This is CRITICAL for deterministic replay - original drawing renders points
+    // once as they're added, and replay must do the same
+    size_t newPointCount = _points.size() - self.renderedPointCount;
+    if (newPointCount == 0) return;
 
-    // Update point buffer
+    // Update point buffer with ALL points (GPU needs contiguous buffer)
     memcpy(self.pointBuffer.contents, _points.data(), sizeof(MSLPoint) * _points.size());
 
     // Update uniforms - use canvas size since we're rendering to canvas texture
@@ -1033,16 +1081,19 @@ struct CanvasTransformUniforms {
         [encoder setFragmentSamplerState:self.textureSampler atIndex:1];
     }
 
-    // Draw points
+    // Draw only NEW points (from renderedPointCount to end)
+    // This ensures each point is rendered exactly once, matching replay behavior
     [encoder drawPrimitives:MTLPrimitiveTypePoint
-                vertexStart:0
-                vertexCount:_points.size()];
+                vertexStart:self.renderedPointCount
+                vertexCount:newPointCount];
 
     [encoder endEncoding];
 
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
 
+    // Update rendered count so these points won't be rendered again
+    self.renderedPointCount = _points.size();
     self.pointsRendered = (int)_points.size();
 }
 
@@ -1051,6 +1102,7 @@ struct CanvasTransformUniforms {
     // Just clear the point buffer for the next stroke
     _points.clear();
     self.pointCount = 0;
+    self.renderedPointCount = 0;  // Reset for next stroke
 }
 
 // =============================================================================
@@ -1527,6 +1579,15 @@ void MetalStampRenderer::set_brush_color(float r, float g, float b, float a) {
 
 void MetalStampRenderer::set_brush(const BrushSettings& settings) {
     brush_ = settings;
+
+    // CRITICAL: Also update impl_ properties that are used during rendering
+    // Without this, replay would use the CURRENT brush type/textures instead of recorded ones
+    if (is_ready()) {
+        impl_.currentBrushType = static_cast<int>(settings.type);
+        impl_.currentShapeTexture = [impl_ getTextureById:settings.shape_texture_id];
+        impl_.currentGrainTexture = [impl_ getTextureById:settings.grain_texture_id];
+        impl_.shapeInverted = settings.shape_inverted;
+    }
 }
 
 BrushSettings MetalStampRenderer::get_brush() const {
@@ -1611,10 +1672,17 @@ void MetalStampRenderer::unload_texture(int32_t texture_id) {
     [impl_ unloadTexture:texture_id];
 }
 
+void MetalStampRenderer::set_stroke_random_seed(uint32_t seed) {
+    if (!is_ready()) return;
+    impl_.strokeRandomSeed = seed;
+    impl_.strokeRandomCounter = 0;  // Reset counter for new stroke
+}
+
 void MetalStampRenderer::begin_stroke(float x, float y, float pressure) {
     if (!is_ready()) return;
 
     impl_.isDrawing = YES;
+    impl_.renderedPointCount = 0;  // Reset for new stroke
     impl_.lastPoint = [impl_ screenToNDC:x y:y];
 
     // Store brush settings for auto-flush during long strokes
@@ -1689,11 +1757,22 @@ void MetalStampRenderer::cancel_stroke() {
     impl_.isDrawing = NO;
 }
 
-void MetalStampRenderer::clear_canvas(float r, float g, float b, float a) {
+void MetalStampRenderer::clear_canvas() {
+    if (!is_ready()) return;
+    // Uses the stored background color from impl_
+    [impl_ clearCanvasWithColor:[impl_ backgroundColor]];
+}
+
+void MetalStampRenderer::clear_canvas(const Color& color) {
     if (!is_ready()) return;
 
-    simd_float4 color = simd_make_float4(r, g, b, a);
-    [impl_ clearCanvasWithColor:color];
+    simd_float4 c = simd_make_float4(color.r, color.g, color.b, color.a);
+    [impl_ clearCanvasWithColor:c];
+}
+
+Color MetalStampRenderer::get_background_color() const {
+    simd_float4 bg = [impl_ backgroundColor];
+    return Color(bg.x, bg.y, bg.z, bg.w);
 }
 
 void* MetalStampRenderer::get_canvas_sdl_texture() {
@@ -1876,7 +1955,19 @@ static MetalStampRenderer* g_metal_renderer = nullptr;
 // Undo Tree - Global instance and current stroke tracking
 // =============================================================================
 
-static std::unique_ptr<undo_tree::UndoTree> g_undo_tree = nullptr;
+// Per-frame undo trees - each frame has its own independent undo history
+// Configurable: can support multiple animations with different frame counts
+static std::vector<std::unique_ptr<undo_tree::UndoTree>> g_undo_trees;
+static int g_current_undo_frame = 0;  // Which frame's undo tree is active
+static bool g_undo_initialized = false;
+
+// Helper to get current frame's undo tree
+static undo_tree::UndoTree* get_current_undo_tree() {
+    if (!g_undo_initialized) return nullptr;
+    if (g_current_undo_frame < 0 || g_current_undo_frame >= (int)g_undo_trees.size()) return nullptr;
+    return g_undo_trees[g_current_undo_frame].get();
+}
+
 static undo_tree::StrokeData g_current_stroke;  // Accumulates points during drawing
 static bool g_is_recording_stroke = false;
 
@@ -1988,7 +2079,7 @@ void metal_cancel_stroke() {
 
 // Canvas functions
 void metal_clear_canvas(float r, float g, float b, float a) {
-    if (g_metal_renderer) g_metal_renderer->clear_canvas(r, g, b, a);
+    if (g_metal_renderer) g_metal_renderer->clear_canvas(Color(r, g, b, a));
 }
 
 void metal_render_stroke() {
@@ -2157,6 +2248,15 @@ METAL_EXPORT void metal_stamp_clear_canvas(float r, float g, float b, float a) {
     metal_stamp::metal_clear_canvas(r, g, b, a);
 }
 
+// Get background color (r, g, b, a returned via output pointers)
+METAL_EXPORT void metal_stamp_get_background_color(float* r, float* g, float* b, float* a) {
+    auto color = metal_stamp::g_metal_renderer->get_background_color();
+    *r = color.r;
+    *g = color.g;
+    *b = color.b;
+    *a = color.a;
+}
+
 METAL_EXPORT void metal_stamp_render_stroke() {
     metal_stamp::metal_render_stroke();
 }
@@ -2286,20 +2386,18 @@ METAL_EXPORT void metal_stamp_use_preset_splatter() {
 // Undo Tree API Implementation
 // =============================================================================
 
-METAL_EXPORT void metal_stamp_undo_init() {
-    using namespace metal_stamp;
-    if (g_undo_tree) return;  // Already initialized
-
-    g_undo_tree = std::make_unique<undo_tree::UndoTree>();
+// Helper to configure an undo tree with all callbacks
+static void configure_undo_tree(undo_tree::UndoTree* tree) {
+    if (!tree) return;
 
     // Memory-efficient approach: snapshot every N strokes, replay in between
-    // On iPad Pro 13": canvas is ~2732x2048 = 22MB per snapshot
-    // With interval=10: max 5 snapshots = 110MB (vs 220MB with interval=1)
-    g_undo_tree->setMaxNodes(50);        // 50 undo levels
-    g_undo_tree->setSnapshotInterval(1); // Snapshot every 10 strokes
+    // On iPad Pro 13": canvas is ~3840x2160 = 33MB per snapshot
+    // With interval=10: max 5 snapshots = 165MB for 50 strokes per frame
+    tree->setMaxNodes(50);         // 50 undo levels per frame
+    tree->setSnapshotInterval(10); // Checkpoint every 10 strokes
 
     // Snapshot callback - capture full canvas
-    g_undo_tree->setSnapshotCallback([]() -> std::shared_ptr<undo_tree::CanvasSnapshot> {
+    tree->setSnapshotCallback([]() -> std::shared_ptr<undo_tree::CanvasSnapshot> {
         if (!metal_stamp::g_metal_renderer) return nullptr;
 
         int canvasW = metal_stamp::g_metal_renderer->get_canvas_width();
@@ -2327,7 +2425,7 @@ METAL_EXPORT void metal_stamp_undo_init() {
     });
 
     // Restore callback - restore full canvas from snapshot
-    g_undo_tree->setRestoreCallback([](const undo_tree::CanvasSnapshot& snapshot) {
+    tree->setRestoreCallback([](const undo_tree::CanvasSnapshot& snapshot) {
         if (!metal_stamp::g_metal_renderer) return;
 
         std::cout << "[UndoTree] Restoring snapshot " << snapshot.width << "x"
@@ -2337,15 +2435,15 @@ METAL_EXPORT void metal_stamp_undo_init() {
     });
 
     // Clear callback - for when we need to go back to empty canvas (root)
-    g_undo_tree->setClearCallback([]() {
+    tree->setClearCallback([]() {
         std::cout << "[UndoTree] Clearing canvas (back to root)" << std::endl;
         if (metal_stamp::g_metal_renderer) {
-            metal_stamp::g_metal_renderer->clear_canvas(1.0f, 1.0f, 1.0f, 1.0f);
+            metal_stamp::g_metal_renderer->clear_canvas();  // Uses stored background color
         }
     });
 
     // Stroke replay callback - replays a stroke from recorded data
-    g_undo_tree->setApplyStrokeCallback([](const undo_tree::StrokeData& stroke) {
+    tree->setApplyStrokeCallback([](const undo_tree::StrokeData& stroke) {
         if (!metal_stamp::g_metal_renderer || stroke.points.empty()) return;
 
         // Save current brush
@@ -2367,6 +2465,7 @@ METAL_EXPORT void metal_stamp_undo_init() {
         brush.grain_texture_id = stroke.brush.grain_texture_id;
         brush.grain_scale = stroke.brush.grain_scale;
         brush.grain_moving = stroke.brush.grain_moving;
+        brush.shape_inverted = stroke.brush.shape_inverted;
         brush.rotation = stroke.brush.rotation;
         brush.rotation_jitter = stroke.brush.rotation_jitter;
         brush.scatter = stroke.brush.scatter;
@@ -2377,118 +2476,188 @@ METAL_EXPORT void metal_stamp_undo_init() {
         brush.opacity_jitter = stroke.brush.opacity_jitter;
         metal_stamp::g_metal_renderer->set_brush(brush);
 
-        // Replay all points
-        for (const auto& pt : stroke.points) {
+        // Set deterministic random seed BEFORE begin_stroke for reproducible jitter/scatter
+        metal_stamp::g_metal_renderer->set_stroke_random_seed(stroke.randomSeed);
+
+        // Replay stroke: begin -> add points -> end
+        const auto& first = stroke.points[0];
+        metal_stamp::g_metal_renderer->begin_stroke(first.x, first.y, first.pressure);
+
+        // Add remaining points
+        for (size_t i = 1; i < stroke.points.size(); i++) {
+            const auto& pt = stroke.points[i];
             metal_stamp::g_metal_renderer->add_stroke_point(pt.x, pt.y, pt.pressure);
         }
 
-        // Render the stroke
-        metal_stamp::g_metal_renderer->render_current_stroke();
+        // End stroke - renders and commits to canvas
+        metal_stamp::g_metal_renderer->end_stroke();
 
         // Restore original brush
         metal_stamp::g_metal_renderer->set_brush(savedBrush);
 
         std::cout << "[UndoTree] Replayed stroke with " << stroke.points.size() << " points" << std::endl;
     });
+}
 
-    std::cout << "[UndoTree] Initialized with snapshots every " << g_undo_tree->getSnapshotInterval()
-              << " strokes, max "
-              << g_undo_tree->getMaxNodes() << " undo steps" << std::endl;
+// Initialize undo system with specified number of frames
+// Each frame gets its own independent undo tree
+METAL_EXPORT void metal_stamp_undo_init_with_frames(int num_frames) {
+    using namespace metal_stamp;
+    if (g_undo_initialized) return;  // Already initialized
+    if (num_frames <= 0) num_frames = 12;  // Default to 12
+
+    // Create and configure undo tree for each frame
+    g_undo_trees.clear();
+    g_undo_trees.resize(num_frames);
+    for (int i = 0; i < num_frames; i++) {
+        g_undo_trees[i] = std::make_unique<undo_tree::UndoTree>();
+        configure_undo_tree(g_undo_trees[i].get());
+    }
+
+    g_current_undo_frame = 0;
+    g_undo_initialized = true;
+
+    std::cout << "[UndoTree] Initialized " << num_frames << " per-frame undo trees "
+              << "(50 levels each, checkpoints every 10 strokes)" << std::endl;
+}
+
+// Legacy init - defaults to 12 frames
+METAL_EXPORT void metal_stamp_undo_init() {
+    metal_stamp_undo_init_with_frames(12);
 }
 
 METAL_EXPORT void metal_stamp_undo_cleanup() {
     using namespace metal_stamp;
-    g_undo_tree.reset();
+    g_undo_trees.clear();
+    g_undo_initialized = false;
+    g_current_undo_frame = 0;
     g_current_stroke = undo_tree::StrokeData();
     g_is_recording_stroke = false;
 }
 
+// Switch to a different frame's undo tree
+// Call this when frame changes (frame_next, frame_prev, frame_goto)
+METAL_EXPORT void metal_stamp_undo_set_frame(int frame) {
+    using namespace metal_stamp;
+    if (!g_undo_initialized) return;
+    if (frame < 0 || frame >= (int)g_undo_trees.size()) {
+        std::cout << "[UndoTree] Invalid frame index: " << frame
+                  << " (max: " << g_undo_trees.size() << ")" << std::endl;
+        return;
+    }
+    g_current_undo_frame = frame;
+    std::cout << "[UndoTree] Switched to frame " << frame << std::endl;
+}
+
+// Get current frame for undo
+METAL_EXPORT int metal_stamp_undo_get_frame() {
+    return metal_stamp::g_current_undo_frame;
+}
+
+// Get number of frames
+METAL_EXPORT int metal_stamp_undo_get_frame_count() {
+    return (int)metal_stamp::g_undo_trees.size();
+}
+
 METAL_EXPORT void metal_stamp_undo_set_max_nodes(int max) {
     using namespace metal_stamp;
-    if (g_undo_tree) g_undo_tree->setMaxNodes(max);
+    auto* tree = get_current_undo_tree();
+    if (tree) tree->setMaxNodes(max);
 }
 
 METAL_EXPORT void metal_stamp_undo_set_snapshot_interval(int interval) {
     using namespace metal_stamp;
-    if (g_undo_tree) g_undo_tree->setSnapshotInterval(interval);
+    auto* tree = get_current_undo_tree();
+    if (tree) tree->setSnapshotInterval(interval);
 }
 
 METAL_EXPORT bool metal_stamp_undo() {
     using namespace metal_stamp;
-    if (!g_undo_tree) {
+    auto* tree = get_current_undo_tree();
+    if (!tree) {
         std::cout << "[UndoTree] metal_stamp_undo called but tree not initialized!" << std::endl;
         return false;
     }
-    std::cout << "[UndoTree] metal_stamp_undo called, current depth: "
-              << g_undo_tree->getCurrentDepth() << ", total nodes: "
-              << g_undo_tree->getTotalNodes() << std::endl;
-    bool result = g_undo_tree->undo();
-    std::cout << "[UndoTree] metal_stamp_undo result: " << (result ? "success" : "failed")
-              << ", new depth: " << g_undo_tree->getCurrentDepth() << std::endl;
+    std::cout << "[UndoTree] Frame " << g_current_undo_frame << " undo, depth: "
+              << tree->getCurrentDepth() << ", total: " << tree->getTotalNodes() << std::endl;
+    bool result = tree->undo();
+    std::cout << "[UndoTree] Result: " << (result ? "success" : "failed")
+              << ", new depth: " << tree->getCurrentDepth() << std::endl;
     return result;
 }
 
 METAL_EXPORT bool metal_stamp_redo() {
     using namespace metal_stamp;
-    if (!g_undo_tree) return false;
-    return g_undo_tree->redo();
+    auto* tree = get_current_undo_tree();
+    if (!tree) return false;
+    return tree->redo();
 }
 
 METAL_EXPORT bool metal_stamp_redo_branch(int branch) {
     using namespace metal_stamp;
-    if (!g_undo_tree) return false;
-    return g_undo_tree->redoBranch(branch);
+    auto* tree = get_current_undo_tree();
+    if (!tree) return false;
+    return tree->redoBranch(branch);
 }
 
 METAL_EXPORT bool metal_stamp_undo_jump_to(uint64_t nodeId) {
     using namespace metal_stamp;
-    if (!g_undo_tree) return false;
-    return g_undo_tree->jumpToNode(nodeId);
+    auto* tree = get_current_undo_tree();
+    if (!tree) return false;
+    return tree->jumpToNode(nodeId);
 }
 
 METAL_EXPORT bool metal_stamp_can_undo() {
     using namespace metal_stamp;
-    return g_undo_tree && g_undo_tree->canUndo();
+    auto* tree = get_current_undo_tree();
+    return tree && tree->canUndo();
 }
 
 METAL_EXPORT bool metal_stamp_can_redo() {
     using namespace metal_stamp;
-    return g_undo_tree && g_undo_tree->canRedo();
+    auto* tree = get_current_undo_tree();
+    return tree && tree->canRedo();
 }
 
 METAL_EXPORT int metal_stamp_get_redo_branch_count() {
     using namespace metal_stamp;
-    return g_undo_tree ? g_undo_tree->getRedoBranchCount() : 0;
+    auto* tree = get_current_undo_tree();
+    return tree ? tree->getRedoBranchCount() : 0;
 }
 
 METAL_EXPORT uint64_t metal_stamp_get_current_node_id() {
     using namespace metal_stamp;
-    return g_undo_tree ? g_undo_tree->getCurrentId() : 0;
+    auto* tree = get_current_undo_tree();
+    return tree ? tree->getCurrentId() : 0;
 }
 
 METAL_EXPORT int metal_stamp_get_undo_depth() {
     using namespace metal_stamp;
-    return g_undo_tree ? g_undo_tree->getCurrentDepth() : 0;
+    auto* tree = get_current_undo_tree();
+    return tree ? tree->getCurrentDepth() : 0;
 }
 
 METAL_EXPORT int metal_stamp_get_total_undo_nodes() {
     using namespace metal_stamp;
-    return g_undo_tree ? g_undo_tree->getTotalNodes() : 0;
+    auto* tree = get_current_undo_tree();
+    return tree ? tree->getTotalNodes() : 0;
 }
 
 METAL_EXPORT void metal_stamp_undo_print_tree() {
     using namespace metal_stamp;
-    if (!g_undo_tree) {
+    auto* tree = get_current_undo_tree();
+    if (!tree) {
         std::cout << "[UndoTree] Not initialized" << std::endl;
         return;
     }
 
-    std::cout << "[UndoTree] Total nodes: " << g_undo_tree->getTotalNodes()
-              << ", Current depth: " << g_undo_tree->getCurrentDepth()
-              << ", Current node: " << g_undo_tree->getCurrentId()
-              << ", Can undo: " << (g_undo_tree->canUndo() ? "yes" : "no")
-              << ", Can redo: " << (g_undo_tree->canRedo() ? "yes" : "no")
-              << ", Branches: " << g_undo_tree->getRedoBranchCount() << std::endl;
+    std::cout << "[UndoTree] Frame " << g_current_undo_frame
+              << ": nodes=" << tree->getTotalNodes()
+              << ", depth=" << tree->getCurrentDepth()
+              << ", nodeId=" << tree->getCurrentId()
+              << ", canUndo=" << (tree->canUndo() ? "yes" : "no")
+              << ", canRedo=" << (tree->canRedo() ? "yes" : "no")
+              << ", branches=" << tree->getRedoBranchCount() << std::endl;
 }
 
 // =============================================================================
@@ -2499,16 +2668,24 @@ namespace metal_stamp {
 
 // Called when a stroke begins - start recording points AND draw
 void undo_begin_stroke(float x, float y, float pressure) {
+    // Generate random seed for deterministic replay of jitter/scatter
+    // Uses timestamp + position - fully deterministic, no rand() involved!
+    uint32_t ticks = (uint32_t)SDL_GetTicks();
+    uint32_t strokeSeed = ticks ^ ((uint32_t)(x * 1000) << 16) ^ ((uint32_t)(y * 1000));
+
     // ALWAYS draw, even if undo tree not initialized
     if (g_metal_renderer) {
+        g_metal_renderer->set_stroke_random_seed(strokeSeed);  // Set seed before begin!
         g_metal_renderer->begin_stroke(x, y, pressure);
     }
 
-    // Record to undo tree if available
-    if (!g_undo_tree) return;
+    // Record to undo tree if available (per-frame)
+    auto* tree = get_current_undo_tree();
+    if (!tree) return;
 
     g_current_stroke = undo_tree::StrokeData();
     g_current_stroke.startTime = SDL_GetTicks();
+    g_current_stroke.randomSeed = strokeSeed;  // Store for deterministic replay
 
     // Record ALL brush settings from the current renderer brush
     if (g_metal_renderer) {
@@ -2529,6 +2706,7 @@ void undo_begin_stroke(float x, float y, float pressure) {
         g_current_stroke.brush.grain_texture_id = brush.grain_texture_id;
         g_current_stroke.brush.grain_scale = brush.grain_scale;
         g_current_stroke.brush.grain_moving = brush.grain_moving;
+        g_current_stroke.brush.shape_inverted = brush.shape_inverted;
         // Dynamics
         g_current_stroke.brush.rotation = brush.rotation;
         g_current_stroke.brush.rotation_jitter = brush.rotation_jitter;
@@ -2602,14 +2780,15 @@ void undo_end_stroke() {
         g_metal_renderer->end_stroke();
     }
 
-    if (!g_is_recording_stroke || !g_undo_tree) {
+    auto* tree = get_current_undo_tree();
+    if (!g_is_recording_stroke || !tree) {
         g_is_recording_stroke = false;
         return;
     }
 
-    // Only record if we have points
+    // Only record if we have points (to current frame's undo tree)
     if (!g_current_stroke.isEmpty()) {
-        g_undo_tree->recordStroke(g_current_stroke);
+        tree->recordStroke(g_current_stroke);
     }
 
     g_current_stroke = undo_tree::StrokeData();

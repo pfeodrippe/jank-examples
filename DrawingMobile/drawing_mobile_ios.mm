@@ -1324,6 +1324,9 @@ static void framestore_save_current() {
 static void framestore_load_frame(int index) {
     if (index < 0 || index >= FrameStore::MAX_FRAMES) return;
 
+    // Switch undo tree to match the frame we're loading
+    metal_stamp_undo_set_frame(index);
+
     // Try GPU cache first (INSTANT - no CPU->GPU transfer!)
     if (g_frameStore.gpuCacheReady && metal_stamp_is_frame_cached(index)) {
         metal_stamp_switch_to_cached_frame(index);
@@ -1877,9 +1880,11 @@ static int metal_test_main() {
         std::cerr << "Warning: Failed to initialize jank runtime (nREPL unavailable)" << std::endl;
     }
 
-    // Initialize undo tree for branching undo history
-    metal_stamp_undo_init();
-    std::cout << "Undo tree initialized!" << std::endl;
+    // Initialize per-frame undo trees (one undo tree per animation frame!)
+    // Now memory-efficient: checkpoints every 10 strokes, ~165MB for 50 undo levels per frame
+    metal_stamp_undo_init_with_frames(FrameStore::MAX_FRAMES);
+    std::cout << "Per-frame undo trees initialized (" << FrameStore::MAX_FRAMES
+              << " frames, checkpoints every 10 strokes)!" << std::endl;
 
     // =============================================================================
     // Initialize UI Sliders (Procreate-style vertical sliders on left edge)

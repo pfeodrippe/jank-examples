@@ -83,8 +83,8 @@ struct CanvasState {
     InputEvent events[MAX_EVENTS];
     int eventCount = 0;
 
-    // Background color
-    float bgColor[4] = {0.95f, 0.95f, 0.92f, 1.0f};  // Off-white paper color
+    // Background color (set in init() from metal_renderer.h constants)
+    float bgColor[4];
 
     // Frame timing (for performance measurement)
     uint64_t frame_start_time = 0;
@@ -138,6 +138,13 @@ inline bool init(int width, int height, const char* title) {
     }
     *ptr = new CanvasState();
     auto* s = *ptr;
+
+    // Background color will be set when Metal renderer is initialized
+    // via sync_background_color_from_metal() - DO NOT set defaults here
+    s->bgColor[0] = 1.0f;  // White placeholder until Metal init
+    s->bgColor[1] = 1.0f;
+    s->bgColor[2] = 1.0f;
+    s->bgColor[3] = 1.0f;
 
     s->width = width;
     s->height = height;
@@ -718,6 +725,9 @@ inline bool init_metal_renderer() {
     bool success = metal_stamp_init(s->window, s->render_width, s->render_height);
     if (success) {
         s->use_metal_renderer = true;
+        // Sync background color FROM Metal renderer (single source of truth)
+        metal_stamp_get_background_color(&s->bgColor[0], &s->bgColor[1],
+                                          &s->bgColor[2], &s->bgColor[3]);
         std::cout << "[drawing_canvas] Metal stamp renderer initialized" << std::endl;
     } else {
         std::cout << "[drawing_canvas] Metal renderer init failed" << std::endl;

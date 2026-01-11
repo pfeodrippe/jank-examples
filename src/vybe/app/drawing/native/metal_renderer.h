@@ -39,6 +39,28 @@ struct Point {
 };
 
 // =============================================================================
+// Color
+// =============================================================================
+
+struct Color {
+    float r, g, b, a;
+
+    Color() : r(0), g(0), b(0), a(1) {}
+    Color(float r_, float g_, float b_, float a_ = 1.0f) : r(r_), g(g_), b(b_), a(a_) {}
+};
+
+// Default paper/background color (off-white)
+constexpr float DEFAULT_PAPER_COLOR_R = 0.95f;
+constexpr float DEFAULT_PAPER_COLOR_G = 0.95f;
+constexpr float DEFAULT_PAPER_COLOR_B = 0.92f;
+constexpr float DEFAULT_PAPER_COLOR_A = 1.0f;
+
+inline Color default_paper_color() {
+    return Color(DEFAULT_PAPER_COLOR_R, DEFAULT_PAPER_COLOR_G,
+                 DEFAULT_PAPER_COLOR_B, DEFAULT_PAPER_COLOR_A);
+}
+
+// =============================================================================
 // Brush Type (selects shader pipeline)
 // =============================================================================
 
@@ -156,6 +178,9 @@ public:
     // Stroke Management
     // =========================================================================
 
+    // Set random seed for deterministic jitter/scatter (call before begin_stroke)
+    void set_stroke_random_seed(uint32_t seed);
+
     // Begin a new stroke at the given position
     void begin_stroke(float x, float y, float pressure = 1.0f);
 
@@ -173,7 +198,11 @@ public:
     // =========================================================================
 
     // Clear the canvas to background color
-    void clear_canvas(float r, float g, float b, float a);
+    void clear_canvas();  // Uses stored background color
+    void clear_canvas(const Color& color);
+
+    // Get the current background color
+    Color get_background_color() const;
 
     // Get the canvas texture as an SDL texture (for compositing)
     // Returns nullptr if not available
@@ -312,6 +341,7 @@ void metal_stamp_cancel_stroke();
 
 // Canvas functions
 void metal_stamp_clear_canvas(float r, float g, float b, float a);
+void metal_stamp_get_background_color(float* r, float* g, float* b, float* a);
 void metal_stamp_render_stroke();
 void metal_stamp_present();
 
@@ -357,13 +387,19 @@ void metal_stamp_set_canvas_transform(float panX, float panY, float scale,
 // Undo Tree API - Emacs-style branching undo history
 // =============================================================================
 
-// Initialize/cleanup undo tree (called automatically by metal_stamp_init/cleanup)
-void metal_stamp_undo_init();
+// Initialize/cleanup undo trees (one per frame for animation)
+void metal_stamp_undo_init();                           // Default: 12 frames
+void metal_stamp_undo_init_with_frames(int num_frames); // Custom frame count
 void metal_stamp_undo_cleanup();
 
-// Configure undo tree
-void metal_stamp_undo_set_max_nodes(int max);           // Default: 250
-void metal_stamp_undo_set_snapshot_interval(int interval);  // Default: 25
+// Per-frame undo management - call when switching frames!
+void metal_stamp_undo_set_frame(int frame);             // Switch active undo tree
+int metal_stamp_undo_get_frame();                       // Get current frame index
+int metal_stamp_undo_get_frame_count();                 // Get total frame count
+
+// Configure current frame's undo tree
+void metal_stamp_undo_set_max_nodes(int max);           // Default: 50 per frame
+void metal_stamp_undo_set_snapshot_interval(int interval);  // Default: 10
 
 // Core undo operations
 bool metal_stamp_undo();                    // Returns false if at root
