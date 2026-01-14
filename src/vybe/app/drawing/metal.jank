@@ -142,3 +142,70 @@
   "Get total undo frame count."
   []
   (metal/metal_stamp_undo_get_frame_count))
+
+;; =========================================================================
+;; Project Management functions (for testing via nREPL)
+;; =========================================================================
+
+(defn project-new!
+  "Create a new empty project. Current project should be saved first!"
+  []
+  (metal/drawing_project_init_new)
+  (metal/metal_stamp_undo_init_with_frames 12)
+  (println "New project created"))
+
+(defn project-save!
+  "Save current project. Returns true on success.
+   For new projects without a path, generates a new filename."
+  []
+  (let [path (metal/drawing_project_get_path)]
+    (if (= path "")
+      (= 1 (metal/drawing_project_save_new))
+      (= 1 (metal/drawing_project_save)))))
+
+(defn project-path
+  "Get current project file path (empty string if unsaved)."
+  []
+  (metal/drawing_project_get_path))
+
+(defn project-name
+  "Get current project name."
+  []
+  (metal/drawing_project_get_name))
+
+(defn project-set-name!
+  "Set project name."
+  [name]
+  (metal/drawing_project_set_name name))
+
+(defn project-dirty?
+  "Check if project has unsaved changes."
+  []
+  (= 1 (metal/drawing_project_is_dirty)))
+
+(defn stroke-count
+  "Get total stroke count across all frames."
+  []
+  (metal/metal_stamp_get_total_stroke_count_all_frames))
+
+(defn clear-canvas!
+  "Clear the canvas with paper background color."
+  []
+  (metal/metal_stamp_clear_canvas 0.95 0.95 0.92 1.0)
+  (metal/metal_stamp_present))
+
+;; =========================================================================
+;; Test helpers
+;; =========================================================================
+
+(defn test-draw-cross!
+  "Draw a cross pattern for testing."
+  []
+  (draw-line! 200 300 800 300)  ; horizontal
+  (draw-line! 500 100 500 500)) ; vertical
+
+(defn test-draw-x!
+  "Draw an X pattern for testing."
+  []
+  (draw-line! 200 100 800 500)  ; diagonal \
+  (draw-line! 200 500 800 100)) ; diagonal /

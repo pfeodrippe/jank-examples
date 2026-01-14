@@ -433,6 +433,19 @@ int metal_stamp_get_total_undo_nodes();
 // For debugging/visualization
 void metal_stamp_undo_print_tree();
 
+// Get total stroke count across all undo tree frames
+int metal_stamp_get_total_stroke_count_all_frames();
+
+// Sync strokes from undo trees to the animation weave (for saving)
+// Forward declare Weave to avoid circular include
+namespace animation { struct Weave; }
+int metal_stamp_sync_undo_to_weave(animation::Weave* weave);
+
+// Restore project from weave (after loading from file)
+void metal_stamp_replay_weave_frame(int frameIdx);
+void metal_stamp_populate_undo_from_weave();
+void metal_stamp_restore_from_weave();
+
 // Undo-aware stroke recording
 // Use these instead of metal_stamp_begin/add/end_stroke to automatically
 // record strokes to the undo tree
@@ -503,5 +516,21 @@ void frame_prev();
 void frame_goto(int index);
 int frame_current();
 int frame_count();
+
+// =============================================================================
+// Project Management C API - For REPL testing
+// =============================================================================
+
+void drawing_project_init_new();           // Create new empty project
+int drawing_project_save();                // Save current project (returns 1 on success)
+int drawing_project_save_as(const char* path);  // Save to specific path
+const char* drawing_project_get_path();    // Get current project path (empty if unsaved)
+const char* drawing_project_get_name();    // Get project name
+void drawing_project_set_name(const char* name);
+int drawing_project_is_dirty();            // Returns 1 if unsaved changes
+void drawing_project_switch_to_new();      // Switch to new project (saves current first in app)
+
+// Helper to save with auto-generated path (for new projects)
+int drawing_project_save_new();            // Generate path and save (returns 1 on success)
 
 } // extern "C"

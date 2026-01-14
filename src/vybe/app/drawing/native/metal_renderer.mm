@@ -8,6 +8,8 @@
 
 #include "metal_renderer.h"
 #include "undo_tree.hpp"
+#include "animation_thread.h"
+#include "drawing_project.hpp"
 #include <vector>
 #include <array>
 #include <algorithm>
@@ -2194,31 +2196,6 @@ void MetalStampRenderer::clear_frame_cache() {
 
 static MetalStampRenderer* g_metal_renderer = nullptr;
 
-// =============================================================================
-// Undo Tree - Global instance and current stroke tracking
-// =============================================================================
-
-// Per-frame undo trees - each frame has its own independent undo history
-// Configurable: can support multiple animations with different frame counts
-static std::vector<std::unique_ptr<undo_tree::UndoTree>> g_undo_trees;
-static int g_current_undo_frame = 0;  // Which frame's undo tree is active
-static bool g_undo_initialized = false;
-
-// Helper to get current frame's undo tree
-static undo_tree::UndoTree* get_current_undo_tree() {
-    if (!g_undo_initialized) return nullptr;
-    if (g_current_undo_frame < 0 || g_current_undo_frame >= (int)g_undo_trees.size()) return nullptr;
-    return g_undo_trees[g_current_undo_frame].get();
-}
-
-static undo_tree::StrokeData g_current_stroke;  // Accumulates points during drawing
-static bool g_is_recording_stroke = false;
-
-// Stroke bounding box (kept for potential future delta optimization)
-static float g_stroke_min_x = 0, g_stroke_min_y = 0;
-static float g_stroke_max_x = 0, g_stroke_max_y = 0;
-static bool g_stroke_bbox_valid = false;
-
 // Debug: Log when dylib is loaded
 __attribute__((constructor))
 static void metal_dylib_init() {
@@ -2419,6 +2396,29 @@ void metal_unload_texture(int32_t texture_id) {
 }
 
 } // namespace metal_stamp
+
+// =============================================================================
+// Helpers for accessing DrawingProject from extern "C" functions
+// These must be OUTSIDE the metal_stamp namespace
+// =============================================================================
+
+// Helper to get current project from ProjectManager
+static drawing::DrawingProject* get_current_project() {
+    return drawing::ProjectManager::instance().current();
+}
+
+// Helper to get current frame's undo tree from current project
+static undo_tree::UndoTree* get_current_undo_tree() {
+    auto* project = get_current_project();
+    if (!project) return nullptr;
+    return project->getCurrentUndoTree();
+}
+
+// Helper to check if undo is initialized (project exists with undo trees)
+static bool is_undo_initialized() {
+    auto* project = get_current_project();
+    return project && !project->undoTrees.empty();
+}
 
 // =============================================================================
 // extern "C" wrapper functions for JIT linking
@@ -2745,23 +2745,26 @@ static void configure_undo_tree(undo_tree::UndoTree* tree) {
 // Initialize undo system with specified number of frames
 // Each frame gets its own independent undo tree
 METAL_EXPORT void metal_stamp_undo_init_with_frames(int num_frames) {
-    using namespace metal_stamp;
-    if (g_undo_initialized) return;  // Already initialized
+    auto* project = get_current_project();
+    if (!project) {
+        std::cout << "[UndoTree] No project active, cannot init undo" << std::endl;
+        return;
+    }
     if (num_frames <= 0) num_frames = 12;  // Default to 12
 
-    // Create and configure undo tree for each frame
-    g_undo_trees.clear();
-    g_undo_trees.resize(num_frames);
-    for (int i = 0; i < num_frames; i++) {
-        g_undo_trees[i] = std::make_unique<undo_tree::UndoTree>();
-        configure_undo_tree(g_undo_trees[i].get());
+    // Initialize undo trees if empty OR if count doesn't match
+    if (project->undoTrees.empty() || (int)project->undoTrees.size() != num_frames) {
+        project->initUndoTrees(num_frames);
+        std::cout << "[UndoTree] Initialized " << num_frames << " per-frame undo trees" << std::endl;
     }
 
-    g_current_undo_frame = 0;
-    g_undo_initialized = true;
+    // ALWAYS configure callbacks (they may not be set if trees were created elsewhere)
+    for (auto& tree : project->undoTrees) {
+        configure_undo_tree(tree.get());
+    }
 
-    std::cout << "[UndoTree] Initialized " << num_frames << " per-frame undo trees "
-              << "(50 levels each, checkpoints every 10 strokes)" << std::endl;
+    std::cout << "[UndoTree] Configured " << project->undoTrees.size()
+              << " undo trees with callbacks" << std::endl;
 }
 
 // Legacy init - defaults to 12 frames
@@ -2770,58 +2773,59 @@ METAL_EXPORT void metal_stamp_undo_init() {
 }
 
 METAL_EXPORT void metal_stamp_undo_cleanup() {
-    using namespace metal_stamp;
-    g_undo_trees.clear();
-    g_undo_initialized = false;
-    g_current_undo_frame = 0;
-    g_current_stroke = undo_tree::StrokeData();
-    g_is_recording_stroke = false;
+    auto* project = get_current_project();
+    if (project) {
+        project->cleanupUndoTrees();
+        project->currentStroke = undo_tree::StrokeData();
+        project->isRecordingStroke = false;
+    }
 }
 
 // Switch to a different frame's undo tree
 // Call this when frame changes (frame_next, frame_prev, frame_goto)
 METAL_EXPORT void metal_stamp_undo_set_frame(int frame) {
-    using namespace metal_stamp;
-    if (!g_undo_initialized) return;
-    if (frame < 0 || frame >= (int)g_undo_trees.size()) {
+    auto* project = get_current_project();
+    if (!project || project->undoTrees.empty()) return;
+    if (frame < 0 || frame >= (int)project->undoTrees.size()) {
         std::cout << "[UndoTree] Invalid frame index: " << frame
-                  << " (max: " << g_undo_trees.size() << ")" << std::endl;
+                  << " (max: " << project->undoTrees.size() << ")" << std::endl;
         return;
     }
-    g_current_undo_frame = frame;
+    project->setCurrentUndoFrame(frame);
     std::cout << "[UndoTree] Switched to frame " << frame << std::endl;
 }
 
 // Get current frame for undo
 METAL_EXPORT int metal_stamp_undo_get_frame() {
-    return metal_stamp::g_current_undo_frame;
+    auto* project = get_current_project();
+    return project ? project->currentUndoFrame : 0;
 }
 
 // Get number of frames
 METAL_EXPORT int metal_stamp_undo_get_frame_count() {
-    return (int)metal_stamp::g_undo_trees.size();
+    auto* project = get_current_project();
+    return project ? (int)project->undoTrees.size() : 0;
 }
 
 METAL_EXPORT void metal_stamp_undo_set_max_nodes(int max) {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     if (tree) tree->setMaxNodes(max);
 }
 
 METAL_EXPORT void metal_stamp_undo_set_snapshot_interval(int interval) {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     if (tree) tree->setSnapshotInterval(interval);
 }
 
 METAL_EXPORT bool metal_stamp_undo() {
-    using namespace metal_stamp;
+    auto* project = get_current_project();
     auto* tree = get_current_undo_tree();
     if (!tree) {
         std::cout << "[UndoTree] metal_stamp_undo called but tree not initialized!" << std::endl;
         return false;
     }
-    std::cout << "[UndoTree] Frame " << g_current_undo_frame << " undo, depth: "
+    int frameIdx = project ? project->currentUndoFrame : 0;
+    std::cout << "[UndoTree] Frame " << frameIdx << " undo, depth: "
               << tree->getCurrentDepth() << ", total: " << tree->getTotalNodes() << std::endl;
     bool result = tree->undo();
     std::cout << "[UndoTree] Result: " << (result ? "success" : "failed")
@@ -2830,77 +2834,333 @@ METAL_EXPORT bool metal_stamp_undo() {
 }
 
 METAL_EXPORT bool metal_stamp_redo() {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     if (!tree) return false;
     return tree->redo();
 }
 
 METAL_EXPORT bool metal_stamp_redo_branch(int branch) {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     if (!tree) return false;
     return tree->redoBranch(branch);
 }
 
 METAL_EXPORT bool metal_stamp_undo_jump_to(uint64_t nodeId) {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     if (!tree) return false;
     return tree->jumpToNode(nodeId);
 }
 
 METAL_EXPORT bool metal_stamp_can_undo() {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     return tree && tree->canUndo();
 }
 
 METAL_EXPORT bool metal_stamp_can_redo() {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     return tree && tree->canRedo();
 }
 
 METAL_EXPORT int metal_stamp_get_redo_branch_count() {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     return tree ? tree->getRedoBranchCount() : 0;
 }
 
 METAL_EXPORT uint64_t metal_stamp_get_current_node_id() {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     return tree ? tree->getCurrentId() : 0;
 }
 
 METAL_EXPORT int metal_stamp_get_undo_depth() {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     return tree ? tree->getCurrentDepth() : 0;
 }
 
 METAL_EXPORT int metal_stamp_get_total_undo_nodes() {
-    using namespace metal_stamp;
     auto* tree = get_current_undo_tree();
     return tree ? tree->getTotalNodes() : 0;
 }
 
 METAL_EXPORT void metal_stamp_undo_print_tree() {
-    using namespace metal_stamp;
+    auto* project = get_current_project();
     auto* tree = get_current_undo_tree();
     if (!tree) {
         std::cout << "[UndoTree] Not initialized" << std::endl;
         return;
     }
 
-    std::cout << "[UndoTree] Frame " << g_current_undo_frame
+    int frameIdx = project ? project->currentUndoFrame : 0;
+    std::cout << "[UndoTree] Frame " << frameIdx
               << ": nodes=" << tree->getTotalNodes()
               << ", depth=" << tree->getCurrentDepth()
               << ", nodeId=" << tree->getCurrentId()
               << ", canUndo=" << (tree->canUndo() ? "yes" : "no")
               << ", canRedo=" << (tree->canRedo() ? "yes" : "no")
               << ", branches=" << tree->getRedoBranchCount() << std::endl;
+}
+
+// Get total stroke count across ALL undo tree frames
+METAL_EXPORT int metal_stamp_get_total_stroke_count_all_frames() {
+    auto* project = get_current_project();
+    if (!project) return 0;
+
+    int total = 0;
+    for (const auto& tree : project->undoTrees) {
+        if (tree) {
+            // Count nodes - 1 because root node has no stroke
+            int nodes = tree->getTotalNodes();
+            if (nodes > 0) total += (nodes - 1);  // -1 for root
+        }
+    }
+    return total;
+}
+
+// Collect all strokes from undo trees and populate the weave
+// This syncs the undo tree state to the animation weave for saving
+METAL_EXPORT int metal_stamp_sync_undo_to_weave(animation::Weave* weave) {
+    auto* project = get_current_project();
+    if (!project || project->undoTrees.empty() || !weave) return 0;
+
+    int totalStrokes = 0;
+    int numFrames = (int)project->undoTrees.size();
+
+    // Ensure weave has at least one thread with enough frames
+    if (weave->threads.empty()) {
+        weave->threads.emplace_back();
+    }
+    auto& thread = weave->threads[0];
+
+    // Resize frames to match undo tree count
+    while ((int)thread.frames.size() < numFrames) {
+        thread.frames.emplace_back();
+    }
+
+    // For each frame, collect strokes from its undo tree
+    for (int frameIdx = 0; frameIdx < numFrames; frameIdx++) {
+        auto* tree = project->undoTrees[frameIdx].get();
+        if (!tree) continue;
+
+        auto& frame = thread.frames[frameIdx];
+        frame.strokes.clear();  // Clear any existing strokes
+
+        // Get path from root to current node
+        auto* current = tree->getCurrent();
+        if (!current) continue;
+
+        std::vector<undo_tree::UndoNode*> path = tree->getPathToNode(current);
+
+        // Convert each node's stroke to AnimStroke (skip root which has no stroke)
+        for (auto* node : path) {
+            if (node->isRoot() || node->stroke.isEmpty()) continue;
+
+            animation::AnimStroke animStroke;
+
+            // Convert points
+            for (const auto& pt : node->stroke.points) {
+                animation::StrokePoint animPt;
+                animPt.x = pt.x;
+                animPt.y = pt.y;
+                animPt.pressure = pt.pressure;
+                animPt.timestamp = (float)pt.timestamp;
+                animStroke.points.push_back(animPt);
+            }
+
+            // Convert brush settings
+            const auto& b = node->stroke.brush;
+            animStroke.brush.brushType = b.brushType;
+            animStroke.brush.size = b.size;
+            animStroke.brush.hardness = b.hardness;
+            animStroke.brush.opacity = b.opacity;
+            animStroke.brush.spacing = b.spacing;
+            animStroke.brush.shapeTextureId = b.shape_texture_id;
+            animStroke.brush.grainTextureId = b.grain_texture_id;
+            animStroke.brush.grainScale = b.grain_scale;
+            animStroke.brush.shapeInverted = b.shape_inverted;
+            animStroke.brush.sizePressure = b.size_pressure;
+            animStroke.brush.opacityPressure = b.opacity_pressure;
+            animStroke.brush.sizeJitter = b.size_jitter;
+            animStroke.brush.opacityJitter = b.opacity_jitter;
+            animStroke.brush.rotationJitter = b.rotation_jitter;
+            animStroke.brush.scatter = b.scatter;
+
+            // Set color
+            animStroke.r = b.r;
+            animStroke.g = b.g;
+            animStroke.b = b.b;
+            animStroke.a = b.a;
+
+            // Calculate bounds
+            animStroke.updateBounds();
+
+            frame.strokes.push_back(std::move(animStroke));
+            totalStrokes++;
+        }
+    }
+
+    // Debug: count total points to understand file size
+    int totalPoints = 0;
+    for (const auto& frame : thread.frames) {
+        for (const auto& stroke : frame.strokes) {
+            totalPoints += stroke.points.size();
+        }
+    }
+    int expectedBytes = totalStrokes * 80 + totalPoints * 16;  // ~80 bytes per stroke header, 16 per point
+    printf("[UndoSync] Synced %d strokes (%d points) from %d frames to weave\n",
+           totalStrokes, totalPoints, numFrames);
+    printf("[UndoSync] Expected file size: ~%d bytes (%.2f MB)\n",
+           expectedBytes, expectedBytes / (1024.0 * 1024.0));
+    return totalStrokes;
+}
+
+// Helper: Replay a single AnimStroke to the canvas
+static void replay_anim_stroke_to_canvas(const animation::AnimStroke& animStroke) {
+    if (!metal_stamp::g_metal_renderer || animStroke.points.empty()) return;
+
+    // Save current brush
+    auto savedBrush = metal_stamp::g_metal_renderer->get_brush();
+
+    // Convert AnimStroke brush to BrushSettings
+    metal_stamp::BrushSettings brush;
+    brush.type = static_cast<metal_stamp::BrushType>(animStroke.brush.brushType);
+    brush.size = animStroke.brush.size;
+    brush.hardness = animStroke.brush.hardness;
+    brush.opacity = animStroke.brush.opacity;
+    brush.spacing = animStroke.brush.spacing;
+    brush.r = animStroke.r;
+    brush.g = animStroke.g;
+    brush.b = animStroke.b;
+    brush.a = animStroke.a;
+    brush.shape_texture_id = animStroke.brush.shapeTextureId;
+    brush.grain_texture_id = animStroke.brush.grainTextureId;
+    brush.grain_scale = animStroke.brush.grainScale;
+    brush.shape_inverted = animStroke.brush.shapeInverted;
+    brush.size_pressure = animStroke.brush.sizePressure;
+    brush.opacity_pressure = animStroke.brush.opacityPressure;
+    brush.size_jitter = animStroke.brush.sizeJitter;
+    brush.opacity_jitter = animStroke.brush.opacityJitter;
+    brush.rotation_jitter = animStroke.brush.rotationJitter;
+    brush.scatter = animStroke.brush.scatter;
+    metal_stamp::g_metal_renderer->set_brush(brush);
+
+    // Replay stroke: begin -> add points -> end
+    const auto& first = animStroke.points[0];
+    metal_stamp::g_metal_renderer->begin_stroke(first.x, first.y, first.pressure);
+
+    for (size_t i = 1; i < animStroke.points.size(); i++) {
+        const auto& pt = animStroke.points[i];
+        metal_stamp::g_metal_renderer->add_stroke_point(pt.x, pt.y, pt.pressure);
+    }
+
+    metal_stamp::g_metal_renderer->end_stroke();
+
+    // Restore original brush
+    metal_stamp::g_metal_renderer->set_brush(savedBrush);
+}
+
+// Replay all strokes from weave to canvas (for a specific frame)
+// Call this after loading a project to display its content
+METAL_EXPORT void metal_stamp_replay_weave_frame(int frameIdx) {
+    auto* project = get_current_project();
+    if (!project) return;
+
+    auto& weave = project->weave;
+    if (weave.threads.empty()) return;
+
+    auto& thread = weave.threads[0];
+    if (frameIdx < 0 || frameIdx >= (int)thread.frames.size()) return;
+
+    auto& frame = thread.frames[frameIdx];
+    printf("[WeaveReplay] Replaying frame %d with %zu strokes\n", frameIdx, frame.strokes.size());
+
+    for (const auto& stroke : frame.strokes) {
+        replay_anim_stroke_to_canvas(stroke);
+    }
+}
+
+// Populate undo trees from weave (after loading from file)
+// This allows undo/redo to work with loaded strokes
+METAL_EXPORT void metal_stamp_populate_undo_from_weave() {
+    auto* project = get_current_project();
+    if (!project || project->undoTrees.empty()) return;
+
+    auto& weave = project->weave;
+    if (weave.threads.empty()) return;
+
+    auto& thread = weave.threads[0];
+    int numFrames = std::min((int)thread.frames.size(), (int)project->undoTrees.size());
+
+    int totalStrokes = 0;
+    for (int frameIdx = 0; frameIdx < numFrames; frameIdx++) {
+        auto* tree = project->undoTrees[frameIdx].get();
+        if (!tree) continue;
+
+        auto& frame = thread.frames[frameIdx];
+
+        // Add each stroke to undo tree (without drawing - just populating history)
+        for (const auto& animStroke : frame.strokes) {
+            undo_tree::StrokeData strokeData;
+
+            // Convert points
+            for (const auto& pt : animStroke.points) {
+                undo_tree::StrokePoint undoPt;
+                undoPt.x = pt.x;
+                undoPt.y = pt.y;
+                undoPt.pressure = pt.pressure;
+                undoPt.timestamp = (uint32_t)pt.timestamp;
+                strokeData.points.push_back(undoPt);
+            }
+
+            // Convert brush settings
+            strokeData.brush.brushType = animStroke.brush.brushType;
+            strokeData.brush.size = animStroke.brush.size;
+            strokeData.brush.hardness = animStroke.brush.hardness;
+            strokeData.brush.opacity = animStroke.brush.opacity;
+            strokeData.brush.spacing = animStroke.brush.spacing;
+            strokeData.brush.r = animStroke.r;
+            strokeData.brush.g = animStroke.g;
+            strokeData.brush.b = animStroke.b;
+            strokeData.brush.a = animStroke.a;
+            strokeData.brush.shape_texture_id = animStroke.brush.shapeTextureId;
+            strokeData.brush.grain_texture_id = animStroke.brush.grainTextureId;
+            strokeData.brush.grain_scale = animStroke.brush.grainScale;
+            strokeData.brush.shape_inverted = animStroke.brush.shapeInverted;
+            strokeData.brush.size_pressure = animStroke.brush.sizePressure;
+            strokeData.brush.opacity_pressure = animStroke.brush.opacityPressure;
+            strokeData.brush.size_jitter = animStroke.brush.sizeJitter;
+            strokeData.brush.opacity_jitter = animStroke.brush.opacityJitter;
+            strokeData.brush.rotation_jitter = animStroke.brush.rotationJitter;
+            strokeData.brush.scatter = animStroke.brush.scatter;
+
+            // Record to tree (doesn't draw, just adds to undo history)
+            tree->recordStroke(strokeData);
+            totalStrokes++;
+        }
+    }
+
+    printf("[UndoPopulate] Populated %d strokes into %d undo trees from weave\n",
+           totalStrokes, numFrames);
+}
+
+// Restore project: clear canvas, replay all strokes for current frame, populate undo trees
+METAL_EXPORT void metal_stamp_restore_from_weave() {
+    auto* project = get_current_project();
+    if (!project) return;
+
+    // Clear canvas
+    if (metal_stamp::g_metal_renderer) {
+        metal_stamp::g_metal_renderer->clear_canvas();
+    }
+
+    // Get current frame
+    int currentFrame = project->currentUndoFrame;
+
+    // Replay strokes for current frame
+    metal_stamp_replay_weave_frame(currentFrame);
+
+    // Populate undo trees so undo/redo works
+    metal_stamp_populate_undo_from_weave();
+
+    printf("[RestoreWeave] Restored frame %d from weave\n", currentFrame);
 }
 
 // =============================================================================
@@ -2923,42 +3183,43 @@ void undo_begin_stroke(float x, float y, float pressure) {
     }
 
     // Record to undo tree if available (per-frame)
+    auto* project = get_current_project();
     auto* tree = get_current_undo_tree();
-    if (!tree) return;
+    if (!tree || !project) return;
 
-    g_current_stroke = undo_tree::StrokeData();
-    g_current_stroke.startTime = SDL_GetTicks();
-    g_current_stroke.randomSeed = strokeSeed;  // Store for deterministic replay
+    project->currentStroke = undo_tree::StrokeData();
+    project->currentStroke.startTime = SDL_GetTicks();
+    project->currentStroke.randomSeed = strokeSeed;  // Store for deterministic replay
 
     // Record ALL brush settings from the current renderer brush
     if (g_metal_renderer) {
         auto brush = g_metal_renderer->get_brush();
         // Core settings
-        g_current_stroke.brush.brushType = static_cast<int>(brush.type);
-        g_current_stroke.brush.size = brush.size;
-        g_current_stroke.brush.hardness = brush.hardness;
-        g_current_stroke.brush.opacity = brush.opacity;
-        g_current_stroke.brush.spacing = brush.spacing;
-        g_current_stroke.brush.flow = brush.flow;
-        g_current_stroke.brush.r = brush.r;
-        g_current_stroke.brush.g = brush.g;
-        g_current_stroke.brush.b = brush.b;
-        g_current_stroke.brush.a = brush.a;
+        project->currentStroke.brush.brushType = static_cast<int>(brush.type);
+        project->currentStroke.brush.size = brush.size;
+        project->currentStroke.brush.hardness = brush.hardness;
+        project->currentStroke.brush.opacity = brush.opacity;
+        project->currentStroke.brush.spacing = brush.spacing;
+        project->currentStroke.brush.flow = brush.flow;
+        project->currentStroke.brush.r = brush.r;
+        project->currentStroke.brush.g = brush.g;
+        project->currentStroke.brush.b = brush.b;
+        project->currentStroke.brush.a = brush.a;
         // Texture settings
-        g_current_stroke.brush.shape_texture_id = brush.shape_texture_id;
-        g_current_stroke.brush.grain_texture_id = brush.grain_texture_id;
-        g_current_stroke.brush.grain_scale = brush.grain_scale;
-        g_current_stroke.brush.grain_moving = brush.grain_moving;
-        g_current_stroke.brush.shape_inverted = brush.shape_inverted;
+        project->currentStroke.brush.shape_texture_id = brush.shape_texture_id;
+        project->currentStroke.brush.grain_texture_id = brush.grain_texture_id;
+        project->currentStroke.brush.grain_scale = brush.grain_scale;
+        project->currentStroke.brush.grain_moving = brush.grain_moving;
+        project->currentStroke.brush.shape_inverted = brush.shape_inverted;
         // Dynamics
-        g_current_stroke.brush.rotation = brush.rotation;
-        g_current_stroke.brush.rotation_jitter = brush.rotation_jitter;
-        g_current_stroke.brush.scatter = brush.scatter;
-        g_current_stroke.brush.size_pressure = brush.size_pressure;
-        g_current_stroke.brush.opacity_pressure = brush.opacity_pressure;
-        g_current_stroke.brush.size_velocity = brush.size_velocity;
-        g_current_stroke.brush.size_jitter = brush.size_jitter;
-        g_current_stroke.brush.opacity_jitter = brush.opacity_jitter;
+        project->currentStroke.brush.rotation = brush.rotation;
+        project->currentStroke.brush.rotation_jitter = brush.rotation_jitter;
+        project->currentStroke.brush.scatter = brush.scatter;
+        project->currentStroke.brush.size_pressure = brush.size_pressure;
+        project->currentStroke.brush.opacity_pressure = brush.opacity_pressure;
+        project->currentStroke.brush.size_velocity = brush.size_velocity;
+        project->currentStroke.brush.size_jitter = brush.size_jitter;
+        project->currentStroke.brush.opacity_jitter = brush.opacity_jitter;
     }
 
     // Add first point
@@ -2967,22 +3228,22 @@ void undo_begin_stroke(float x, float y, float pressure) {
     pt.y = y;
     pt.pressure = pressure;
     pt.timestamp = 0;  // Relative to stroke start
-    g_current_stroke.points.push_back(pt);
+    project->currentStroke.points.push_back(pt);
 
     // Initialize bounding box with first point (expanded by MAX possible brush size)
-    float baseSize = g_current_stroke.brush.size;
-    float pressureMax = 1.0f + g_current_stroke.brush.size_pressure;
-    float jitterMax = 1.0f + g_current_stroke.brush.size_jitter;
-    float scatterMax = baseSize * g_current_stroke.brush.scatter;
+    float baseSize = project->currentStroke.brush.size;
+    float pressureMax = 1.0f + project->currentStroke.brush.size_pressure;
+    float jitterMax = 1.0f + project->currentStroke.brush.size_jitter;
+    float scatterMax = baseSize * project->currentStroke.brush.scatter;
     float maxSize = baseSize * pressureMax * jitterMax + scatterMax;
 
-    g_stroke_min_x = x - maxSize;
-    g_stroke_min_y = y - maxSize;
-    g_stroke_max_x = x + maxSize;
-    g_stroke_max_y = y + maxSize;
-    g_stroke_bbox_valid = true;
+    project->strokeMinX = x - maxSize;
+    project->strokeMinY = y - maxSize;
+    project->strokeMaxX = x + maxSize;
+    project->strokeMaxY = y + maxSize;
+    project->strokeBboxValid = true;
 
-    g_is_recording_stroke = true;
+    project->isRecordingStroke = true;
 }
 
 // Called for each stroke point - record it AND draw
@@ -2993,27 +3254,28 @@ void undo_add_stroke_point(float x, float y, float pressure) {
     }
 
     // Record to undo tree
-    if (!g_is_recording_stroke) return;
+    auto* project = get_current_project();
+    if (!project || !project->isRecordingStroke) return;
 
     undo_tree::StrokePoint pt;
     pt.x = x;
     pt.y = y;
     pt.pressure = pressure;
-    pt.timestamp = SDL_GetTicks() - g_current_stroke.startTime;
+    pt.timestamp = SDL_GetTicks() - project->currentStroke.startTime;
 
     // Expand bounding box (account for MAX possible brush size due to dynamics)
     // size_pressure can increase size based on pressure (0-1), size_jitter adds random variation
-    float baseSize = g_current_stroke.brush.size;
-    float pressureMax = 1.0f + g_current_stroke.brush.size_pressure;  // Pressure can double size
-    float jitterMax = 1.0f + g_current_stroke.brush.size_jitter;      // Jitter can also increase
-    float scatterMax = baseSize * g_current_stroke.brush.scatter;     // Scatter offsets stamps
+    float baseSize = project->currentStroke.brush.size;
+    float pressureMax = 1.0f + project->currentStroke.brush.size_pressure;  // Pressure can double size
+    float jitterMax = 1.0f + project->currentStroke.brush.size_jitter;      // Jitter can also increase
+    float scatterMax = baseSize * project->currentStroke.brush.scatter;     // Scatter offsets stamps
     float maxSize = baseSize * pressureMax * jitterMax + scatterMax;
 
-    if (x - maxSize < g_stroke_min_x) g_stroke_min_x = x - maxSize;
-    if (y - maxSize < g_stroke_min_y) g_stroke_min_y = y - maxSize;
-    if (x + maxSize > g_stroke_max_x) g_stroke_max_x = x + maxSize;
-    if (y + maxSize > g_stroke_max_y) g_stroke_max_y = y + maxSize;
-    g_current_stroke.points.push_back(pt);
+    if (x - maxSize < project->strokeMinX) project->strokeMinX = x - maxSize;
+    if (y - maxSize < project->strokeMinY) project->strokeMinY = y - maxSize;
+    if (x + maxSize > project->strokeMaxX) project->strokeMaxX = x + maxSize;
+    if (y + maxSize > project->strokeMaxY) project->strokeMaxY = y + maxSize;
+    project->currentStroke.points.push_back(pt);
 }
 
 // Called when stroke ends - commit to undo tree AND finalize drawing
@@ -3023,19 +3285,21 @@ void undo_end_stroke() {
         g_metal_renderer->end_stroke();
     }
 
+    auto* project = get_current_project();
     auto* tree = get_current_undo_tree();
-    if (!g_is_recording_stroke || !tree) {
-        g_is_recording_stroke = false;
+    if (!project || !project->isRecordingStroke || !tree) {
+        if (project) project->isRecordingStroke = false;
         return;
     }
 
     // Only record if we have points (to current frame's undo tree)
-    if (!g_current_stroke.isEmpty()) {
-        tree->recordStroke(g_current_stroke);
+    if (!project->currentStroke.isEmpty()) {
+        tree->recordStroke(project->currentStroke);
+        project->markDirty();  // Mark project as having unsaved changes
     }
 
-    g_current_stroke = undo_tree::StrokeData();
-    g_is_recording_stroke = false;
+    project->currentStroke = undo_tree::StrokeData();
+    project->isRecordingStroke = false;
 }
 
 // Called when stroke is cancelled - discard AND cancel drawing
@@ -3045,9 +3309,12 @@ void undo_cancel_stroke() {
         g_metal_renderer->cancel_stroke();
     }
 
-    g_current_stroke = undo_tree::StrokeData();
-    g_is_recording_stroke = false;
-    g_stroke_bbox_valid = false;
+    auto* project = get_current_project();
+    if (project) {
+        project->currentStroke = undo_tree::StrokeData();
+        project->isRecordingStroke = false;
+        project->strokeBboxValid = false;
+    }
 }
 
 } // namespace metal_stamp

@@ -97,14 +97,14 @@ targetTemplates:
       # Vybe Flecs helpers (needed for vybe.flecs jank bindings)
       - path: ../vendor/vybe/vybe_flecs_jank.cpp
         compilerFlags: ["-O2"]
-      # Metal stamp renderer (GPU-accelerated brush rendering)
-      - path: ../src/vybe/app/drawing/native/metal_renderer.mm
+      # Native drawing code - auto-include all files from native/ directory
+      # (metal renderer, undo tree, animation thread, file manager, project manager, etc.)
+      - path: ../src/vybe/app/drawing/native
         compilerFlags: ["-x", "objective-c++", "-fobjc-arc"]
-      # Undo tree (branching undo history)
-      - path: ../src/vybe/app/drawing/native/undo_tree.cpp
-      # Animation thread system (Looom-style animated layers)
-      - path: ../src/vybe/app/drawing/native/animation_thread.mm
-        compilerFlags: ["-x", "objective-c++"]
+        excludes:
+          - "*.h"
+          - "*.hpp"
+          - "*.metal"
       # Metal shaders (compiled to .metallib by Xcode)
       - path: ../src/vybe/app/drawing/native/stamp_shaders.metal
       # Common resources (bundled with app)

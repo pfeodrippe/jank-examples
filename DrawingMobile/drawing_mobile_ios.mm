@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <pthread.h>
 #include <algorithm>  // For std::max, std::min
+#include <atomic>     // For std::atomic (thread-safe save throttle)
 
 #include <SDL3/SDL.h>
 
@@ -27,6 +28,9 @@ static inline bool isSyntheticTouchEvent(SDL_TouchID touchID) {
 
 #include "../src/vybe/app/drawing/native/metal_renderer.h"
 #include "../src/vybe/app/drawing/native/animation_thread.h"
+#include "../src/vybe/app/drawing/native/file_manager_ios.h"
+#include "../src/vybe/app/drawing/native/vybed_format.hpp"
+#include "../src/vybe/app/drawing/native/drawing_project.hpp"
 #import "brush_importer.h"
 
 // jank runtime headers
@@ -347,6 +351,13 @@ static SDL_FingerID g_brushPickerDragFingerId = 0; // Finger used for scrolling
 
 // Eraser mode state
 static bool g_eraserMode = false;  // When true, paint with background color
+
+// Finger drawing toggle (for simulator without Apple Pencil)
+#if TARGET_OS_SIMULATOR
+static bool g_fingerDrawingEnabled = true;  // Default ON in simulator
+#else
+static bool g_fingerDrawingEnabled = false; // Default OFF on device
+#endif
 
 // Paper background color (off-white, matches weave :bg-color [0.95 0.95 0.92 1.0])
 static const float PAPER_BG_R = 0.95f;
@@ -775,6 +786,568 @@ static void drawOnionSkinButton(const OnionSkinButtonConfig& btn, bool isActive)
     // Next frame (bluish, offset right)
     metal_stamp_queue_ui_rect(cx + r * 0.0f, cy - r * 0.8f, r * 1.6f, r * 1.6f,
                               0.4f, 0.6f, 1.0f, isActive ? 0.7f : 0.3f, r * 0.8f);
+}
+
+// =============================================================================
+// Save Button Configuration (top-right corner)
+// =============================================================================
+
+static const float SAVE_BUTTON_SIZE = 50.0f;
+
+struct SaveButtonConfig {
+    float x, y;
+    float size;
+};
+
+static bool isPointInSaveButton(const SaveButtonConfig& btn, float px, float py) {
+    return px >= btn.x && px <= btn.x + btn.size &&
+           py >= btn.y && py <= btn.y + btn.size;
+}
+
+static void drawSaveButton(const SaveButtonConfig& btn) {
+    // Background - dark gray rounded rect
+    metal_stamp_queue_ui_rect(btn.x - 3, btn.y - 3, btn.size + 6, btn.size + 6,
+                              0.3f, 0.5f, 0.3f, 0.7f, 12.0f);
+    metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
+                              0.15f, 0.2f, 0.15f, 0.95f, 10.0f);
+
+    // Floppy disk / save icon (simplified)
+    float cx = btn.x + btn.size * 0.5f;
+    float cy = btn.y + btn.size * 0.5f;
+    float s = btn.size * 0.3f;
+
+    // Outer square (disk body)
+    metal_stamp_queue_ui_rect(cx - s, cy - s, s * 2.0f, s * 2.0f,
+                              0.9f, 0.9f, 0.9f, 0.95f, 4.0f);
+
+    // Inner label area (metal part)
+    metal_stamp_queue_ui_rect(cx - s * 0.6f, cy - s, s * 1.2f, s * 0.8f,
+                              0.4f, 0.4f, 0.5f, 1.0f, 2.0f);
+
+    // Notch in corner
+    metal_stamp_queue_ui_rect(cx + s * 0.5f, cy - s, s * 0.5f, s * 0.5f,
+                              0.15f, 0.2f, 0.15f, 1.0f, 0.0f);
+}
+
+// =============================================================================
+// Gallery Button Configuration (next to save button)
+// =============================================================================
+
+static const float GALLERY_BUTTON_SIZE = 50.0f;
+
+struct GalleryButtonConfig {
+    float x, y;
+    float size;
+};
+
+static bool isPointInGalleryButton(const GalleryButtonConfig& btn, float px, float py) {
+    return px >= btn.x && px <= btn.x + btn.size &&
+           py >= btn.y && py <= btn.y + btn.size;
+}
+
+static void drawGalleryButton(const GalleryButtonConfig& btn) {
+    // Background - dark blue rounded rect
+    metal_stamp_queue_ui_rect(btn.x - 3, btn.y - 3, btn.size + 6, btn.size + 6,
+                              0.3f, 0.3f, 0.5f, 0.7f, 12.0f);
+    metal_stamp_queue_ui_rect(btn.x, btn.y, btn.size, btn.size,
+                              0.15f, 0.15f, 0.25f, 0.95f, 10.0f);
+
+    // Grid icon (4 squares representing gallery thumbnails)
+    float cx = btn.x + btn.size * 0.5f;
+    float cy = btn.y + btn.size * 0.5f;
+    float s = btn.size * 0.15f;
+    float gap = s * 0.4f;
+
+    // 2x2 grid of squares
+    metal_stamp_queue_ui_rect(cx - s - gap/2, cy - s - gap/2, s, s,
+                              0.8f, 0.8f, 0.9f, 0.95f, 2.0f);
+    metal_stamp_queue_ui_rect(cx + gap/2, cy - s - gap/2, s, s,
+                              0.8f, 0.8f, 0.9f, 0.95f, 2.0f);
+    metal_stamp_queue_ui_rect(cx - s - gap/2, cy + gap/2, s, s,
+                              0.8f, 0.8f, 0.9f, 0.95f, 2.0f);
+    metal_stamp_queue_ui_rect(cx + gap/2, cy + gap/2, s, s,
+                              0.8f, 0.8f, 0.9f, 0.95f, 2.0f);
+}
+
+// =============================================================================
+// Gallery State (for listing saved drawings)
+// =============================================================================
+
+struct GalleryState {
+    bool isOpen;
+    std::vector<std::string> filePaths;
+    std::vector<std::string> fileNames;
+    std::vector<int32_t> thumbnailTextureIds;  // Metal texture IDs for thumbnails (0 = not loaded)
+    int selectedIndex;
+    float scrollOffset;
+    std::string currentDrawingPath;  // Path of currently loaded drawing (empty = new drawing)
+    bool hasUnsavedChanges;          // Track if we need to auto-save
+
+    // Scrolling/dragging state
+    bool isDragging;
+    float dragStartX;
+    float dragStartY;
+    float dragStartScrollOffset;
+    SDL_FingerID dragFingerId;
+
+    // Swipe-to-delete state
+    int swipedItemIndex;       // -1 = none, >= 0 = item showing delete button
+    float swipeOffsetX;        // Current swipe offset for the swiped item
+    bool showDeleteButton;     // True when delete button is revealed
+
+    // Double-tap for rename state
+    Uint64 lastTapTimeMs;
+    int lastTapItemIndex;
+    int renameItemIndex;       // Item currently being renamed (-1 = none)
+};
+
+// selectedIndex: -2 = no item, -1 = "+" card, 0+ = file index
+static GalleryState g_gallery = {false, {}, {}, {}, -2, 0.0f, "", false, false, 0.0f, 0.0f, 0.0f, 0, -1, 0.0f, false, 0, -1, -1};
+
+// Forward declaration for refresh function used in rename callback
+static void refreshGalleryList();
+
+// Show rename dialog for a gallery item
+static void showRenameDialog(int itemIndex) {
+    if (itemIndex < 0 || itemIndex >= (int)g_gallery.filePaths.size()) {
+        return;
+    }
+
+    if (!g_sdlWindow) {
+        NSLog(@"[Rename] No SDL window available");
+        return;
+    }
+
+    SDL_PropertiesID props = SDL_GetWindowProperties(g_sdlWindow);
+    UIWindow* uiWindow = (__bridge UIWindow*)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
+    if (!uiWindow) {
+        NSLog(@"[Rename] Cannot get UIWindow from SDL");
+        return;
+    }
+
+    UIViewController* rootVC = uiWindow.rootViewController;
+    if (!rootVC) {
+        NSLog(@"[Rename] No root view controller");
+        return;
+    }
+
+    // Get current name
+    const char* currentName = ios_get_drawing_name(g_gallery.filePaths[itemIndex].c_str());
+    NSString* currentNameStr = currentName ? [NSString stringWithUTF8String:currentName] : @"Untitled";
+    std::string filePath = g_gallery.filePaths[itemIndex];
+
+    NSLog(@"[Rename] Showing dialog for item %d: %@", itemIndex, currentNameStr);
+
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Rename Drawing"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+
+    [alert addTextFieldWithConfigurationHandler:^(UITextField* textField) {
+        textField.text = currentNameStr;
+        textField.placeholder = @"Drawing name";
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+
+    UIAlertAction* cancelAction = [UIAlertAction actionWithTitle:@"Cancel"
+                                                           style:UIAlertActionStyleCancel
+                                                         handler:nil];
+
+    UIAlertAction* renameAction = [UIAlertAction actionWithTitle:@"Rename"
+                                                           style:UIAlertActionStyleDefault
+                                                         handler:^(UIAlertAction* action) {
+        NSString* newName = alert.textFields.firstObject.text;
+        if (newName && newName.length > 0) {
+            if (ios_rename_drawing(filePath.c_str(), [newName UTF8String])) {
+                NSLog(@"[Rename] Renamed to: %@", newName);
+                refreshGalleryList();  // Refresh to show new name
+            } else {
+                NSLog(@"[Rename] Failed to rename");
+            }
+        }
+    }];
+
+    [alert addAction:cancelAction];
+    [alert addAction:renameAction];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [rootVC presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+static void refreshGalleryList() {
+    // Unload old thumbnails
+    for (int32_t texId : g_gallery.thumbnailTextureIds) {
+        if (texId > 0) {
+            metal_stamp_unload_texture(texId);
+        }
+    }
+
+    g_gallery.filePaths.clear();
+    g_gallery.fileNames.clear();
+    g_gallery.thumbnailTextureIds.clear();
+
+    char* paths[100];
+    int count = ios_list_drawings(paths, 100);
+
+    for (int i = 0; i < count; i++) {
+        g_gallery.filePaths.push_back(paths[i]);
+        const char* name = ios_get_drawing_name(paths[i]);
+        g_gallery.fileNames.push_back(name ? name : "Untitled");
+
+        // Load thumbnail from .vybed file
+        std::vector<uint8_t> thumbData;
+        int32_t texId = 0;
+        if (vybe::drawing::load_vybed_thumbnail(paths[i], thumbData) && !thumbData.empty()) {
+            // Decode PNG to RGBA pixels using iOS APIs
+            @autoreleasepool {
+                NSData* pngData = [NSData dataWithBytes:thumbData.data() length:thumbData.size()];
+                UIImage* image = [UIImage imageWithData:pngData];
+                if (image) {
+                    // Get image dimensions
+                    int w = (int)image.size.width;
+                    int h = (int)image.size.height;
+
+                    // Create bitmap context to get raw RGBA pixels
+                    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+                    std::vector<uint8_t> pixels(w * h * 4);
+                    CGContextRef ctx = CGBitmapContextCreate(
+                        pixels.data(), w, h, 8, w * 4, colorSpace,
+                        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big
+                    );
+                    CGColorSpaceRelease(colorSpace);
+
+                    if (ctx) {
+                        // Draw image into context
+                        CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), image.CGImage);
+                        CGContextRelease(ctx);
+
+                        // Load as Metal texture
+                        texId = metal_stamp_load_rgba_texture_data(pixels.data(), w, h);
+                        if (texId > 0) {
+                            NSLog(@"[Gallery] Loaded thumbnail %d for %s (%dx%d)", texId, name, w, h);
+                        }
+                    }
+                }
+            }
+        }
+        g_gallery.thumbnailTextureIds.push_back(texId);
+
+        free(paths[i]);
+    }
+
+    NSLog(@"[Gallery] Found %d drawings", count);
+}
+
+// Auto-save state for throttling
+static std::atomic<bool> g_saveInProgress{false};
+
+static void autoSaveCurrentDrawing() {
+    // Don't save if gallery is open (no active drawing)
+    if (g_gallery.isOpen) {
+        return;
+    }
+
+    // Don't start another save if one is in progress (simple throttle)
+    if (g_saveInProgress.exchange(true)) {
+        return;
+    }
+
+    // Get current project
+    auto* project = drawing::ProjectManager::instance().current();
+    if (!project) {
+        NSLog(@"[AutoSave] No active project");
+        g_saveInProgress = false;
+        return;
+    }
+
+    // Check if there are any strokes in the undo tree
+    // (strokes are stored in undo tree, not in weave.frame.strokes during drawing)
+    int totalStrokes = metal_stamp_get_total_stroke_count_all_frames();
+    if (totalStrokes == 0) {
+        NSLog(@"[AutoSave] No strokes to save");
+        g_saveInProgress = false;
+        return;
+    }
+
+    NSLog(@"[AutoSave] Found %d strokes to save", totalStrokes);
+
+    // Sync strokes from undo tree to weave (must be done on main thread)
+    metal_stamp_sync_undo_to_weave(&project->weave);
+
+    // Capture thumbnail on main thread (needs Metal context)
+    auto thumbnailData = std::make_shared<std::vector<uint8_t>>(100 * 1024);
+    int thumbSize = ios_capture_thumbnail(thumbnailData->data(), (int)thumbnailData->size());
+    if (thumbSize > 0) {
+        thumbnailData->resize(thumbSize);
+        NSLog(@"[AutoSave] Captured thumbnail: %d bytes", thumbSize);
+    } else {
+        thumbnailData->clear();
+    }
+
+    // Copy weave data for background thread using shared_ptr to avoid dangling reference
+    auto weaveCopy = std::make_shared<animation::Weave>(project->weave);
+    std::string currentPath = g_gallery.currentDrawingPath;
+
+    // Dispatch disk IO to background thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @autoreleasepool {
+            if (!currentPath.empty()) {
+                // Update existing file
+                std::string name;
+                vybe::drawing::VybedFileInfo info;
+                if (vybe::drawing::load_vybed_info(currentPath.c_str(), info)) {
+                    name = info.name;
+                } else {
+                    name = "Untitled";
+                }
+
+                if (vybe::drawing::save_vybed(currentPath, *weaveCopy, name,
+                                               thumbnailData->empty() ? nullptr : thumbnailData->data(),
+                                               thumbnailData->size())) {
+                    NSLog(@"[AutoSave] Updated: %s", currentPath.c_str());
+                } else {
+                    NSLog(@"[AutoSave] Failed to update!");
+                }
+            } else {
+                // Save as new file
+                if (ios_ensure_drawings_directory()) {
+                    std::string filename = vybe::drawing::generate_vybed_filename();
+                    std::string fullPath = std::string(ios_get_drawings_path()) + "/" + filename;
+
+                    if (vybe::drawing::save_vybed(fullPath, *weaveCopy, "Untitled",
+                                                   thumbnailData->empty() ? nullptr : thumbnailData->data(),
+                                                   thumbnailData->size())) {
+                        // Update currentDrawingPath on main thread
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            g_gallery.currentDrawingPath = fullPath;
+                        });
+                        NSLog(@"[AutoSave] Created: %s", fullPath.c_str());
+                    } else {
+                        NSLog(@"[AutoSave] Failed to save!");
+                    }
+                }
+            }
+            g_saveInProgress = false;
+        }
+    });
+
+    g_gallery.hasUnsavedChanges = false;
+}
+
+// SDL event watcher for app lifecycle events (background/foreground)
+// These events must be handled via SDL_AddEventWatch per SDL3 docs
+static bool sdlEventWatcher(void* userdata, SDL_Event* event) {
+    switch (event->type) {
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
+            NSLog(@"[AppLifecycle] WILL_ENTER_BACKGROUND - auto-saving...");
+            autoSaveCurrentDrawing();
+            break;
+
+        case SDL_EVENT_DID_ENTER_BACKGROUND:
+            NSLog(@"[AppLifecycle] DID_ENTER_BACKGROUND");
+            break;
+
+        case SDL_EVENT_WILL_ENTER_FOREGROUND:
+            NSLog(@"[AppLifecycle] WILL_ENTER_FOREGROUND");
+            break;
+
+        case SDL_EVENT_DID_ENTER_FOREGROUND:
+            NSLog(@"[AppLifecycle] DID_ENTER_FOREGROUND - refreshing gallery...");
+            refreshGalleryList();
+            break;
+    }
+    return true;  // Allow event to be processed by other handlers
+}
+
+// Gallery panel constants
+static const float GALLERY_ITEM_WIDTH = 200.0f;
+static const float GALLERY_ITEM_HEIGHT = 160.0f;
+static const float GALLERY_ITEM_GAP = 20.0f;
+static const float GALLERY_PADDING = 40.0f;
+static const int GALLERY_COLS = 4;
+
+// Check if point is within gallery panel
+static bool isPointInGalleryPanel(float px, float py, float panelX, float panelY, float panelW, float panelH) {
+    return px >= panelX && px <= panelX + panelW &&
+           py >= panelY && py <= panelY + panelH;
+}
+
+// Get which gallery item is at point (-1 if none)
+// Returns grid index: 0 = "+" new card, 1+ = file at (gridIndex - 1)
+// totalGridCount should include the "+" card (fileCount + 1)
+static int getGalleryItemAtPoint(float px, float py, float panelX, float panelY, float panelW, float panelH, int totalGridCount) {
+    if (totalGridCount == 0) return -1;
+    if (!isPointInGalleryPanel(px, py, panelX, panelY, panelW, panelH)) return -1;
+
+    float gridX = panelX + GALLERY_PADDING;
+    float gridY = panelY + 50.0f;  // Just below close button
+
+    float relX = px - gridX;
+    float relY = py - gridY + g_gallery.scrollOffset;
+
+    float cellWidth = GALLERY_ITEM_WIDTH + GALLERY_ITEM_GAP;
+    float cellHeight = GALLERY_ITEM_HEIGHT + GALLERY_ITEM_GAP + 30.0f;  // 30 for name
+
+    int col = (int)(relX / cellWidth);
+    int row = (int)(relY / cellHeight);
+
+    if (col < 0 || col >= GALLERY_COLS || row < 0) return -1;
+
+    int index = row * GALLERY_COLS + col;
+    if (index < 0 || index >= totalGridCount) return -1;
+
+    // Check if within item bounds (not in gap)
+    float itemLocalX = fmodf(relX, cellWidth);
+    float itemLocalY = fmodf(relY, cellHeight);
+    if (itemLocalX > GALLERY_ITEM_WIDTH || itemLocalY > GALLERY_ITEM_HEIGHT + 30.0f) {
+        return -1;
+    }
+
+    return index;
+}
+
+// Draw the gallery panel
+static void drawGalleryPanel(int screenWidth, int screenHeight) {
+    if (!g_gallery.isOpen) return;
+
+    // Full-screen semi-transparent overlay
+    metal_stamp_queue_ui_rect(0, 0, screenWidth, screenHeight,
+                              0.0f, 0.0f, 0.0f, 0.7f, 0.0f);
+
+    // Gallery panel - centered, with some margin
+    float panelW = screenWidth * 0.85f;
+    float panelH = screenHeight * 0.85f;
+    float panelX = (screenWidth - panelW) / 2.0f;
+    float panelY = (screenHeight - panelH) / 2.0f;
+
+    // Panel background
+    metal_stamp_queue_ui_rect(panelX, panelY, panelW, panelH,
+                              0.12f, 0.12f, 0.15f, 0.98f, 20.0f);
+
+    // Panel border
+    metal_stamp_queue_ui_rect(panelX - 2, panelY - 2, panelW + 4, panelH + 4,
+                              0.3f, 0.3f, 0.4f, 0.5f, 22.0f);
+
+    // Close button (X) in top-right of panel
+    float closeBtnX = panelX + panelW - 50.0f;
+    float closeBtnY = panelY + 10.0f;
+    metal_stamp_queue_ui_rect(closeBtnX, closeBtnY, 30.0f, 30.0f,
+                              0.5f, 0.2f, 0.2f, 0.8f, 8.0f);
+    // X icon
+    float xCenterX = closeBtnX + 15.0f;
+    float xCenterY = closeBtnY + 15.0f;
+    metal_stamp_queue_ui_rect(xCenterX - 8, xCenterY - 1, 16, 3,
+                              1.0f, 1.0f, 1.0f, 0.9f, 1.0f);
+    metal_stamp_queue_ui_rect(xCenterX - 1, xCenterY - 8, 3, 16,
+                              1.0f, 1.0f, 1.0f, 0.9f, 1.0f);
+
+    // Drawing grid - starts at top of panel content area
+    float gridX = panelX + GALLERY_PADDING;
+    float gridY = panelY + 50.0f;  // Just below close button
+
+    int fileCount = (int)g_gallery.filePaths.size();
+    int totalCount = fileCount + 1;  // +1 for "+" new project card at index 0
+
+    // Draw items in a grid (index 0 = "+" card, index 1+ = saved drawings)
+    for (int i = 0; i < totalCount && i < 21; i++) {  // Limit to 21 visible (1 + 20)
+        int col = i % GALLERY_COLS;
+        int row = i / GALLERY_COLS;
+
+        float baseItemX = gridX + col * (GALLERY_ITEM_WIDTH + GALLERY_ITEM_GAP);
+        float itemY = gridY + row * (GALLERY_ITEM_HEIGHT + GALLERY_ITEM_GAP + 30.0f) - g_gallery.scrollOffset;
+
+        // Skip if off-screen
+        if (itemY + GALLERY_ITEM_HEIGHT < gridY || itemY > panelY + panelH - GALLERY_PADDING) {
+            continue;
+        }
+
+        float itemX = baseItemX;
+
+        if (i == 0) {
+            // "+" New Project card
+            metal_stamp_queue_ui_rect(itemX, itemY, GALLERY_ITEM_WIDTH, GALLERY_ITEM_HEIGHT,
+                                      0.2f, 0.5f, 0.3f, 0.9f, 12.0f);
+            // Big plus icon centered
+            float plusCX = itemX + GALLERY_ITEM_WIDTH / 2.0f;
+            float plusCY = itemY + GALLERY_ITEM_HEIGHT / 2.0f;
+            metal_stamp_queue_ui_rect(plusCX - 30, plusCY - 4, 60, 8,
+                                      1.0f, 1.0f, 1.0f, 0.9f, 4.0f);
+            metal_stamp_queue_ui_rect(plusCX - 4, plusCY - 30, 8, 60,
+                                      1.0f, 1.0f, 1.0f, 0.9f, 4.0f);
+            // Border
+            metal_stamp_queue_ui_rect(itemX - 1, itemY - 1,
+                                      GALLERY_ITEM_WIDTH + 2, GALLERY_ITEM_HEIGHT + 2,
+                                      0.3f, 0.5f, 0.4f, 0.6f, 13.0f);
+        } else {
+            // Saved drawing card (file index = i - 1)
+            int fileIdx = i - 1;
+
+            // Apply swipe offset for swiped item (swipedItemIndex is file index, not grid index)
+            float swipeOffset = (fileIdx == g_gallery.swipedItemIndex) ? g_gallery.swipeOffsetX : 0.0f;
+            itemX = baseItemX + swipeOffset;
+
+            // Draw delete button BEHIND the item (visible when swiped left)
+            if (fileIdx == g_gallery.swipedItemIndex && swipeOffset < -20.0f) {
+                float deleteBtnX = baseItemX + GALLERY_ITEM_WIDTH - 80.0f;
+                metal_stamp_queue_ui_rect(deleteBtnX, itemY, 80.0f, GALLERY_ITEM_HEIGHT,
+                                          0.8f, 0.2f, 0.2f, 0.95f, 12.0f);
+                // X icon for delete
+                float iconCX = deleteBtnX + 40.0f;
+                float iconCY = itemY + GALLERY_ITEM_HEIGHT / 2.0f;
+                metal_stamp_queue_ui_rect(iconCX - 12, iconCY - 2, 24, 4,
+                                          1.0f, 1.0f, 1.0f, 0.9f, 2.0f);
+                metal_stamp_queue_ui_rect(iconCX - 2, iconCY - 12, 4, 24,
+                                          1.0f, 1.0f, 1.0f, 0.9f, 2.0f);
+            }
+
+            // Draw rename button BEHIND the item (visible when swiped right)
+            if (fileIdx == g_gallery.swipedItemIndex && swipeOffset > 20.0f) {
+                float renameBtnX = baseItemX;
+                metal_stamp_queue_ui_rect(renameBtnX, itemY, 80.0f, GALLERY_ITEM_HEIGHT,
+                                          0.2f, 0.5f, 0.8f, 0.95f, 12.0f);
+                // Pencil icon
+                float iconCX = renameBtnX + 40.0f;
+                float iconCY = itemY + GALLERY_ITEM_HEIGHT / 2.0f;
+                metal_stamp_queue_ui_rect(iconCX - 10, iconCY - 3, 20, 6,
+                                          1.0f, 1.0f, 1.0f, 0.9f, 2.0f);
+                metal_stamp_queue_ui_rect(iconCX + 8, iconCY - 1, 4, 2,
+                                          1.0f, 0.8f, 0.2f, 0.9f, 1.0f);
+            }
+
+            // Highlight selected item
+            if (fileIdx == g_gallery.selectedIndex) {
+                metal_stamp_queue_ui_rect(itemX - 4, itemY - 4,
+                                          GALLERY_ITEM_WIDTH + 8, GALLERY_ITEM_HEIGHT + 8,
+                                          0.4f, 0.7f, 1.0f, 0.8f, 14.0f);
+            }
+
+            // Draw thumbnail or placeholder
+            int32_t texId = (fileIdx < (int)g_gallery.thumbnailTextureIds.size()) ?
+                            g_gallery.thumbnailTextureIds[fileIdx] : 0;
+
+            if (texId > 0) {
+                metal_stamp_queue_ui_textured_rect(itemX, itemY, GALLERY_ITEM_WIDTH, GALLERY_ITEM_HEIGHT,
+                                                   texId, 1.0f, 1.0f, 1.0f, 1.0f);
+            } else {
+                // Placeholder - colored rectangle
+                float r = 0.25f + (fileIdx % 3) * 0.1f;
+                float g = 0.25f + ((fileIdx + 1) % 4) * 0.08f;
+                float b = 0.3f + ((fileIdx + 2) % 5) * 0.06f;
+                metal_stamp_queue_ui_rect(itemX, itemY, GALLERY_ITEM_WIDTH, GALLERY_ITEM_HEIGHT,
+                                          r, g, b, 0.95f, 12.0f);
+            }
+
+            // Item border
+            metal_stamp_queue_ui_rect(itemX - 1, itemY - 1,
+                                      GALLERY_ITEM_WIDTH + 2, GALLERY_ITEM_HEIGHT + 2,
+                                      0.3f, 0.3f, 0.35f, 0.6f, 13.0f);
+
+            // Name area below thumbnail
+            metal_stamp_queue_ui_rect(itemX, itemY + GALLERY_ITEM_HEIGHT + 5,
+                                      GALLERY_ITEM_WIDTH, 25.0f,
+                                      0.15f, 0.15f, 0.18f, 0.8f, 5.0f);
+        }
+    }
 }
 
 // =============================================================================
@@ -1916,8 +2489,12 @@ static int metal_test_main() {
         return 1;
     }
 
-    // Store window globally for texture picker
+    // Store global window pointer for dialogs and texture picker
     g_sdlWindow = window;
+
+    // Register event watcher for app lifecycle events (background/foreground)
+    SDL_AddEventWatch(sdlEventWatcher, nullptr);
+    NSLog(@"[AppLifecycle] Registered event watcher for auto-save");
 
     int width, height;
     SDL_GetWindowSizeInPixels(window, &width, &height);
@@ -1948,11 +2525,43 @@ static int metal_test_main() {
         std::cerr << "Warning: Failed to initialize jank runtime (nREPL unavailable)" << std::endl;
     }
 
+    // Initialize ProjectManager and create a new project
+    // This replaces the old global undo tree initialization
+    auto& projectManager = drawing::ProjectManager::instance();
+
+    // Set up canvas capture/restore callbacks
+    projectManager.setCaptureCallback([]() -> std::unique_ptr<drawing::CanvasState> {
+        auto state = std::make_unique<drawing::CanvasState>();
+        unsigned char* pixels = nullptr;
+        int size = metal_stamp_capture_snapshot(&pixels);
+        if (pixels && size > 0) {
+            state->width = metal_stamp_get_canvas_width();
+            state->height = metal_stamp_get_canvas_height();
+            state->pixels.assign(pixels, pixels + size);
+            metal_stamp_free_snapshot(pixels);
+        }
+        return state;
+    });
+
+    projectManager.setRestoreCallback([](const drawing::CanvasState& state) {
+        if (!state.pixels.empty()) {
+            metal_stamp_restore_snapshot(
+                const_cast<unsigned char*>(state.pixels.data()),
+                state.width, state.height, (int)state.pixels.size());
+        }
+    });
+
+    projectManager.setClearCallback([]() {
+        metal_stamp_clear_canvas(PAPER_BG_R, PAPER_BG_G, PAPER_BG_B, PAPER_BG_A);
+    });
+
+    // Create initial empty project
+    projectManager.createNew();
+
     // Initialize per-frame undo trees (one undo tree per animation frame!)
-    // Now memory-efficient: checkpoints every 10 strokes, ~165MB for 50 undo levels per frame
     metal_stamp_undo_init_with_frames(FrameStore::MAX_FRAMES);
-    std::cout << "Per-frame undo trees initialized (" << FrameStore::MAX_FRAMES
-              << " frames, checkpoints every 10 strokes)!" << std::endl;
+    std::cout << "Project created with " << FrameStore::MAX_FRAMES
+              << " undo frames" << std::endl;
 
     // =============================================================================
     // Initialize UI Sliders (Procreate-style vertical sliders on left edge)
@@ -2073,6 +2682,18 @@ static int metal_test_main() {
         .size = ERASER_BUTTON_SIZE  // Same size as eraser button
     };
 
+    // Gallery button - top-right corner (safe from notch area)
+    // Save button removed - save happens automatically on app background/close
+    GalleryButtonConfig galleryButton = {
+        .x = width - GALLERY_BUTTON_SIZE - 20.0f,
+        .y = 60.0f,  // Below status bar area
+        .size = GALLERY_BUTTON_SIZE
+    };
+
+    // Initialize gallery - start with it open to show saved drawings
+    g_gallery.isOpen = true;
+    refreshGalleryList();
+
     // Initialize brush picker panel - position in center of screen
     float brushPickerWidth = BRUSH_PICKER_COLS * (BRUSH_PICKER_ITEM_SIZE + BRUSH_PICKER_ITEM_GAP) + BRUSH_PICKER_PADDING * 2 - BRUSH_PICKER_ITEM_GAP;
     float brushPickerHeight = 800.0f;  // Show more brushes
@@ -2081,7 +2702,7 @@ static int metal_test_main() {
         .y = (height - brushPickerHeight) / 2,
         .width = brushPickerWidth,
         .height = brushPickerHeight,
-        .isOpen = true,  // Start open for testing thumbnails
+        .isOpen = false,  // Start closed - gallery shows first
         .scrollOffset = 0
     };
 
@@ -2219,6 +2840,7 @@ static int metal_test_main() {
         if (is_drawing && !needs_stroke_restart) {
             metal_stamp_undo_end_stroke();
             framestore_save_current_fast();
+            g_gallery.hasUnsavedChanges = true;  // Mark for auto-save
             needs_stroke_restart = true;
         }
     };
@@ -2279,7 +2901,115 @@ static int metal_test_main() {
 
                     // Check UI elements FIRST (before gesture tracking)
                     bool handledByUI = false;
-                    if (!gesture.isActive) {
+
+                    // GALLERY: Handle gallery panel touches FIRST (captures all when open)
+                    if (g_gallery.isOpen) {
+                        float panelW = width * 0.85f;
+                        float panelH = height * 0.85f;
+                        float panelX = (width - panelW) / 2.0f;
+                        float panelY = (height - panelH) / 2.0f;
+
+                        // Close button (X) in top-right of panel
+                        float closeBtnX = panelX + panelW - 50.0f;
+                        float closeBtnY = panelY + 10.0f;
+                        if (x >= closeBtnX && x <= closeBtnX + 30 && y >= closeBtnY && y <= closeBtnY + 30) {
+                            g_gallery.isOpen = false;
+                            NSLog(@"[Gallery] Closed via X button");
+                            handledByUI = true;
+                        }
+                        // Check for delete/rename button tap (when item is swiped)
+                        // Note: swipedItemIndex is FILE index, grid index = swipedItemIndex + 1
+                        else if (g_gallery.swipedItemIndex >= 0 && std::abs(g_gallery.swipeOffsetX) > 50.0f) {
+                            // Calculate button positions for swiped item (grid index = fileIdx + 1)
+                            float gridX = panelX + GALLERY_PADDING;
+                            float gridY = panelY + GALLERY_PADDING + 50.0f;
+                            int gridIdx = g_gallery.swipedItemIndex + 1;  // +1 because "+" card is at 0
+                            int col = gridIdx % GALLERY_COLS;
+                            int row = gridIdx / GALLERY_COLS;
+                            float baseItemX = gridX + col * (GALLERY_ITEM_WIDTH + GALLERY_ITEM_GAP);
+                            float itemY = gridY + row * (GALLERY_ITEM_HEIGHT + GALLERY_ITEM_GAP + 30.0f) - g_gallery.scrollOffset;
+
+                            int idxToActOn = g_gallery.swipedItemIndex;
+                            bool tappedButton = false;
+
+                            // Check delete button (swipe left reveals it on the right)
+                            if (g_gallery.swipeOffsetX < -50.0f) {
+                                float deleteBtnX = baseItemX + GALLERY_ITEM_WIDTH - 80.0f;
+                                float deleteBtnW = 80.0f;
+
+                                if (x >= deleteBtnX && x <= deleteBtnX + deleteBtnW &&
+                                    y >= itemY && y <= itemY + GALLERY_ITEM_HEIGHT) {
+                                    // Delete button tapped!
+                                    NSLog(@"[Gallery] Delete button tapped for item %d", idxToActOn);
+
+                                    // Delete the file
+                                    if (ios_delete_drawing(g_gallery.filePaths[idxToActOn].c_str())) {
+                                        NSLog(@"[Gallery] Deleted: %s", g_gallery.filePaths[idxToActOn].c_str());
+                                        // Clear if it was the current drawing
+                                        if (g_gallery.filePaths[idxToActOn] == g_gallery.currentDrawingPath) {
+                                            g_gallery.currentDrawingPath = "";
+                                        }
+                                        // Refresh the gallery list
+                                        refreshGalleryList();
+                                    }
+                                    tappedButton = true;
+                                }
+                            }
+                            // Check rename button (swipe right reveals it on the left)
+                            else if (g_gallery.swipeOffsetX > 50.0f) {
+                                float renameBtnX = baseItemX;
+                                float renameBtnW = 80.0f;
+
+                                if (x >= renameBtnX && x <= renameBtnX + renameBtnW &&
+                                    y >= itemY && y <= itemY + GALLERY_ITEM_HEIGHT) {
+                                    // Rename button tapped!
+                                    NSLog(@"[Gallery] Rename button tapped for item %d", idxToActOn);
+                                    showRenameDialog(idxToActOn);
+                                    tappedButton = true;
+                                }
+                            }
+
+                            // Reset swipe state
+                            g_gallery.swipedItemIndex = -1;
+                            g_gallery.swipeOffsetX = 0.0f;
+                            g_gallery.showDeleteButton = false;
+                            handledByUI = tappedButton;
+                        }
+                        // Check for item tap or start scroll
+                        if (!handledByUI) {
+                            int totalGridCount = (int)g_gallery.filePaths.size() + 1;  // +1 for "+" card
+                            int gridIdx = getGalleryItemAtPoint(x, y, panelX, panelY, panelW, panelH, totalGridCount);
+                            if (gridIdx >= 0) {
+                                // Start drag tracking (might be tap, scroll, or swipe-to-delete)
+                                g_gallery.isDragging = true;
+                                g_gallery.dragStartX = x;
+                                g_gallery.dragStartY = y;
+                                g_gallery.dragStartScrollOffset = g_gallery.scrollOffset;
+                                g_gallery.dragFingerId = fingerId;
+                                // selectedIndex is FILE index (-1 for "+" card, 0+ for files)
+                                g_gallery.selectedIndex = gridIdx - 1;  // -1 means "+" card
+                                handledByUI = true;
+                            }
+                            // Tap inside panel content area - start scroll tracking
+                            else if (isPointInGalleryPanel(x, y, panelX, panelY, panelW, panelH)) {
+                                g_gallery.isDragging = true;
+                                g_gallery.dragStartX = x;
+                                g_gallery.dragStartY = y;
+                                g_gallery.dragStartScrollOffset = g_gallery.scrollOffset;
+                                g_gallery.dragFingerId = fingerId;
+                                g_gallery.selectedIndex = -2;  // No item selected
+                                handledByUI = true;
+                            }
+                            // Tap outside panel - close gallery
+                            else {
+                                g_gallery.isOpen = false;
+                                NSLog(@"[Gallery] Closed (tap outside)");
+                                handledByUI = true;
+                            }
+                        }
+                    }
+
+                    if (!gesture.isActive && !handledByUI) {
                         float sliderHitPadding = 30.0f;
                         SliderConfig expandedSize = sizeSlider;
                         expandedSize.x -= sliderHitPadding;
@@ -2362,6 +3092,14 @@ static int metal_test_main() {
                             bool current = metal_stamp_get_onion_skin_enabled();
                             metal_stamp_set_onion_skin_enabled(!current);
                             NSLog(@"[OnionSkin] %s", current ? "OFF" : "ON");
+                            handledByUI = true;
+                        } else if (isPointInGalleryButton(galleryButton, x, y)) {
+                            // Toggle gallery open/closed
+                            g_gallery.isOpen = !g_gallery.isOpen;
+                            if (g_gallery.isOpen) {
+                                refreshGalleryList();
+                            }
+                            NSLog(@"[Gallery] %s (%zu drawings)", g_gallery.isOpen ? "Opened" : "Closed", g_gallery.filePaths.size());
                             handledByUI = true;
                         } else if (brushPicker.isOpen) {
                             // Tap outside picker closes it
@@ -2450,27 +3188,38 @@ static int metal_test_main() {
                             // NOTE: SDL_HINT_PEN_TOUCH_EVENTS="0" prevents pencil from generating
                             // finger events, so we don't need to filter them here.
                             if (!hasFinger0) {
-                                // First finger down - activate PULLEY IMMEDIATELY
+                                // First finger down
                                 hasFinger0 = true;
                                 pendingFinger0_id = fingerId;
                                 pendingFinger0_x = event.tfinger.x;
                                 pendingFinger0_y = event.tfinger.y;
 
-                                // Activate pulley IMMEDIATELY - no delay!
-                                // NOTE: Do NOT call framestore_save_current() here - it takes 500ms!
-                                // Frame will be saved on first movement when actually needed.
-                                g_pulley.active = true;
-                                g_pulley.firstMoveDone = false;
-                                g_pulley.lockoutUntilMs = 0;
-                                g_pulley.startX = x;
-                                g_pulley.startY = y;
-                                g_pulley.fingerX = x;
-                                g_pulley.fingerY = y;
-                                g_pulley.centerX = x - g_pulley.radius;  // Pulley center to the left
-                                g_pulley.centerY = y;
-                                g_pulley.referenceAngle = 0;  // Will be set after lockout
-                                g_pulley.startFrame = framestore_get_current_frame();
-                                NSLog(@"[Pulley] IMMEDIATE activation at (%.1f, %.1f), frame %d", x, y, g_pulley.startFrame);
+                                // FINGER DRAWING: Start stroke if enabled (for simulator)
+                                if (g_fingerDrawingEnabled && !g_gallery.isOpen) {
+                                    // Transform to canvas space for drawing
+                                    float canvasX, canvasY;
+                                    screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
+
+                                    metal_stamp_undo_begin_stroke(canvasX, canvasY, 1.0f);
+                                    is_drawing = true;
+                                    NSLog(@"[FingerDraw] Started stroke at canvas(%.1f, %.1f)", canvasX, canvasY);
+                                } else {
+                                    // Activate pulley IMMEDIATELY - no delay!
+                                    // NOTE: Do NOT call framestore_save_current() here - it takes 500ms!
+                                    // Frame will be saved on first movement when actually needed.
+                                    g_pulley.active = true;
+                                    g_pulley.firstMoveDone = false;
+                                    g_pulley.lockoutUntilMs = 0;
+                                    g_pulley.startX = x;
+                                    g_pulley.startY = y;
+                                    g_pulley.fingerX = x;
+                                    g_pulley.fingerY = y;
+                                    g_pulley.centerX = x - g_pulley.radius;  // Pulley center to the left
+                                    g_pulley.centerY = y;
+                                    g_pulley.referenceAngle = 0;  // Will be set after lockout
+                                    g_pulley.startFrame = framestore_get_current_frame();
+                                    NSLog(@"[Pulley] IMMEDIATE activation at (%.1f, %.1f), frame %d", x, y, g_pulley.startFrame);
+                                }
                             } else if (pendingFinger0_id != fingerId) {
                                 // Second finger down - STOP pulley and start two-finger gesture!
                                 if (g_pulley.active) {
@@ -2565,7 +3314,17 @@ static int metal_test_main() {
                         // Update canvas transform from gesture
                         updateTransformFromGesture(canvasTransform, gesture, width, height);
                     }
-                    // NOTE: Single-finger drawing removed - pencil only!
+                    // FINGER DRAWING: Handle drawing motion if enabled (for simulator)
+                    else if (g_fingerDrawingEnabled && is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
+                        pendingFinger0_x = event.tfinger.x;
+                        pendingFinger0_y = event.tfinger.y;
+
+                        // Transform to canvas space for drawing
+                        float canvasX, canvasY;
+                        screenToCanvas(x, y, canvasTransform, width, height, canvasX, canvasY);
+
+                        metal_stamp_undo_add_stroke_point(canvasX, canvasY, 1.0f);
+                    }
                     // Handle PULLEY ACTIVE - unified gesture handling
                     // 1. First movement → change one frame, start 800ms lockout
                     // 2. During lockout → no frame changes
@@ -2645,6 +3404,44 @@ static int metal_test_main() {
                         float deltaY = g_brushPickerDragStartY - y;  // Drag down = positive delta = scroll down
                         g_brushPickerScrollOffset = g_brushPickerDragStartOffset + deltaY;
                         // Note: clamping happens in drawBrushPicker
+                    }
+                    // Handle gallery scrolling or swipe-to-delete
+                    else if (g_gallery.isDragging && fingerId == g_gallery.dragFingerId) {
+                        float deltaX = x - g_gallery.dragStartX;  // Positive = swipe right, Negative = swipe left
+                        float deltaY = g_gallery.dragStartY - y;  // Drag up = positive delta = scroll down
+
+                        // Determine if this is horizontal swipe (delete) or vertical scroll
+                        bool isHorizontalSwipe = (g_gallery.selectedIndex >= 0) &&
+                                                 (std::abs(deltaX) > std::abs(deltaY) * 1.5f) &&
+                                                 (std::abs(deltaX) > 20.0f);
+
+                        if (isHorizontalSwipe && deltaX < 0) {
+                            // Swipe left on an item - reveal delete button
+                            g_gallery.swipedItemIndex = g_gallery.selectedIndex;
+                            g_gallery.swipeOffsetX = std::max(-100.0f, deltaX);  // Limit swipe to 100px
+                            g_gallery.showDeleteButton = (g_gallery.swipeOffsetX < -50.0f);
+                        } else if (isHorizontalSwipe && deltaX > 0) {
+                            // Swipe right on an item - reveal rename button
+                            g_gallery.swipedItemIndex = g_gallery.selectedIndex;
+                            g_gallery.swipeOffsetX = std::min(100.0f, deltaX);  // Limit swipe to 100px
+                            g_gallery.showDeleteButton = false;  // Not delete mode
+                        } else {
+                            // Vertical scroll
+                            g_gallery.scrollOffset = g_gallery.dragStartScrollOffset + deltaY;
+
+                            // Calculate content height and clamp scroll offset
+                            // +1 for "+" card at the beginning
+                            int totalGridCount = (int)g_gallery.filePaths.size() + 1;
+                            int cols = GALLERY_COLS;
+                            int rows = (totalGridCount + cols - 1) / cols;
+                            float cellHeight = GALLERY_ITEM_HEIGHT + GALLERY_ITEM_GAP + 30.0f;
+                            float contentHeight = rows * cellHeight;
+                            float panelH = height * 0.85f;
+                            float viewportH = panelH - 80.0f;  // Padding + close button area
+
+                            float maxScroll = std::max(0.0f, contentHeight - viewportH);
+                            g_gallery.scrollOffset = std::max(0.0f, std::min(maxScroll, g_gallery.scrollOffset));
+                        }
                     }
                     else if (sizeSlider.isDragging) {
                         float relY = (y - sizeSlider.y) / sizeSlider.height;
@@ -2843,7 +3640,13 @@ static int metal_test_main() {
                                       << ", pan: " << canvasTransform.panX << ", " << canvasTransform.panY << ")" << std::endl;
                         }
                     }
-                    // NOTE: Single-finger drawing removed - pencil only!
+                    // FINGER DRAWING: End stroke on finger up if enabled (for simulator)
+                    else if (g_fingerDrawingEnabled && is_drawing && hasFinger0 && fingerId == pendingFinger0_id) {
+                        metal_stamp_undo_end_stroke();
+                        is_drawing = false;
+                        hasFinger0 = false;
+                        NSLog(@"[FingerDraw] Ended stroke");
+                    }
                     // Handle PULLEY release - deactivate pulley
                     else if (g_pulley.active && hasFinger0 && fingerId == pendingFinger0_id) {
                         g_pulley.active = false;
@@ -2887,6 +3690,87 @@ static int metal_test_main() {
                         }
 
                         g_brushPickerIsDragging = false;
+                    }
+                    // Handle gallery finger up - detect tap vs scroll vs swipe-to-delete
+                    else if (g_gallery.isDragging && fingerId == g_gallery.dragFingerId) {
+                        float x = event.tfinger.x * width;
+                        float y = event.tfinger.y * height;
+                        float totalMovementX = std::abs(x - g_gallery.dragStartX);
+                        float totalMovementY = std::abs(y - g_gallery.dragStartY);
+
+                        // Check if this was a swipe gesture
+                        bool wasSwipe = (g_gallery.swipedItemIndex >= 0) && (std::abs(g_gallery.swipeOffsetX) > 50.0f);
+                        if (wasSwipe && g_gallery.swipeOffsetX < 0) {
+                            // Swipe left complete - snap to delete position
+                            g_gallery.swipeOffsetX = -100.0f;
+                            g_gallery.showDeleteButton = true;
+                            NSLog(@"[Gallery] Delete button revealed for item %d", g_gallery.swipedItemIndex);
+                        } else if (wasSwipe && g_gallery.swipeOffsetX > 0) {
+                            // Swipe right complete - snap to rename position
+                            g_gallery.swipeOffsetX = 100.0f;
+                            g_gallery.showDeleteButton = false;
+                            NSLog(@"[Gallery] Rename button revealed for item %d", g_gallery.swipedItemIndex);
+                        } else if (g_gallery.swipedItemIndex >= 0 && std::abs(g_gallery.swipeOffsetX) <= 50.0f) {
+                            // Partial swipe - snap back
+                            g_gallery.swipedItemIndex = -1;
+                            g_gallery.swipeOffsetX = 0.0f;
+                            g_gallery.showDeleteButton = false;
+                        }
+                        // If minimal movement, treat as tap (select item)
+                        // selectedIndex: -1 = "+" card, 0+ = file index, -2 = no item
+                        else if (totalMovementX < 15.0f && totalMovementY < 15.0f && g_gallery.selectedIndex >= -1) {
+                            if (g_gallery.selectedIndex == -1) {
+                                // Tapped "+" card - create new drawing via ProjectManager
+                                // IMPORTANT: Save current project FIRST before creating new one!
+                                autoSaveCurrentDrawing();
+
+                                auto& pm = drawing::ProjectManager::instance();
+                                pm.createNew();  // Creates new project with fresh state
+
+                                // Initialize undo trees for the new project
+                                metal_stamp_undo_init_with_frames(FrameStore::MAX_FRAMES);
+
+                                g_gallery.currentDrawingPath = "";
+                                g_gallery.hasUnsavedChanges = false;
+                                g_gallery.isOpen = false;
+                                NSLog(@"[Gallery] + New project created via ProjectManager");
+                            } else {
+                                // Single tap on file - load via ProjectManager
+                                NSLog(@"[Gallery] Tapped file %d", g_gallery.selectedIndex);
+
+                                // IMPORTANT: Save current project FIRST before switching!
+                                autoSaveCurrentDrawing();
+
+                                auto& pm = drawing::ProjectManager::instance();
+                                const std::string& path = g_gallery.filePaths[g_gallery.selectedIndex];
+
+                                // Use ProjectManager to switch projects (handles canvas save/restore)
+                                auto* project = pm.loadAndSwitchTo(path);
+                                if (project) {
+                                    // Initialize undo trees (creates empty trees with callbacks)
+                                    metal_stamp_undo_init_with_frames(FrameStore::MAX_FRAMES);
+                                    // Restore canvas from loaded weave data (replay strokes + populate undo trees)
+                                    metal_stamp_restore_from_weave();
+                                    g_gallery.currentDrawingPath = path;
+                                    g_gallery.hasUnsavedChanges = false;
+                                    NSLog(@"[Gallery] Loaded project: %s", path.c_str());
+                                } else {
+                                    NSLog(@"[Gallery] Failed to load: %s", path.c_str());
+                                }
+                                g_gallery.isOpen = false;
+                            }
+                        } else if (totalMovementX >= 15.0f || totalMovementY >= 15.0f) {
+                            // Was a scroll gesture - reset any partial swipe
+                            if (!g_gallery.showDeleteButton) {
+                                g_gallery.swipedItemIndex = -1;
+                                g_gallery.swipeOffsetX = 0.0f;
+                            }
+                            NSLog(@"[Gallery] Scroll ended (moved %.1f,%.1fpx), scroll=%.1f",
+                                  totalMovementX, totalMovementY, g_gallery.scrollOffset);
+                        }
+
+                        g_gallery.isDragging = false;
+                        g_gallery.selectedIndex = -2;  // Reset to "no item"
                     }
                     // Handle frame wheel release
                     else if (frameWheel.isDragging) {
@@ -3004,6 +3888,13 @@ static int metal_test_main() {
                         bool current = metal_stamp_get_onion_skin_enabled();
                         metal_stamp_set_onion_skin_enabled(!current);
                         NSLog(@"[OnionSkin] %s (pen)", current ? "OFF" : "ON");
+                    } else if (isPointInGalleryButton(galleryButton, screenX, screenY)) {
+                        // Toggle gallery (pen)
+                        g_gallery.isOpen = !g_gallery.isOpen;
+                        if (g_gallery.isOpen) {
+                            refreshGalleryList();
+                        }
+                        NSLog(@"[Gallery] %s (%zu drawings) (pen)", g_gallery.isOpen ? "Opened" : "Closed", g_gallery.filePaths.size());
                     } else if (brushPicker.isOpen) {
                         // Tap outside picker closes it (pen)
                         brushPicker.isOpen = false;
@@ -3097,6 +3988,9 @@ static int metal_test_main() {
                             metal_stamp_undo_end_stroke();
                             // Save to GPU cache AFTER drawing - so frame switching is instant!
                             framestore_save_current_fast();
+                            // NOTE: Auto-save removed from here - was causing performance issues!
+                            // Auto-save now only happens on app background (SDL_EVENT_WILL_ENTER_BACKGROUND)
+                            // This matches how Procreate handles saves "in the background"
                         }
                         is_drawing = false;
                     }
@@ -3192,6 +4086,9 @@ static int metal_test_main() {
         // Onion skin toggle button
         drawOnionSkinButton(onionSkinButton, metal_stamp_get_onion_skin_enabled());
 
+        // Gallery button (top-right) - save is automatic
+        drawGalleryButton(galleryButton);
+
         // Brush picker panel (if open)
         drawBrushPicker(brushPicker, height);
 
@@ -3205,6 +4102,9 @@ static int metal_test_main() {
 
         // Draw pulley if active (Looom-style time navigation)
         drawPulley(g_pulley, currentFrame, totalFrames);
+
+        // Gallery panel (drawn last, on top of everything)
+        drawGalleryPanel(width, height);
 
         // Present with UI overlay
         metal_stamp_present();
