@@ -6,6 +6,12 @@ cd "$(dirname "$0")/.."
 JANK_DIR="/Users/pfeodrippe/dev/jank/compiler+runtime"
 SOMETHING_DIR="/Users/pfeodrippe/dev/something"
 
+# Build Raylib for WASM if needed
+if [ ! -f "vendor/raylib/distr/libraylib_wasm.a" ]; then
+    echo "Building Raylib for WASM..."
+    bash ./build_raylib_wasm.sh
+fi
+
 # Build ImGui for WASM if needed
 if [ ! -f "vendor/imgui/build-wasm/imgui.o" ]; then
     echo "Building ImGui for WASM..."
@@ -36,26 +42,15 @@ for f in "$SOMETHING_DIR/vendor/imgui/build-wasm"/*.o; do
     IMGUI_LIBS="$IMGUI_LIBS --prelink-lib $f"
 done
 
-# Collect native Jolt object files for JIT during AOT
-JOLT_NATIVE_OBJS=""
-JOLT_NATIVE_OBJS="$JOLT_NATIVE_OBJS --native-obj $SOMETHING_DIR/vendor/jolt_wrapper.o"
-for f in "$SOMETHING_DIR/vendor/JoltPhysics/distr/objs"/*.o; do
-    JOLT_NATIVE_OBJS="$JOLT_NATIVE_OBJS --native-obj $f"
-done
-
-# Collect native ImGui object files for JIT during AOT
-IMGUI_NATIVE_OBJS=""
-for f in "$SOMETHING_DIR/vendor/imgui/build"/*.o; do
-    IMGUI_NATIVE_OBJS="$IMGUI_NATIVE_OBJS --native-obj $f"
-done
-
-RELEASE=1 ./bin/emscripten-bundle --skip-build \
+RELEASE=1 ./bin/emscripten-bundle --skip-build -v \
     -L "$SOMETHING_DIR/vendor/raylib/distr" \
+    -L "$SOMETHING_DIR/vendor/JoltPhysics/distr" \
     --native-lib raylib_jank \
-    $IMGUI_NATIVE_OBJS \
-    $JOLT_NATIVE_OBJS \
+    --native-lib "$SOMETHING_DIR/vendor/imgui/build/libimgui.dylib" \
+    --native-lib "$SOMETHING_DIR/vendor/JoltPhysics/distr/libjolt_jank.dylib" \
     --native-obj "$SOMETHING_DIR/vendor/flecs/distr/flecs.o" \
-    --prelink-lib "$SOMETHING_DIR/vendor/raylib/distr/libraylib.web.a" \
+    --native-obj "$SOMETHING_DIR/vendor/vybe/vybe_flecs_jank.o" \
+    --prelink-lib "$SOMETHING_DIR/vendor/raylib/distr/libraylib_wasm.a" \
     --prelink-lib "$SOMETHING_DIR/vendor/raylib/distr/raylib_jank_wrapper_wasm.o" \
     $IMGUI_LIBS \
     --prelink-lib "$SOMETHING_DIR/vendor/jolt_wrapper_wasm.o" \
@@ -64,6 +59,7 @@ RELEASE=1 ./bin/emscripten-bundle --skip-build \
     -I "$SOMETHING_DIR/vendor/raylib/distr" \
     -I "$SOMETHING_DIR/vendor/raylib/src" \
     -I "$SOMETHING_DIR/vendor/imgui" \
+    -I "$SOMETHING_DIR/vendor" \
     -I "$SOMETHING_DIR/vendor/JoltPhysics" \
     -I "$SOMETHING_DIR/vendor/flecs/distr" \
     --em-flag "-sUSE_GLFW=3" \

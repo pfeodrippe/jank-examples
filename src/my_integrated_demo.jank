@@ -28,10 +28,13 @@
 #include <cstdint>
 #include <cstring>
 #include <raylib.h>
-#include <rlgl.h>
+// Note: rlgl.h is included by raylib.h, don't include separately to avoid Matrix redefinition
 #include <imgui.h>
 #include <flecs.h>
 #include <jank/runtime/obj/opaque_box.hpp>
+
+// Define uint for systems that don't have it (standard C++ doesn't define uint)
+typedef unsigned int uint;
 
 // =============================================================================
 // JIT stubs (required for JIT linking)
@@ -84,6 +87,20 @@ inline std::vector<Entity>& get_entities() {
 
 // Helper to cast void* to ecs_world_t* (jank's cpp/cast can't do this)
 inline ecs_world_t* to_ecs_world(void* p) { return static_cast<ecs_world_t*>(p); }
+
+// Helper for ImGui character input - wrapped in inline function to be callable from jank
+// Note: Using global scope to avoid AOT codegen issues with cpp/raw inside functions
+inline void add_char_input_helper() {
+    ImGuiIO& io = ImGui::GetIO();
+    int c = GetCharPressed();
+    while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
+}
+
+// WASM AOT compatible wrapper - returns int which jank can convert
+inline int imgui_process_char_input() {
+    add_char_input_helper();
+    return 0;
+}
 ")
 
 (cpp/raw
@@ -337,13 +354,8 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
                                                    (rl/IsKeyDown rl/KEY_RIGHT_CONTROL)))
     (cpp/.AddKeyEvent io imgui-h/ImGuiMod_Shift (or (rl/IsKeyDown rl/KEY_LEFT_SHIFT)
                                                     (rl/IsKeyDown rl/KEY_RIGHT_SHIFT)))
-    ;; Character input - use cpp/raw for while loop with native int
-    (cpp/raw "{
-ImGuiIO& io = ImGui::GetIO();
-int c = GetCharPressed();
-while (c > 0) { io.AddInputCharacter(c); c = GetCharPressed(); }
- }"))
-  nil)
+     ;; Character input - call helper that returns int for AOT compatibility
+    (cpp/imgui_process_char_input)))
 
 (defn imgui-update! [] (imgui-update-input!))
 

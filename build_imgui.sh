@@ -12,7 +12,8 @@ if [ "$BUILD_WASM" = "1" ]; then
     EXTRA_FLAGS=""
 else
     echo "=== Building ImGui (native) ==="
-    CXX="clang++"
+    # Use jank's compiler for ABI compatibility, fallback to system clang
+    CXX="${CXX:-clang++}"
     OUTPUT_DIR="vendor/imgui/build"
     EXTRA_FLAGS="-fPIC"
 fi

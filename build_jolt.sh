@@ -3,9 +3,9 @@ set -e
 
 cd "$(dirname "$0")"
 
-# Use system clang (avoid inheriting jank's custom CC/CXX)
-export CC=/usr/bin/clang
-export CXX=/usr/bin/clang++
+# Use jank's LLVM compiler for ABI compatibility
+export CC=${CC:-/usr/bin/clang}
+export CXX=${CXX:-/usr/bin/clang++}
 
 echo "=== Building JoltPhysics Wrapper ==="
 
@@ -58,13 +58,35 @@ fi
 
 # Compile jolt_wrapper.cpp
 echo "Compiling jolt_wrapper.cpp..."
-clang++ -c -O2 -std=c++17 -DNDEBUG \
+$CXX -c -O2 -std=c++17 -DNDEBUG \
     -I vendor/JoltPhysics \
     vendor/jolt_wrapper.cpp \
     -o vendor/jolt_wrapper.o
 
+# Create combined static library for jank linking
+echo "Creating libjolt_jank.a static library..."
+ar rcs vendor/JoltPhysics/distr/libjolt_jank.a \
+    vendor/jolt_wrapper.o \
+    vendor/JoltPhysics/distr/objs/*.o
+
+# Create dynamic library for --jit-lib (macOS only)
+if [ "$(uname)" = "Darwin" ]; then
+    echo "Creating libjolt_jank.dylib..."
+    $CXX -shared -o vendor/JoltPhysics/distr/libjolt_jank.dylib \
+        vendor/jolt_wrapper.o \
+        vendor/JoltPhysics/distr/objs/*.o \
+        -framework Cocoa \
+        -framework CoreFoundation
+    
+    # Create symlink for jank --jit-lib
+    ln -sf libjolt_jank.dylib vendor/JoltPhysics/distr/jolt_jank.dylib
+fi
+
 echo "=== Build complete ==="
 echo ""
-echo "Object files ready:"
-echo "  - vendor/jolt_wrapper.o (precompiled wrapper)"
-echo "  - vendor/JoltPhysics/distr/objs/*.o (Jolt library)"
+echo "Libraries ready:"
+echo "  - vendor/JoltPhysics/distr/libjolt_jank.a (static library)"
+if [ "$(uname)" = "Darwin" ]; then
+    echo "  - vendor/JoltPhysics/distr/libjolt_jank.dylib (dynamic library for --jit-lib)"
+fi
+echo "  - vendor/jolt_wrapper.o (wrapper object)"

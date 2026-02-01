@@ -55,8 +55,8 @@ endif
 CFLAGS = -fPIC -O2
 CXXFLAGS = -fPIC -O2 -std=c++17
 
-.PHONY: clean clean-cache sdf integrated imgui jolt test tests help \
-        build-jolt build-imgui build-flecs build-raylib build-deps \
+.PHONY: clean clean-cache sdf integrated integrated_wasm imgui jolt test tests help \
+        build-jolt build-imgui build-flecs build-flecs-wasm build-raylib build-deps \
         build-sdf-deps build-shaders build-imgui-vulkan
 
 # Default target
@@ -71,6 +71,7 @@ help:
 	@echo "  make sdf-standalone   - Build standalone SDF viewer app"
 	@echo "  make drawing          - Run Drawing Canvas app (Looom-like)"
 	@echo "  make integrated       - Run integrated demo (Raylib+ImGui+Jolt+Flecs)"
+	@echo "  make integrated_wasm  - Build integrated demo for WASM (Web/Emscripten)"
 	@echo "  make imgui            - Run ImGui demo"
 	@echo "  make jolt             - Run Jolt physics demo"
 	@echo "  make test             - Run tests"
@@ -316,6 +317,12 @@ build-flecs:
 		cd vendor/flecs/distr && clang -c -fPIC -o flecs.o flecs.c; \
 	fi
 
+build-flecs-wasm:
+	@if [ ! -f "vendor/flecs/distr/flecs_wasm.o" ]; then \
+		echo "Building Flecs for WASM..."; \
+		cd vendor/flecs/distr && emcc -c -fPIC -o flecs_wasm.o flecs.c; \
+	fi
+
 build-raylib:
 	@if [ ! -f "vendor/raylib/distr/libraylib_jank.a" ]; then \
 		echo "Building Raylib..."; \
@@ -412,6 +419,9 @@ sdf-standalone: clean-cache build-sdf-deps-standalone
 
 integrated: clean-cache
 	./bin/run_integrated.sh
+
+integrated_wasm: build-flecs-wasm
+	./bin/run_integrated_wasm.sh
 
 imgui:
 	./bin/run_imgui.sh

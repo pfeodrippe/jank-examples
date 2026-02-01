@@ -83,11 +83,8 @@ for f in vendor/imgui/build/*.o; do
     OBJ_ARGS="$OBJ_ARGS --obj $f"
 done
 
-# Collect Jolt object files (using --obj like run_jolt.sh)
-OBJ_ARGS="$OBJ_ARGS --obj vendor/jolt_wrapper.o"
-for f in vendor/JoltPhysics/distr/objs/*.o; do
-    OBJ_ARGS="$OBJ_ARGS --obj $f"
-done
+# Add ImGui dylib for JIT loading
+IMGU_LIB="--lib vendor/imgui/build/libimgui.dylib"
 
 # Add Flecs object files
 OBJ_ARGS="$OBJ_ARGS --obj vendor/flecs/distr/flecs.o"
@@ -96,7 +93,9 @@ OBJ_ARGS="$OBJ_ARGS --obj vendor/vybe/vybe_flecs_jank.o"
 # Build jank arguments array
 JANK_ARGS=(
     -L"$SOMETHING_DIR/vendor/raylib/distr"
+    -L"$SOMETHING_DIR/vendor/JoltPhysics/distr"
     --jit-lib raylib_jank
+    --jit-lib jolt_jank
     -I./vendor/raylib/distr
     -I./vendor/raylib/src
     -I./vendor/imgui
@@ -104,6 +103,8 @@ JANK_ARGS=(
     -I./vendor/flecs/distr
     -I./vendor
     --link-lib "$SOMETHING_DIR/vendor/raylib/distr/libraylib_jank.a"
+    --link-lib "$SOMETHING_DIR/vendor/JoltPhysics/distr/libjolt_jank.a"
+    $IMGU_LIB
     $OBJ_ARGS
     --framework Cocoa
     --framework IOKit
@@ -162,7 +163,7 @@ if [ -n "$PROFILE_SAMPLE_RATE" ]; then
     JANK_ARGS+=(--profile-sample "$PROFILE_SAMPLE_RATE")
 fi
 
-JANK_ARGS+=(run-main my-integrated-demo -main)
+JANK_ARGS+=(run-main my-integrated-demo)
 
 # Run with appropriate tool
 if [ "$USE_LLDB" = true ]; then

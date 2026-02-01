@@ -50,6 +50,8 @@
   - [x] aot device
   - [x] jit sim
   - [x] jit device
+- [ ] simple game
+  - [ ]
 - [ ] ipad simple animation app
   - [x] gpu brush drawing
     - [x] draw
