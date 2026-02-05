@@ -103,6 +103,10 @@ inline bool init(const char* title) {
         return false;
     }
     
+    // Bring window to front and focus it
+    SDL_RaiseWindow(e->window);
+    SDL_SetWindowFocusable(e->window, true);
+    
     // Get actual framebuffer size
     int fbWidth, fbHeight;
     SDL_GetWindowSizeInPixels(e->window, &fbWidth, &fbHeight);
@@ -487,9 +491,12 @@ inline bool should_close() {
 // =============================================================================
 
 struct InputEvent {
-    int type;       // 0=none, 1=key_down, 2=key_up, 3=scroll
+    int type;       // 0=none, 1=key_down, 2=key_up, 3=scroll, 4=mouse_motion, 5=mouse_down, 6=mouse_up
     int scancode;   // For key events
     float scrollY;  // For scroll events
+    float mouseX;   // For mouse events
+    float mouseY;   // For mouse events
+    int mouseButton; // For mouse click events (1=left, 2=middle, 3=right)
 };
 
 inline std::vector<InputEvent>& get_event_queue() {
@@ -531,7 +538,7 @@ inline void poll_events() {
                     e->running = false;
                 } else {
                     // Add to event queue for jank polling
-                    get_event_queue().push_back({1, (int)event.key.scancode, 0.0f});
+                    get_event_queue().push_back({1, (int)event.key.scancode, 0.0f, 0.0f, 0.0f, 0});
                     // Also call callback if set
                     if (get_key_callback()) {
                         get_key_callback()(event.key.scancode, true);
@@ -539,16 +546,25 @@ inline void poll_events() {
                 }
                 break;
             case SDL_EVENT_KEY_UP:
-                get_event_queue().push_back({2, (int)event.key.scancode, 0.0f});
+                get_event_queue().push_back({2, (int)event.key.scancode, 0.0f, 0.0f, 0.0f, 0});
                 if (get_key_callback()) {
                     get_key_callback()(event.key.scancode, false);
                 }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
-                get_event_queue().push_back({3, 0, event.wheel.y});
+                get_event_queue().push_back({3, 0, event.wheel.y, 0.0f, 0.0f, 0});
                 if (get_scroll_callback()) {
                     get_scroll_callback()(event.wheel.y);
                 }
+                break;
+            case SDL_EVENT_MOUSE_MOTION:
+                get_event_queue().push_back({4, 0, 0.0f, event.motion.x, event.motion.y, 0});
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                get_event_queue().push_back({5, 0, 0.0f, event.button.x, event.button.y, (int)event.button.button});
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                get_event_queue().push_back({6, 0, 0.0f, event.button.x, event.button.y, (int)event.button.button});
                 break;
         }
     }
@@ -576,6 +592,24 @@ inline float get_event_scroll_y(int index) {
     auto& q = get_event_queue();
     if (index < 0 || index >= (int)q.size()) return 0.0f;
     return q[index].scrollY;
+}
+
+inline float get_event_mouse_x(int index) {
+    auto& q = get_event_queue();
+    if (index < 0 || index >= (int)q.size()) return 0.0f;
+    return q[index].mouseX;
+}
+
+inline float get_event_mouse_y(int index) {
+    auto& q = get_event_queue();
+    if (index < 0 || index >= (int)q.size()) return 0.0f;
+    return q[index].mouseY;
+}
+
+inline int get_event_mouse_button(int index) {
+    auto& q = get_event_queue();
+    if (index < 0 || index >= (int)q.size()) return 0;
+    return q[index].mouseButton;
 }
 
 // =============================================================================
@@ -615,6 +649,15 @@ inline uint32_t get_screen_width() {
 inline uint32_t get_screen_height() {
     auto* e = get_engine();
     return e ? e->framebufferHeight : 0;
+}
+
+inline float get_pixel_scale() {
+    auto* e = get_engine();
+    if (!e || !e->window) return 1.0f;
+    int winW, winH;
+    SDL_GetWindowSize(e->window, &winW, &winH);
+    if (winW <= 0) return 1.0f;
+    return (float)e->framebufferWidth / (float)winW;
 }
 
 // =============================================================================

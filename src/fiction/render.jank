@@ -168,6 +168,25 @@
   (fiction/get_text_vertex_count))
 
 ;; =============================================================================
+;; Mouse Interaction
+;; =============================================================================
+
+(defn update-mouse-position!
+  "Update the mouse position for hover detection."
+  [x y]
+  (fiction/update_mouse_position (cpp/float. x) (cpp/float. y)))
+
+(defn get-hovered-choice
+  "Get the index of the currently hovered choice (-1 if none)."
+  []
+  (fiction/get_hovered_choice))
+
+(defn get-clicked-choice
+  "Get the index of the clicked choice (-1 if none)."
+  []
+  (fiction/get_clicked_choice))
+
+;; =============================================================================
 ;; Debug
 ;; =============================================================================
 

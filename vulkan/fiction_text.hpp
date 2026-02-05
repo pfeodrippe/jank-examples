@@ -110,6 +110,11 @@ struct DialogueEntry {
 // Text Renderer State
 // =============================================================================
 
+struct ChoiceBounds {
+    float y0, y1;  // Top and bottom Y coordinates
+    int index;     // Choice index (0-based)
+};
+
 struct TextRenderer {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -150,6 +155,14 @@ struct TextRenderer {
     
     // Colors
     float bgR = 0.08f, bgG = 0.08f, bgB = 0.08f, bgA = 0.95f;
+    
+    // Mouse state
+    float mouseX = 0.0f;
+    float mouseY = 0.0f;
+    int hoveredChoice = -1;  // -1 = no hover, 0+ = choice index
+    
+    // Choice bounds (rebuilt each frame)
+    std::vector<ChoiceBounds> choiceBounds;
     
     bool initialized = false;
 };
@@ -572,7 +585,8 @@ inline std::vector<std::string> wrap_text(TextRenderer* tr,
 inline float render_dialogue_entry(TextRenderer* tr,
                                    const DialogueEntry& entry,
                                    float y,
-                                   float scale) {
+                                   float scale,
+                                   bool isHovered = false) {
     float panelStartX = tr->screenWidth * tr->panelX + tr->panelPadding;
     float textWidth = tr->screenWidth * tr->panelWidth - tr->panelPadding * 2;
     float lineH = tr->font.lineHeight * scale + tr->lineSpacing;
@@ -584,10 +598,18 @@ inline float render_dialogue_entry(TextRenderer* tr,
     
     switch (entry.type) {
         case EntryType::Choice:
-            textR = 0.85f; textG = 0.55f; textB = 0.25f;  // Orange
+            if (isHovered) {
+                textR = 1.0f; textG = 0.8f; textB = 0.4f;  // Bright yellow-orange on hover
+            } else {
+                textR = 0.85f; textG = 0.55f; textB = 0.25f;  // Orange
+            }
             break;
         case EntryType::ChoiceSelected:
-            textR = 0.5f; textG = 0.5f; textB = 0.5f;     // Muted grey
+            if (isHovered) {
+                textR = 0.7f; textG = 0.7f; textB = 0.7f;  // Lighter grey on hover
+            } else {
+                textR = 0.5f; textG = 0.5f; textB = 0.5f;  // Muted grey
+            }
             break;
         case EntryType::Narration:
             textR = 0.75f; textG = 0.75f; textB = 0.78f;  // Slightly blue-grey
@@ -625,6 +647,7 @@ inline void render_dialogue_panel(TextRenderer* tr,
                                   const std::vector<DialogueEntry>& history,
                                   const std::vector<DialogueEntry>& choices) {
     tr->vertexCount = 0;  // Reset vertices
+    tr->choiceBounds.clear();  // Reset choice bounds
     
     float panelX = tr->screenWidth * tr->panelX;
     float panelW = tr->screenWidth * tr->panelWidth;
@@ -649,7 +672,7 @@ inline void render_dialogue_panel(TextRenderer* tr,
         float entryHeight = 0.0f;
         // Only render if visible
         if (y + 200 > 0) {  // Rough visibility check
-            y = render_dialogue_entry(tr, entry, y, scale);
+            y = render_dialogue_entry(tr, entry, y, scale, false);
         } else {
             // Skip but account for height
             auto lines = wrap_text(tr, entry.text, 
@@ -671,13 +694,42 @@ inline void render_dialogue_panel(TextRenderer* tr,
         y = sepY + 20;
     }
     
-    // Render choices
+    // Determine which choice is hovered based on mouse position
+    tr->hoveredChoice = -1;
+    float textWidth = tr->screenWidth * tr->panelWidth - tr->panelPadding * 2;
+    float lineH = tr->font.lineHeight * scale + tr->lineSpacing;
+    
+    // Pre-calculate choice positions to determine hover
+    float choiceY = y;
+    for (size_t i = 0; i < choices.size(); i++) {
+        std::string numberedText = std::to_string(i + 1) + ". " + choices[i].text;
+        auto lines = wrap_text(tr, numberedText, textWidth, scale);
+        float entryHeight = lines.size() * lineH + tr->lineSpacing * 2;
+        
+        // Check if mouse is within this choice's bounds
+        if (tr->mouseX >= panelX && tr->mouseX <= panelX + panelW &&
+            tr->mouseY >= choiceY && tr->mouseY < choiceY + entryHeight) {
+            tr->hoveredChoice = static_cast<int>(i);
+        }
+        
+        // Store bounds for click detection
+        ChoiceBounds bounds;
+        bounds.y0 = choiceY;
+        bounds.y1 = choiceY + entryHeight;
+        bounds.index = static_cast<int>(i);
+        tr->choiceBounds.push_back(bounds);
+        
+        choiceY += entryHeight;
+    }
+    
+    // Render choices with hover highlighting
     int choiceNum = 1;
-    for (const auto& choice : choices) {
+    for (size_t i = 0; i < choices.size(); i++) {
         // Add number prefix
-        DialogueEntry numberedChoice = choice;
-        numberedChoice.text = std::to_string(choiceNum) + ". " + choice.text;
-        y = render_dialogue_entry(tr, numberedChoice, y, scale);
+        DialogueEntry numberedChoice = choices[i];
+        numberedChoice.text = std::to_string(choiceNum) + ". " + choices[i].text;
+        bool isHovered = (tr->hoveredChoice == static_cast<int>(i));
+        y = render_dialogue_entry(tr, numberedChoice, y, scale, isHovered);
         choiceNum++;
     }
     
@@ -1378,6 +1430,33 @@ inline int get_pending_history_count() {
 
 inline int get_pending_choices_count() {
     return static_cast<int>(get_pending_choices().size());
+}
+
+// =============================================================================
+// Mouse Interaction API
+// =============================================================================
+
+// Update mouse position (call each frame with current mouse coords)
+inline void update_mouse_position(float x, float y) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->mouseX = x;
+    tr->mouseY = y;
+}
+
+// Get the currently hovered choice index (-1 if none)
+inline int get_hovered_choice() {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return -1;
+    return tr->hoveredChoice;
+}
+
+// Get clicked choice based on current mouse position (-1 if not on a choice)
+// Call this when mouse button is pressed
+inline int get_clicked_choice() {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return -1;
+    return tr->hoveredChoice;  // If hovered, that's what we're clicking
 }
 
 } // namespace fiction
