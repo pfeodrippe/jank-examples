@@ -1,0 +1,164 @@
+(ns fiction.render
+  "Jank wrapper for Vulkan fiction text renderer.
+   Bridges the C++ fiction_text.hpp with jank state."
+  (:require
+   [fiction.state :as state]
+   [clojure.string :as str]
+   ;; fiction_engine must be loaded first to set up Vulkan/SDL includes
+   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]
+   ["vulkan/fiction_text.hpp" :as fiction :scope "fiction"]))
+
+;; =============================================================================
+;; Initialization
+;; =============================================================================
+
+(defn init!
+  "Initialize the text renderer with Vulkan resources.
+   Must be called after the main Vulkan engine is initialized."
+  [screen-width screen-height shader-dir]
+  (fiction/init_text_renderer_simple
+   (cpp/float. (+ 0.0 screen-width))
+   (cpp/float. (+ 0.0 screen-height))
+   shader-dir))
+
+(defn cleanup!
+  "Clean up text renderer resources."
+  []
+  (fiction/cleanup_text_renderer))
+
+(defn initialized?
+  "Check if text renderer is initialized."
+  []
+  (fiction/text_renderer_initialized))
+
+;; =============================================================================
+;; Dialogue Entry Type Mapping
+;; =============================================================================
+
+(def entry-type->int
+  {:dialogue 0
+   :narration 1
+   :choice 2
+   :choice-selected 3})
+
+;; =============================================================================
+;; Build Dialogue Vertices
+;; =============================================================================
+
+;; Simple ASCII uppercase to lowercase lookup
+(def ^:private upper-to-lower
+  {"A" "a" "B" "b" "C" "c" "D" "d" "E" "e" "F" "f" "G" "g"
+   "H" "h" "I" "i" "J" "j" "K" "k" "L" "l" "M" "m" "N" "n"
+   "O" "o" "P" "p" "Q" "q" "R" "r" "S" "s" "T" "t" "U" "u"
+   "V" "v" "W" "w" "X" "x" "Y" "y" "Z" "z"})
+
+(defn- simple-lowercase
+  "Convert a simple ASCII string to lowercase."
+  [s]
+  (if (nil? s)
+    nil
+    (get upper-to-lower s s)))
+
+(defn- get-speaker-color
+  "Get color for a speaker based on metadata."
+  [speaker]
+  (let [metadata (state/get-metadata)
+        colors (:colors metadata {})
+        ;; Speaker ID is already uppercase single char like "V" or "M"
+        speaker-key (when speaker
+                      (keyword speaker))]
+    (or (get colors speaker-key)
+        ;; Try lowercase version
+        (when speaker
+          (let [lower-key (keyword (simple-lowercase speaker))]
+            (get colors lower-key)))
+        [180 180 180])))  ;; Default grey
+
+(defn- add-history-entry!
+  "Add a single history entry to C++ pending list."
+  [entry]
+  (let [entry-type (:type entry)
+        type-int (cond
+                   (= entry-type :choice) (if (:selected? entry) 3 2)
+                   :else (get entry-type->int entry-type 1))
+        speaker (or (:speaker entry) "")
+        text (or (:text entry) "")
+        [r g b] (get-speaker-color (:speaker entry))
+        selected (:selected? entry false)]
+    (fiction/add_history_entry
+     type-int
+     speaker
+     text
+     (cpp/float. (/ r 255.0))
+     (cpp/float. (/ g 255.0))
+     (cpp/float. (/ b 255.0))
+     selected)))
+
+(defn- add-choice-entry!
+  "Add a single choice entry to C++ pending list."
+  [choice]
+  (fiction/add_choice_entry (or (:text choice) "")))
+
+(defn build-dialogue-vertices!
+  "Build text vertices from current dialogue state.
+   Call this before recording render commands."
+  []
+  ;; Clear previous entries
+  (fiction/clear_pending_entries)
+  
+  ;; Add all history entries
+  (doseq [entry (state/get-history)]
+    (add-history-entry! entry))
+  
+  ;; Add all available choices
+  (doseq [choice (state/get-available-choices)]
+    (add-choice-entry! choice))
+  
+  ;; Build vertices from pending entries
+  (fiction/build_dialogue_from_pending))
+
+;; =============================================================================
+;; Render Commands
+;; =============================================================================
+
+;; Note: record_text_commands is called internally by fiction_engine during draw_frame
+;; Not exposed to jank due to VkCommandBuffer boxing issues
+
+;; =============================================================================
+;; Scroll Control
+;; =============================================================================
+
+(defn scroll!
+  "Scroll the dialogue panel by delta pixels."
+  [delta]
+  (fiction/scroll_dialogue (cpp/float. delta)))
+
+(defn scroll-to-bottom!
+  "Scroll to the bottom of the dialogue."
+  []
+  (fiction/scroll_to_bottom))
+
+;; =============================================================================
+;; Panel Customization
+;; =============================================================================
+
+(defn set-panel-colors!
+  "Set the dialogue panel background color."
+  [r g b a]
+  (fiction/set_panel_colors 
+   (cpp/float. r) (cpp/float. g) (cpp/float. b) (cpp/float. a)))
+
+(defn get-vertex-count
+  "Get the number of text vertices to render."
+  []
+  (fiction/get_text_vertex_count))
+
+;; =============================================================================
+;; Debug
+;; =============================================================================
+
+(defn debug-pending-counts
+  "Print pending entry counts for debugging."
+  []
+  (println "Pending history:" (fiction/get_pending_history_count))
+  (println "Pending choices:" (fiction/get_pending_choices_count)))

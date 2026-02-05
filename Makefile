@@ -279,6 +279,27 @@ build-sdf-deps-standalone: $(SDF_ALL_OBJS) $(SHADERS_SPV) vulkan/libsdf_deps.$(S
 	@echo "SDF dependencies built (standalone mode)."
 
 # ============================================================================
+# Fiction - Disco Elysium-style narrative game
+# ============================================================================
+
+# Fiction shaders
+FICTION_SHADERS_SRC = vulkan_fiction/text.vert vulkan_fiction/text.frag
+FICTION_SHADERS_SPV = $(FICTION_SHADERS_SRC:.vert=.vert.spv) $(FICTION_SHADERS_SRC:.frag=.frag.spv)
+
+vulkan_fiction/%.vert.spv: vulkan_fiction/%.vert
+	glslc -fshader-stage=vert $< -o $@
+
+vulkan_fiction/%.frag.spv: vulkan_fiction/%.frag
+	glslc -fshader-stage=frag $< -o $@
+
+build-fiction-shaders: $(FICTION_SHADERS_SPV)
+	@echo "Fiction shaders compiled."
+
+# Run the fiction game
+fiction: build-fiction-shaders
+	./bin/run_fiction.sh
+
+# ============================================================================
 # Clean targets
 # ============================================================================
 

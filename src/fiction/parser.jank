@@ -1,0 +1,367 @@
+(ns fiction.parser
+  "Parser for interactive fiction markdown files.
+   
+   Format:
+   - YAML frontmatter between --- markers (optional)
+   - Prefix for character X speaking uses hash-delta-X (e.g., V for Voiture)
+   - :: prefix for player choices
+   - Indentation defines nesting/hierarchy
+   - Plain text without prefix is narration"
+  (:require
+   [clojure.string :as str]
+   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]))
+
+;; =============================================================================
+;; Line Classification
+;; =============================================================================
+
+(defn- split-lines-manual
+  "Split a string into lines manually (jank str/split has bugs).
+   Handles \\n line endings."
+  [s]
+  (loop [i 0
+         start 0
+         lines []]
+    (if (>= i (count s))
+      ;; Add final line if there's content after last newline
+      (if (< start (count s))
+        (conj lines (subs s start))
+        lines)
+      (if (= (nth s i) \newline)
+        ;; Found newline - add line and continue
+        (recur (inc i) (inc i) (conj lines (subs s start i)))
+        ;; Continue scanning
+        (recur (inc i) start lines)))))
+
+(defn- read-file-as-lines
+  "Read a file and return a vector of lines using C++ (avoids jank string bugs).
+   C++ does the line splitting because jank has issues with newlines."
+  [filepath]
+  (let [line-count (engine/read_file_lines filepath)]
+    (if (= line-count 0)
+      []
+      (loop [i 0
+             lines []]
+        (if (>= i line-count)
+          lines
+          (recur (inc i) (conj lines (str (engine/get_file_line (cpp/int. i))))))))))
+
+(defn- count-leading-spaces
+  "Count leading spaces/tabs in a string. Tab = 1 unit."
+  [s]
+  (loop [i 0
+         depth 0]
+    (if (>= i (count s))
+      depth
+      (let [c (nth s i)]
+        (cond
+          (= c \space) (recur (inc i) (inc depth))
+          (= c \tab) (recur (inc i) (inc depth))
+          :else depth)))))
+
+(defn- parse-character-prefix
+  "Extract character ID from speaker prefix. Returns [char-id rest-of-line] or nil."
+  [line]
+  (let [trimmed (str/trim line)]
+    (when (str/starts-with? trimmed "#∆")
+      (let [after-prefix (subs trimmed 2)
+            ;; Find the space after the character ID
+            space-idx (str/index-of after-prefix " ")]
+        (if space-idx
+          [(subs after-prefix 0 space-idx)
+           (str/trim (subs after-prefix space-idx))]
+          ;; Just the character ID, no text
+          [after-prefix ""])))))
+
+(defn- parse-choice-prefix
+  "Check if line is a choice (starts with ::). Returns choice text or nil."
+  [line]
+  (let [trimmed (str/trim line)]
+    (when (str/starts-with? trimmed "::")
+      (str/trim (subs trimmed 2)))))
+
+(defn- classify-line
+  "Classify a line and extract its content.
+   Returns {:type :dialogue|:choice|:narration|:frontmatter|:empty
+            :depth <indent-level>
+            :speaker <char-id or nil>
+            :text <content>
+            :raw <original line>}"
+  [line]
+  (let [depth (count-leading-spaces line)
+        trimmed (str/trim line)]
+    (cond
+      ;; Empty line
+      (empty? trimmed)
+      {:type :empty :depth depth :text "" :raw line}
+      
+      ;; YAML frontmatter marker
+      (= trimmed "---")
+      {:type :frontmatter-marker :depth 0 :text "---" :raw line}
+      
+      ;; Character dialogue with speaker prefix
+      (str/starts-with? trimmed "#∆")
+      (let [[speaker text] (parse-character-prefix line)]
+        {:type :dialogue
+         :depth depth
+         :speaker speaker
+         :text text
+         :raw line})
+      
+      ;; Player choice: :: text
+      (str/starts-with? trimmed "::")
+      {:type :choice
+       :depth depth
+       :text (parse-choice-prefix line)
+       :raw line}
+      
+      ;; Plain narration or continuation
+      :else
+      {:type :narration
+       :depth depth
+       :text trimmed
+       :raw line})))
+
+;; =============================================================================
+;; YAML-like Frontmatter Parsing (simplified)
+;; =============================================================================
+
+(defn- parse-color-array
+  "Parse [r, g, b] color string to vector."
+  [s]
+  (when (and (str/starts-with? s "[") (str/ends-with? s "]"))
+    (let [inner (subs s 1 (dec (count s)))
+          parts (str/split inner #",\s*")]
+      (mapv #(read-string (str/trim %)) parts))))
+
+(defn- parse-frontmatter-line
+  "Parse a single frontmatter line into [key value] or nil."
+  [line]
+  (let [trimmed (str/trim line)
+        colon-idx (str/index-of trimmed ":")]
+    (when (and colon-idx (> colon-idx 0))
+      (let [key (str/trim (subs trimmed 0 colon-idx))
+            value (str/trim (subs trimmed (inc colon-idx)))]
+        [key value]))))
+
+(defn- parse-frontmatter
+  "Parse YAML-like frontmatter into a map."
+  [lines]
+  (loop [remaining lines
+         result {:title nil :author nil :theme nil :colors {}}]
+    (if (empty? remaining)
+      result
+      (let [line (first remaining)
+            parsed (parse-frontmatter-line line)]
+        (if parsed
+          (let [[k v] parsed]
+            (cond
+              (= k "title") (recur (rest remaining) (assoc result :title v))
+              (= k "author") (recur (rest remaining) (assoc result :author v))
+              (= k "theme") (recur (rest remaining) (assoc result :theme v))
+              ;; Handle nested colors
+              (str/starts-with? k "  ")
+              (let [color-key (keyword (str/trim k))
+                    color-val (parse-color-array v)]
+                (recur (rest remaining)
+                       (assoc-in result [:colors color-key] color-val)))
+              :else (recur (rest remaining) result)))
+          (recur (rest remaining) result))))))
+
+;; =============================================================================
+;; Tree Building
+;; =============================================================================
+
+(defn- make-node
+  "Create a dialogue tree node.
+   Args: type, opts-map with :speaker :text :children"
+  ([type]
+   (make-node type {}))
+  ([type {:keys [speaker text children]}]
+   ;; Build map using hash-map function to avoid jank map literal issues
+   (hash-map :type type
+             :id (str (gensym "node-"))
+             :speaker speaker
+             :text (or text "")
+             :children (or children [])
+             :selected? false)))
+
+(defn- add-child
+  "Add a child node to a parent."
+  [parent child]
+  (update parent :children conj child))
+
+(defn- build-tree
+  "Build a tree structure from classified lines.
+   Uses indentation to determine parent-child relationships."
+  [classified-lines]
+  (let [;; Filter out empty lines and frontmatter
+        content-lines (filter #(and (not= (:type %) :empty)
+                                    (not= (:type %) :frontmatter-marker))
+                              classified-lines)]
+    (loop [lines content-lines
+           stack [{:node (make-node :root {:text "root"}) :depth -1}]
+           result-children []]
+      (if (empty? lines)
+        ;; Return the root node with all top-level children
+        (make-node :root {:children result-children})
+        (let [line (first lines)
+              {:keys [type depth speaker text]} line
+              ;; Create node based on line type
+              new-node (case type
+                         :dialogue (make-node :dialogue {:speaker speaker :text text})
+                         :choice (make-node :choice {:text text})
+                         :narration (make-node :narration {:text text})
+                         nil)]
+          (if (nil? new-node)
+            (recur (rest lines) stack result-children)
+            ;; Find parent based on depth
+            (let [;; Pop stack until we find a parent with lower depth
+                  new-stack (loop [s stack]
+                              (if (or (empty? s) (< (:depth (peek s)) depth))
+                                s
+                                (recur (pop s))))
+                  ;; Add to appropriate parent
+                  parent-depth (if (empty? new-stack) -1 (:depth (peek new-stack)))]
+              (if (= parent-depth -1)
+                ;; Top-level node
+                (recur (rest lines)
+                       (conj new-stack {:node new-node :depth depth})
+                       (conj result-children new-node))
+                ;; Nested node - need to track parent-child relationship
+                ;; For simplicity in this first pass, we'll flatten and rebuild
+                (recur (rest lines)
+                       (conj new-stack {:node new-node :depth depth})
+                       (conj result-children new-node))))))))))
+
+;; =============================================================================
+;; Improved Tree Building with Proper Nesting
+;; =============================================================================
+
+(defn- build-nested-tree
+  "Build properly nested tree from classified lines."
+  [classified-lines]
+  (let [content-lines (vec (filter #(and (not= (:type %) :empty)
+                                         (not= (:type %) :frontmatter-marker))
+                                   classified-lines))]
+    (letfn [(parse-at-depth [lines min-depth]
+              ;; Parse lines at or deeper than min-depth
+              ;; Returns [nodes remaining-lines]
+              (loop [remaining lines
+                     nodes []]
+                (if (empty? remaining)
+                  [nodes []]
+                  (let [line (first remaining)
+                        {:keys [type depth speaker text]} line]
+                    (if (< depth min-depth)
+                      ;; This line belongs to a shallower level
+                      [nodes remaining]
+                      ;; This line is at our level or deeper
+                      (let [node (case type
+                                   :dialogue (make-node :dialogue {:speaker speaker :text text})
+                                   :choice (make-node :choice {:text text})
+                                   :narration (make-node :narration {:text text})
+                                   nil)]
+                        (if (nil? node)
+                          (recur (rest remaining) nodes)
+                          ;; Parse children (lines with greater depth)
+                          (let [[children rest-lines] (parse-at-depth (rest remaining) (inc depth))
+                                node-with-children (assoc node :children children)]
+                            (recur rest-lines (conj nodes node-with-children))))))))))]
+      (let [[top-nodes _] (parse-at-depth content-lines 0)]
+        (make-node :root {:children top-nodes})))))
+
+;; =============================================================================
+;; Main Parser API
+;; =============================================================================
+
+(defn parse-story-string
+  "Parse a story string into a structured format.
+   Returns {:metadata {...} :tree {...}}"
+  [content]
+  (let [lines (split-lines-manual content)
+        ;; Find frontmatter bounds
+        frontmatter-markers (keep-indexed 
+                              (fn [i line] (when (= (str/trim line) "---") i))
+                              lines)
+        [fm-start fm-end] (when (>= (count frontmatter-markers) 2)
+                            [(first frontmatter-markers) (second frontmatter-markers)])
+        ;; Extract frontmatter and content
+        frontmatter-lines (when (and fm-start fm-end)
+                            (subvec (vec lines) (inc fm-start) fm-end))
+        content-lines (if fm-end
+                        (subvec (vec lines) (inc fm-end))
+                        (vec lines))
+        ;; Parse
+        metadata (if frontmatter-lines
+                   (parse-frontmatter frontmatter-lines)
+                   {})
+        classified (map classify-line content-lines)
+        tree (build-nested-tree classified)]
+    {:metadata metadata
+     :tree tree}))
+
+(defn parse-story-file
+  "Parse a story file from disk using C++ file I/O (jank slurp is buggy).
+   C++ handles line splitting since jank has issues with newline characters."
+  [filepath]
+  (println "Parsing story file:" filepath)
+  (let [lines (read-file-as-lines filepath)]
+    (if (empty? lines)
+      (do
+        (println "ERROR: Could not read file or file is empty:" filepath)
+        nil)
+      (let [;; Find frontmatter bounds - use loop with indices
+            frontmatter-indices (loop [i 0
+                                       indices []]
+                                  (if (>= i (count lines))
+                                    indices
+                                    (let [line (nth lines i)]
+                                      (if (= (str/trim line) "---")
+                                        (recur (inc i) (conj indices i))
+                                        (recur (inc i) indices)))))
+            fm-start (when (>= (count frontmatter-indices) 2) (first frontmatter-indices))
+            fm-end (when (>= (count frontmatter-indices) 2) (second frontmatter-indices))
+            ;; Extract frontmatter and content manually (avoid subvec issues)
+            frontmatter-lines (when (and fm-start fm-end)
+                                (loop [i (inc fm-start)
+                                       result []]
+                                  (if (>= i fm-end)
+                                    result
+                                    (recur (inc i) (conj result (nth lines i))))))
+            content-lines (loop [i (if fm-end (inc fm-end) 0)
+                                 result []]
+                            (if (>= i (count lines))
+                              result
+                              (recur (inc i) (conj result (nth lines i)))))
+            ;; Parse
+            metadata (if frontmatter-lines
+                       (parse-frontmatter frontmatter-lines)
+                       {})
+            classified (map classify-line content-lines)
+            tree (build-nested-tree classified)]
+        {:metadata metadata
+         :tree tree}))))
+
+;; =============================================================================
+;; Tree Navigation
+;; =============================================================================
+
+(defn get-available-choices
+  "Get available choices from a node's children."
+  [node]
+  (filter #(= (:type %) :choice) (:children node)))
+
+(defn get-dialogue-nodes
+  "Get dialogue/narration nodes from children (non-choice content)."
+  [node]
+  (filter #(not= (:type %) :choice) (:children node)))
+
+(defn find-node-by-id
+  "Find a node in the tree by its ID."
+  [tree id]
+  (letfn [(search [node]
+            (if (= (:id node) id)
+              node
+              (some search (:children node))))]
+    (search tree)))

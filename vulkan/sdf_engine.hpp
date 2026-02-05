@@ -2543,6 +2543,16 @@ inline VkDevice get_device() {
     return e ? e->device : VK_NULL_HANDLE;
 }
 
+inline VkPhysicalDevice get_physical_device() {
+    auto* e = get_engine();
+    return e ? e->physicalDevice : VK_NULL_HANDLE;
+}
+
+inline VkRenderPass get_render_pass() {
+    auto* e = get_engine();
+    return e ? e->renderPass : VK_NULL_HANDLE;
+}
+
 inline VkCommandPool get_command_pool() {
     auto* e = get_engine();
     return e ? e->commandPool : VK_NULL_HANDLE;

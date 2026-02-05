@@ -1,0 +1,149 @@
+(ns fiction
+  "Disco Elysium-style narrative game.
+   
+   Standalone Vulkan application with text rendering for
+   dialogue and choices."
+  (:refer-clojure :exclude [run!])
+  (:require
+   [fiction.parser :as parser]
+   [fiction.state :as state]
+   [fiction.render :as text-render]
+   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]))
+
+;; =============================================================================
+;; Story Loading
+;; =============================================================================
+
+;; Path to the story file
+(def ^:private story-path "stories/la_voiture.md")
+
+(defn load-story!
+  "Load the story from file."
+  []
+  (state/load-story-from-file! story-path)
+  (println "Story loaded:" (:title (state/get-metadata))))
+
+;; =============================================================================
+;; Event Handling (Polling-based)
+;; =============================================================================
+
+;; SDL Scancodes for reference
+(def ^:private SCANCODE_1 30)
+(def ^:private SCANCODE_9 38)
+(def ^:private SCANCODE_UP 82)
+(def ^:private SCANCODE_DOWN 81)
+
+(defn process-key-event!
+  "Process a key down event."
+  [scancode]
+  (cond
+    ;; Number keys 1-9 for choice selection (scancodes 30-38)
+    (and (>= scancode SCANCODE_1) (<= scancode SCANCODE_9))
+    (let [choice-idx (- scancode SCANCODE_1)]
+      (when (< choice-idx (count (state/get-available-choices)))
+        (println "Selected choice:" (inc choice-idx))
+        (state/select-choice! choice-idx)
+        (text-render/scroll-to-bottom!)))
+    
+    ;; Up arrow - scroll up
+    (= scancode SCANCODE_UP)
+    (text-render/scroll! -30.0)
+    
+    ;; Down arrow - scroll down
+    (= scancode SCANCODE_DOWN)
+    (text-render/scroll! 30.0)
+    
+    :else nil))
+
+(defn process-scroll-event!
+  "Process a scroll event."
+  [delta-y]
+  (text-render/scroll! (* delta-y -30.0)))
+
+(defn process-events!
+  "Process all pending input events."
+  []
+  (let [event-count (engine/get_event_count)]
+    (dotimes [i event-count]
+      (let [event-type (engine/get_event_type (cpp/int. i))]
+        (cond
+          ;; Key down (type 1)
+          (= event-type 1)
+          (process-key-event! (engine/get_event_scancode (cpp/int. i)))
+          
+          ;; Scroll (type 3)
+          (= event-type 3)
+          (process-scroll-event! (engine/get_event_scroll_y (cpp/int. i)))
+          
+          ;; Key up (type 2) - ignore for now
+          :else nil)))))
+
+;; =============================================================================
+;; Initialization
+;; =============================================================================
+
+(defn init!
+  "Initialize the fiction game."
+  []
+  (println "")
+  (println "============================================")
+  (println "   LA VOITURE - Interactive Fiction")
+  (println "============================================")
+  (println "")
+  (println "Controls:")
+  (println "  1-9      = Select choice")
+  (println "  Up/Down  = Scroll dialogue")
+  (println "  ESC      = Quit")
+  (println "")
+  
+  ;; Initialize Vulkan engine
+  (when-not (engine/init "La Voiture")
+    (println "ERROR: Failed to initialize Vulkan")
+    false)
+  
+  ;; Initialize text renderer (uses fiction_engine handles internally)
+  (let [width (engine/get_screen_width)
+        height (engine/get_screen_height)]
+    (text-render/init! width height "vulkan_fiction"))
+  
+  ;; Load story from file
+  (load-story!)
+  
+  ;; Set dark panel background
+  (text-render/set-panel-colors! 0.08 0.08 0.08 0.95)
+  
+  (println "")
+  (println "Ready. Make your choice...")
+  (println "")
+  true)
+
+;; =============================================================================
+;; Main Loop
+;; =============================================================================
+
+(defn run!
+  "Run the fiction game."
+  []
+  (when (init!)
+    (loop []
+      (when-not (engine/should_close)
+        ;; Poll SDL events (populates event queue)
+        (engine/poll_events)
+        
+        ;; Process events from queue (jank-side)
+        (process-events!)
+        
+        ;; Build text vertices and draw frame
+        (text-render/build-dialogue-vertices!)
+        (engine/draw_frame)
+        
+        (recur)))
+    
+    ;; Cleanup
+    (text-render/cleanup!)
+    (engine/cleanup)
+    (println "")
+    (println "Au revoir.")))
+
+(defn -main [& args]
+  (run!))
