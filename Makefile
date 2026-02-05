@@ -57,7 +57,7 @@ CXXFLAGS = -fPIC -O2 -std=c++17
 
 .PHONY: clean clean-cache sdf integrated integrated_wasm imgui jolt test tests help \
         build-jolt build-imgui build-flecs build-flecs-wasm build-raylib build-deps \
-        build-sdf-deps build-shaders build-imgui-vulkan
+        build-sdf-deps build-shaders build-imgui-vulkan build-vybe-wasm
 
 # Default target
 help:
@@ -201,6 +201,12 @@ endif
 
 vendor/vybe/vybe_flecs_jank.o: vendor/vybe/vybe_flecs_jank.cpp vendor/vybe/vybe_flecs_jank.h vendor/flecs/distr/flecs.h $(JANK_ABI_HEADERS)
 	$(JANK_CXX) -std=c++20 -fPIC $(VYBE_FLECS_JANK_SYSROOT) $(VYBE_FLECS_JANK_INCLUDES) -c $< -o $@
+
+# WASM build for vybe flecs helpers (used by integrated_wasm)
+vendor/vybe/vybe_flecs_jank_wasm.o: vendor/vybe/vybe_flecs_jank.cpp vendor/vybe/vybe_flecs_jank.h vendor/flecs/distr/flecs.h $(JANK_ABI_HEADERS)
+	em++ -std=c++20 -O2 -fPIC -DJANK_TARGET_EMSCRIPTEN -DJANK_TARGET_WASM=1 $(VYBE_FLECS_JANK_INCLUDES) -c $< -o $@
+
+build-vybe-wasm: vendor/vybe/vybe_flecs_jank_wasm.o
 
 # ============================================================================
 # Shader compilation
@@ -420,7 +426,7 @@ sdf-standalone: clean-cache build-sdf-deps-standalone
 integrated: clean-cache
 	./bin/run_integrated.sh
 
-integrated_wasm: build-flecs-wasm
+integrated_wasm: build-flecs-wasm build-vybe-wasm
 	./bin/run_integrated_wasm.sh
 
 imgui:

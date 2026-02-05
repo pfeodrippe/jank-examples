@@ -11,7 +11,7 @@
    ["flecs.h" :as fl :scope ""]
    ;; Jolt C API with global scope
    ["jolt_c.h" :as jolt :scope ""]
-   [jank.nrepl-server.server :as server]
+   #_[jank.nrepl-server.server :as server]
    [clojure.string :as str]
    [vybe.util :as u :refer [->*]]
    [vybe.flecs :as vf]))
@@ -766,7 +766,7 @@ inline void* opaque_box_ptr(jank::runtime::object_ref box) {
 ;; =============================================================================
 
 (defn -main [& args]
-  #?(:jank (server/start-server {:port 5557}))
+  ;; #?(:jank (server/start-server {:port 5557}))
 
   (println "Starting integrated demo: Raylib + ImGui + Jolt + Flecs")
   (println "Using jank header requires + static linking!")

@@ -42,7 +42,7 @@ for f in "$SOMETHING_DIR/vendor/imgui/build-wasm"/*.o; do
     IMGUI_LIBS="$IMGUI_LIBS --prelink-lib $f"
 done
 
-RELEASE=1 ./bin/emscripten-bundle --skip-build -v \
+RELEASE=1 ./bin/emscripten-bundle -v \
     -L "$SOMETHING_DIR/vendor/raylib/distr" \
     -L "$SOMETHING_DIR/vendor/JoltPhysics/distr" \
     --native-lib raylib_jank \
@@ -56,6 +56,7 @@ RELEASE=1 ./bin/emscripten-bundle --skip-build -v \
     --prelink-lib "$SOMETHING_DIR/vendor/jolt_wrapper_wasm.o" \
     --prelink-lib "$SOMETHING_DIR/vendor/jolt_combined_wasm.a" \
     --prelink-lib "$SOMETHING_DIR/vendor/flecs/distr/flecs_wasm.o" \
+    --prelink-lib "$SOMETHING_DIR/vendor/vybe/vybe_flecs_jank_wasm.o" \
     -I "$SOMETHING_DIR/vendor/raylib/distr" \
     -I "$SOMETHING_DIR/vendor/raylib/src" \
     -I "$SOMETHING_DIR/vendor/imgui" \

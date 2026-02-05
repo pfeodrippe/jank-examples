@@ -19,6 +19,14 @@ clang -shared -fPIC -o libflecs.dylib flecs.c
 
 ## Run Examples
 
+### WASM
+
+For running in node, we can use something like
+
+``` shell
+cd /Users/pfeodrippe/dev/jank/compiler+runtime/build-wasm && node --experimental-vm-modules -e "import('./my_integrated_demo.js').then(m => m.default())" 2>&1 | tee /tmp/wasm_node_test.log
+```
+
 ### Static Object File (RECOMMENDED - no -l flag needed!)
 
 Loads flecs.o directly into the JIT via `jit_prc.load_object()`. No dynamic library required!

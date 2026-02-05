@@ -138,13 +138,16 @@
        (cpp/= (->* barrier .-image) vk-image)
        (cpp/= (->* barrier .-subresourceRange .-aspectMask) (cpp/VkImageAspectFlags. vk/VK_IMAGE_ASPECT_COLOR_BIT)))"
   [struct m]
-  (let [assignments (for [[k v] m]
-                      (let [;; Split key by dots: :subresourceRange.aspectMask -> ["subresourceRange" "aspectMask"]
-                            parts (split-by-dot (name k))
-                            ;; Convert to .-field symbols
-                            field-syms (map #(symbol (str ".-" %)) parts)]
-                        ;; Generate (cpp/= (->* struct .-field1 .-field2 ...) value)
-                        `(cpp/= (->* ~struct ~@field-syms) ~v)))]
+  ;; NOTE: Using `map` instead of `for` to work around jank bug where
+  ;; `for` with syntax-quote in body crashes inside macro definitions.
+  (let [assignments (map (fn [[k v]]
+                           (let [;; Split key by dots: :subresourceRange.aspectMask -> ["subresourceRange" "aspectMask"]
+                                 parts (split-by-dot (name k))
+                                 ;; Convert to .-field symbols
+                                 field-syms (map #(symbol (str ".-" %)) parts)]
+                             ;; Generate (cpp/= (->* struct .-field1 .-field2 ...) value)
+                             `(cpp/= (->* ~struct ~@field-syms) ~v)))
+                         m)]
     `(do ~@assignments)))
 
 ;; =============================================================================
