@@ -74,6 +74,17 @@
             (get colors lower-key)))
         [180 180 180])))  ;; Default grey
 
+(defn- get-speaker-name
+  "Get full speaker name from metadata. Falls back to speaker ID."
+  [speaker-id]
+  (if (nil? speaker-id)
+    ""
+    (let [metadata (state/get-metadata)
+          speakers (:speakers metadata {})
+          speaker-key (keyword speaker-id)]
+      (or (get speakers speaker-key)
+          speaker-id))))  ;; Fall back to the ID itself
+
 (defn- add-history-entry!
   "Add a single history entry to C++ pending list."
   [entry]
@@ -81,13 +92,14 @@
         type-int (cond
                    (= entry-type :choice) (if (:selected? entry) 3 2)
                    :else (get entry-type->int entry-type 1))
-        speaker (or (:speaker entry) "")
+        speaker-id (:speaker entry)
+        speaker-name (get-speaker-name speaker-id)
         text (or (:text entry) "")
-        [r g b] (get-speaker-color (:speaker entry))
+        [r g b] (get-speaker-color speaker-id)
         selected (:selected? entry false)]
     (fiction/add_history_entry
      type-int
-     speaker
+     speaker-name
      text
      (cpp/float. (/ r 255.0))
      (cpp/float. (/ g 255.0))
@@ -96,8 +108,9 @@
 
 (defn- add-choice-entry!
   "Add a single choice entry to C++ pending list."
-  [choice]
-  (fiction/add_choice_entry (or (:text choice) "")))
+  [choice selected-ids]
+  (let [is-selected (contains? selected-ids (:id choice))]
+    (fiction/add_choice_entry_with_selected (or (:text choice) "") is-selected)))
 
 (defn build-dialogue-vertices!
   "Build text vertices from current dialogue state.
@@ -110,9 +123,10 @@
   (doseq [entry (state/get-history)]
     (add-history-entry! entry))
   
-  ;; Add all available choices
-  (doseq [choice (state/get-available-choices)]
-    (add-choice-entry! choice))
+  ;; Add all available choices (marking already-selected ones)
+  (let [selected-ids (state/get-selected-ids)]
+    (doseq [choice (state/get-available-choices)]
+      (add-choice-entry! choice selected-ids)))
   
   ;; Build vertices from pending entries
   (fiction/build_dialogue_from_pending))

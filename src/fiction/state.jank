@@ -66,7 +66,9 @@
   (atom {:story-tree nil
          :metadata {}
          :current-node nil
-         :choice-path []}))
+         :choice-path []
+         :node-stack []        ;; Stack of parent nodes for navigation
+         :selected-ids #{}}))  ;; Set of already-selected choice IDs
 
 ;; History and choices stored as vectors of maps (order matters)
 (defonce ^:private *history (atom []))
@@ -113,6 +115,11 @@
   "Get the path of choices taken."
   []
   (:choice-path @*story-data))
+
+(defn get-selected-ids
+  "Get the set of already-selected choice IDs."
+  []
+  (:selected-ids @*story-data))
 
 ;; =============================================================================
 ;; State Modifiers
@@ -162,7 +169,8 @@
       (reveal-content! child))))
 
 (defn- update-available-choices!
-  "Update the list of available choices based on current node."
+  "Update the list of available choices based on current node.
+   Shows all choices (selected ones will be rendered in grey)."
   []
   (let [current (:current-node @*story-data)
         ;; Collect all choices from current node and its revealed content
@@ -190,7 +198,9 @@
           {:story-tree tree
            :metadata metadata
            :current-node tree
-           :choice-path []})
+           :choice-path []
+           :node-stack []
+           :selected-ids #{}})
   ;; Reveal initial content (root node's children that aren't choices)
   (reveal-content! tree)
   ;; Update available choices
@@ -215,23 +225,31 @@
 
 (defn select-choice!
   "Select a choice by index. 
-   - Adds the choice text to history (marked as selected)
+   - Adds choice text to history
    - Reveals content under that choice
-   - Updates available choices"
+   - Only navigates deeper if the choice has nested choices
+   - If choice has no nested choices, stays at current level"
   [choice-idx]
   (let [choices @*choices]
     (when (and (>= choice-idx 0) (< choice-idx (count choices)))
-      (let [choice (nth choices choice-idx)]
-        ;; Add choice to history as selected
+      (let [choice (nth choices choice-idx)
+            ;; Check if this choice has nested choices
+            has-nested-choices? (some #(= (:type %) :choice) (:children choice))]
+        ;; Always add to history and reveal content
         (add-node-to-history! choice true)
-        ;; Record in choice path
-        (swap! *story-data update :choice-path conj (:id choice))
-        ;; Update current node to this choice
-        (swap! *story-data assoc :current-node choice)
-        ;; Reveal content under this choice
         (reveal-content! choice)
-        ;; Update available choices
-        (update-available-choices!)
+        ;; Track selection (for grey styling)
+        (swap! *story-data update :selected-ids conj (:id choice))
+        (swap! *story-data update :choice-path conj (:id choice))
+        ;; Only navigate deeper if there are nested choices
+        (when has-nested-choices?
+          (let [current-node (:current-node @*story-data)]
+            ;; Push current node to stack before navigating
+            (swap! *story-data update :node-stack conj current-node)
+            ;; Update current node to this choice
+            (swap! *story-data assoc :current-node choice)
+            ;; Update available choices
+            (update-available-choices!)))
         ;; Auto-scroll to bottom
         (reset! *scroll-offset 999999.0)))))
 

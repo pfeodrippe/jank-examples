@@ -62,9 +62,12 @@
 (defn- parse-character-prefix
   "Extract character ID from speaker prefix. Returns [char-id rest-of-line] or nil."
   [line]
-  (let [trimmed (str/trim line)]
-    (when (str/starts-with? trimmed "#∆")
-      (let [after-prefix (subs trimmed 2)
+  (let [trimmed (str/trim line)
+        prefix "#∆"
+        prefix-len (count prefix)]  ;; Should be 2 chars, but may be more bytes
+    (when (str/starts-with? trimmed prefix)
+      ;; Skip past the prefix - use count to get character length
+      (let [after-prefix (subs trimmed prefix-len)
             ;; Find the space after the character ID
             space-idx (str/index-of after-prefix " ")]
         (if space-idx
@@ -148,25 +151,41 @@
   "Parse YAML-like frontmatter into a map."
   [lines]
   (loop [remaining lines
-         result {:title nil :author nil :theme nil :colors {}}]
+         result {:title nil :author nil :theme nil :colors {} :speakers {}}
+         current-section nil]
     (if (empty? remaining)
       result
       (let [line (first remaining)
+            ;; Check if line is indented (starts with space/tab)
+            is-indented (and (> (count line) 0)
+                             (or (= (nth line 0) \space)
+                                 (= (nth line 0) \tab)))
             parsed (parse-frontmatter-line line)]
         (if parsed
           (let [[k v] parsed]
             (cond
-              (= k "title") (recur (rest remaining) (assoc result :title v))
-              (= k "author") (recur (rest remaining) (assoc result :author v))
-              (= k "theme") (recur (rest remaining) (assoc result :theme v))
-              ;; Handle nested colors
-              (str/starts-with? k "  ")
-              (let [color-key (keyword (str/trim k))
-                    color-val (parse-color-array v)]
-                (recur (rest remaining)
-                       (assoc-in result [:colors color-key] color-val)))
-              :else (recur (rest remaining) result)))
-          (recur (rest remaining) result))))))
+              (= k "title") (recur (rest remaining) (assoc result :title v) nil)
+              (= k "author") (recur (rest remaining) (assoc result :author v) nil)
+              (= k "theme") (recur (rest remaining) (assoc result :theme v) nil)
+              (= k "colors") (recur (rest remaining) result :colors)
+              (= k "speakers") (recur (rest remaining) result :speakers)
+              ;; Handle nested keys (indented lines under colors/speakers)
+              is-indented
+              (let [nested-key (keyword k)]
+                (case current-section
+                  :colors
+                  (let [color-val (parse-color-array v)]
+                    (recur (rest remaining)
+                           (assoc-in result [:colors nested-key] color-val)
+                           current-section))
+                  :speakers
+                  (recur (rest remaining)
+                         (assoc-in result [:speakers nested-key] v)
+                         current-section)
+                  ;; Unknown section
+                  (recur (rest remaining) result current-section)))
+              :else (recur (rest remaining) result current-section)))
+          (recur (rest remaining) result current-section))))))
 
 ;; =============================================================================
 ;; Tree Building

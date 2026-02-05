@@ -1,5 +1,5 @@
 // Fiction Text Renderer - Vulkan-based text rendering for narrative games
-// Uses SDF (Signed Distance Field) fonts for crisp text at any resolution
+// Uses stb_truetype for proper font rendering with UTF-8 support
 //
 // This provides Disco Elysium-style dialogue rendering:
 // - Colored text per character/speaker
@@ -20,15 +20,15 @@
 #include <iostream>
 #include <cstring>
 
+// stb_truetype for proper font rendering
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+
 namespace fiction {
 
 // =============================================================================
-// Font Glyph Data (using embedded bitmap font for simplicity)
+// Font Glyph Data - using stb_truetype for proper Unicode support
 // =============================================================================
-
-// Simple 8x16 bitmap font - ASCII 32-126
-// Each character is 8 pixels wide, 16 pixels tall
-// This is a placeholder - in production use stb_truetype or FreeType
 
 struct GlyphInfo {
     float u0, v0, u1, v1;  // UV coordinates in atlas
@@ -45,12 +45,20 @@ struct FontAtlas {
     VkImageView imageView = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
     
-    uint32_t atlasWidth = 256;
-    uint32_t atlasHeight = 256;
+    uint32_t atlasWidth = 512;   // Larger for Unicode glyphs
+    uint32_t atlasHeight = 512;
     
-    std::unordered_map<char, GlyphInfo> glyphs;
-    float lineHeight = 20.0f;
+    // Use int32_t for Unicode codepoints
+    std::unordered_map<int32_t, GlyphInfo> glyphs;
+    float lineHeight = 24.0f;
     float spaceWidth = 8.0f;
+    float ascent = 0.0f;
+    float descent = 0.0f;
+    float scale = 0.0f;
+    
+    // stb_truetype font info
+    stbtt_fontinfo fontInfo;
+    std::vector<uint8_t> fontData;  // Keep font data alive
 };
 
 // =============================================================================
@@ -176,20 +184,97 @@ inline uint32_t find_text_memory_type(TextRenderer* tr, uint32_t typeFilter, VkM
 }
 
 // =============================================================================
-// Font Atlas Creation (Simple Embedded Font)
+// Font Atlas Creation with stb_truetype
 // =============================================================================
 
-// Embedded 8x8 font data for ASCII 32-126 (simplified)
-// In production, use stb_truetype to load actual fonts
+// Default font path - can be overridden
+inline std::string& get_font_path() {
+    static std::string path = "vendor/imgui/misc/fonts/Roboto-Medium.ttf";
+    return path;
+}
+
+inline void set_font_path(const std::string& path) {
+    get_font_path() = path;
+}
+
+// French accented characters we need to support
+inline std::vector<int32_t> get_required_codepoints() {
+    std::vector<int32_t> codepoints;
+    
+    // Basic ASCII (32-126)
+    for (int c = 32; c < 127; c++) {
+        codepoints.push_back(c);
+    }
+    
+    // French accented characters
+    // À Â Ä Ç È É Ê Ë Î Ï Ô Ö Ù Û Ü Ÿ
+    // à â ä ç è é ê ë î ï ô ö ù û ü ÿ
+    // Œ œ « » – — ' ' " "
+    int32_t french[] = {
+        0x00C0, 0x00C2, 0x00C4, 0x00C7, 0x00C8, 0x00C9, 0x00CA, 0x00CB,  // À Â Ä Ç È É Ê Ë
+        0x00CE, 0x00CF, 0x00D4, 0x00D6, 0x00D9, 0x00DB, 0x00DC, 0x0178,  // Î Ï Ô Ö Ù Û Ü Ÿ
+        0x00E0, 0x00E2, 0x00E4, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB,  // à â ä ç è é ê ë
+        0x00EE, 0x00EF, 0x00F4, 0x00F6, 0x00F9, 0x00FB, 0x00FC, 0x00FF,  // î ï ô ö ù û ü ÿ
+        0x0152, 0x0153,  // Œ œ
+        0x00AB, 0x00BB,  // « »
+        0x2013, 0x2014,  // – —
+        0x2018, 0x2019, 0x201C, 0x201D,  // ' ' " "
+        0x2026,  // …
+        0x0394,  // Δ (Delta - used in story format #∆)
+    };
+    
+    for (int32_t cp : french) {
+        codepoints.push_back(cp);
+    }
+    
+    return codepoints;
+}
 
 inline void create_simple_font_atlas(TextRenderer* tr) {
-    // Create a simple 256x256 atlas with basic ASCII characters
-    // For now, just create a white texture - actual glyph rendering would use stb_truetype
+    // Load TTF font file
+    std::ifstream fontFile(get_font_path(), std::ios::binary | std::ios::ate);
+    if (!fontFile.is_open()) {
+        std::cerr << "[fiction] Failed to open font: " << get_font_path() << std::endl;
+        // Fall back to creating a minimal atlas
+        tr->font.atlasWidth = 512;
+        tr->font.atlasHeight = 512;
+        goto create_vulkan_resources;
+    }
     
-    tr->font.atlasWidth = 256;
-    tr->font.atlasHeight = 256;
+    {
+        size_t fontFileSize = fontFile.tellg();
+        fontFile.seekg(0);
+        tr->font.fontData.resize(fontFileSize);
+        fontFile.read(reinterpret_cast<char*>(tr->font.fontData.data()), fontFileSize);
+        fontFile.close();
+        
+        // Initialize stb_truetype
+        if (!stbtt_InitFont(&tr->font.fontInfo, tr->font.fontData.data(), 0)) {
+            std::cerr << "[fiction] Failed to init font" << std::endl;
+            goto create_vulkan_resources;
+        }
+        
+        // Font size in pixels
+        float fontSize = 20.0f;
+        tr->font.scale = stbtt_ScaleForPixelHeight(&tr->font.fontInfo, fontSize);
+        
+        int ascent, descent, lineGap;
+        stbtt_GetFontVMetrics(&tr->font.fontInfo, &ascent, &descent, &lineGap);
+        tr->font.ascent = ascent * tr->font.scale;
+        tr->font.descent = descent * tr->font.scale;
+        tr->font.lineHeight = (ascent - descent + lineGap) * tr->font.scale;
+        
+        // Get space width
+        int spaceAdvance, spaceLsb;
+        stbtt_GetCodepointHMetrics(&tr->font.fontInfo, ' ', &spaceAdvance, &spaceLsb);
+        tr->font.spaceWidth = spaceAdvance * tr->font.scale;
+    }
     
-    // Create image
+    tr->font.atlasWidth = 512;
+    tr->font.atlasHeight = 512;
+    
+create_vulkan_resources:
+    // Create Vulkan image
     VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.format = VK_FORMAT_R8_UNORM;  // Single channel for font
@@ -243,33 +328,6 @@ inline void create_simple_font_atlas(TextRenderer* tr) {
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     
     vkCreateSampler(tr->device, &samplerInfo, nullptr, &tr->font.sampler);
-    
-    // Setup glyph info for ASCII 32-126
-    // Simple 16x16 grid layout: 16 chars per row, 6 rows
-    float charWidth = 1.0f / 16.0f;
-    float charHeight = 1.0f / 16.0f;
-    
-    for (int c = 32; c < 127; c++) {
-        int idx = c - 32;
-        int col = idx % 16;
-        int row = idx / 16;
-        
-        GlyphInfo gi;
-        gi.u0 = col * charWidth;
-        gi.v0 = row * charHeight;
-        gi.u1 = gi.u0 + charWidth;
-        gi.v1 = gi.v0 + charHeight;
-        gi.width = 8.0f;
-        gi.height = 16.0f;  // Default height
-        gi.advance = 9.0f;
-        gi.xoffset = 0.0f;
-        gi.yoffset = 0.0f;
-        
-        tr->font.glyphs[(char)c] = gi;
-    }
-    
-    tr->font.lineHeight = 18.0f;
-    tr->font.spaceWidth = 6.0f;
 }
 
 // =============================================================================
@@ -333,6 +391,54 @@ inline void add_rect(TextRenderer* tr,
     add_text_quad(tr, x, y, w, h, 0.0f, 0.0f, 0.01f, 0.01f, r, g, b, a);
 }
 
+// =============================================================================
+// UTF-8 Decoding
+// =============================================================================
+
+// Decode one UTF-8 codepoint from string, advance index
+inline int32_t decode_utf8(const std::string& str, size_t& i) {
+    if (i >= str.size()) return 0;
+    
+    uint8_t c = str[i];
+    
+    // ASCII (0xxxxxxx)
+    if ((c & 0x80) == 0) {
+        i++;
+        return c;
+    }
+    
+    // 2-byte sequence (110xxxxx 10xxxxxx)
+    if ((c & 0xE0) == 0xC0 && i + 1 < str.size()) {
+        int32_t cp = (c & 0x1F) << 6;
+        cp |= (str[i + 1] & 0x3F);
+        i += 2;
+        return cp;
+    }
+    
+    // 3-byte sequence (1110xxxx 10xxxxxx 10xxxxxx)
+    if ((c & 0xF0) == 0xE0 && i + 2 < str.size()) {
+        int32_t cp = (c & 0x0F) << 12;
+        cp |= (str[i + 1] & 0x3F) << 6;
+        cp |= (str[i + 2] & 0x3F);
+        i += 3;
+        return cp;
+    }
+    
+    // 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
+    if ((c & 0xF8) == 0xF0 && i + 3 < str.size()) {
+        int32_t cp = (c & 0x07) << 18;
+        cp |= (str[i + 1] & 0x3F) << 12;
+        cp |= (str[i + 2] & 0x3F) << 6;
+        cp |= (str[i + 3] & 0x3F);
+        i += 4;
+        return cp;
+    }
+    
+    // Invalid, skip byte
+    i++;
+    return 0xFFFD;  // Replacement character
+}
+
 // Render a string at position, returns ending X position
 inline float render_text_string(TextRenderer* tr,
                                 const std::string& text,
@@ -341,16 +447,23 @@ inline float render_text_string(TextRenderer* tr,
                                 float r, float g, float b, float a) {
     float cursorX = x;
     
-    for (char c : text) {
-        if (c == ' ') {
+    size_t i = 0;
+    while (i < text.size()) {
+        int32_t cp = decode_utf8(text, i);
+        
+        if (cp == ' ') {
             cursorX += tr->font.spaceWidth * scale;
             continue;
         }
         
-        auto it = tr->font.glyphs.find(c);
+        auto it = tr->font.glyphs.find(cp);
         if (it == tr->font.glyphs.end()) {
-            cursorX += tr->font.spaceWidth * scale;
-            continue;
+            // Try fallback to '?' for unknown chars
+            it = tr->font.glyphs.find('?');
+            if (it == tr->font.glyphs.end()) {
+                cursorX += tr->font.spaceWidth * scale;
+                continue;
+            }
         }
         
         const GlyphInfo& gi = it->second;
@@ -370,7 +483,27 @@ inline float render_text_string(TextRenderer* tr,
     return cursorX;
 }
 
-// Word-wrap text and return lines
+// Measure width of a UTF-8 string
+inline float measure_text_width(TextRenderer* tr, const std::string& text, float scale) {
+    float width = 0.0f;
+    size_t i = 0;
+    while (i < text.size()) {
+        int32_t cp = decode_utf8(text, i);
+        if (cp == ' ') {
+            width += tr->font.spaceWidth * scale;
+        } else {
+            auto it = tr->font.glyphs.find(cp);
+            if (it != tr->font.glyphs.end()) {
+                width += it->second.advance * scale;
+            } else {
+                width += tr->font.spaceWidth * scale;
+            }
+        }
+    }
+    return width;
+}
+
+// Word-wrap text and return lines (UTF-8 aware)
 inline std::vector<std::string> wrap_text(TextRenderer* tr, 
                                           const std::string& text,
                                           float maxWidth,
@@ -381,23 +514,20 @@ inline std::vector<std::string> wrap_text(TextRenderer* tr,
     
     size_t i = 0;
     while (i < text.size()) {
-        // Find next word
+        // Find next word (UTF-8 aware)
         size_t wordStart = i;
-        while (i < text.size() && text[i] != ' ' && text[i] != '\n') {
-            i++;
+        while (i < text.size()) {
+            size_t save_i = i;
+            int32_t cp = decode_utf8(text, i);
+            if (cp == ' ' || cp == '\n') {
+                i = save_i;  // Don't consume the space/newline
+                break;
+            }
         }
         std::string word = text.substr(wordStart, i - wordStart);
         
         // Measure word width
-        float wordWidth = 0.0f;
-        for (char c : word) {
-            auto it = tr->font.glyphs.find(c);
-            if (it != tr->font.glyphs.end()) {
-                wordWidth += it->second.advance * scale;
-            } else {
-                wordWidth += tr->font.spaceWidth * scale;
-            }
-        }
+        float wordWidth = measure_text_width(tr, word, scale);
         
         // Check if word fits on current line
         if (currentWidth + wordWidth > maxWidth && !currentLine.empty()) {
@@ -413,19 +543,18 @@ inline std::vector<std::string> wrap_text(TextRenderer* tr,
             currentWidth += wordWidth;
         }
         
-        // Handle newlines
-        if (i < text.size() && text[i] == '\n') {
-            lines.push_back(currentLine);
-            currentLine.clear();
-            currentWidth = 0.0f;
-        }
-        
-        // Skip spaces
-        while (i < text.size() && text[i] == ' ') {
-            i++;
-        }
-        if (i < text.size() && text[i] == '\n') {
-            i++;
+        // Handle space or newline after word
+        if (i < text.size()) {
+            size_t save_i = i;
+            int32_t cp = decode_utf8(text, i);
+            if (cp == '\n') {
+                if (!currentLine.empty()) {
+                    lines.push_back(currentLine);
+                }
+                currentLine.clear();
+                currentWidth = 0.0f;
+            }
+            // Space is consumed but not added to line
         }
     }
     
@@ -469,8 +598,7 @@ inline float render_dialogue_entry(TextRenderer* tr,
     
     // Render speaker name if present
     if (!entry.speaker.empty()) {
-        std::string speakerLabel = entry.speaker + " ---";
-        render_text_string(tr, speakerLabel, panelStartX, currentY, scale,
+        render_text_string(tr, entry.speaker, panelStartX, currentY, scale,
                           entry.speakerR, entry.speakerG, entry.speakerB, 1.0f);
         currentY += lineH;
     }
@@ -779,7 +907,7 @@ inline bool create_text_pipeline(TextRenderer* tr, const std::string& shaderDir)
 }
 
 // =============================================================================
-// Upload font atlas data to GPU
+// Upload font atlas data to GPU using stb_truetype
 // =============================================================================
 
 inline void upload_font_atlas(TextRenderer* tr) {
@@ -805,7 +933,7 @@ inline void upload_font_atlas(TextRenderer* tr) {
     vkAllocateMemory(tr->device, &allocInfo, nullptr, &stagingMemory);
     vkBindBufferMemory(tr->device, stagingBuffer, stagingMemory, 0);
     
-    // Fill with embedded 8x8 bitmap font data
+    // Fill atlas with stb_truetype rendered glyphs
     void* data;
     vkMapMemory(tr->device, stagingMemory, 0, atlasSize, 0, &data);
     uint8_t* pixels = (uint8_t*)data;
@@ -813,162 +941,119 @@ inline void upload_font_atlas(TextRenderer* tr) {
     // Clear to black
     memset(pixels, 0, atlasSize);
     
-    // Put a solid white block at UV (0,0) for backgrounds (first 16x16 pixels)
-    for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 16; x++) {
+    // Put a solid white block at (0,0) for backgrounds (first 32x32 pixels)
+    for (uint32_t y = 0; y < 32; y++) {
+        for (uint32_t x = 0; x < 32; x++) {
             pixels[y * tr->font.atlasWidth + x] = 255;
         }
     }
     
-    // 8x8 bitmap font data for ASCII 32-126
-    // Each character is 8 bytes, one byte per row (8 bits = 8 pixels)
-    // This is a classic CP437-style bitmap font
-    static const uint8_t font8x8[95][8] = {
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, // 32 (space)
-        {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00}, // 33 !
-        {0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00}, // 34 "
-        {0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00}, // 35 #
-        {0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00}, // 36 $
-        {0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00}, // 37 %
-        {0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00}, // 38 &
-        {0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00}, // 39 '
-        {0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00}, // 40 (
-        {0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00}, // 41 )
-        {0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00}, // 42 *
-        {0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00}, // 43 +
-        {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06}, // 44 ,
-        {0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00}, // 45 -
-        {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00}, // 46 .
-        {0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00}, // 47 /
-        {0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00}, // 48 0
-        {0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00}, // 49 1
-        {0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00}, // 50 2
-        {0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00}, // 51 3
-        {0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00}, // 52 4
-        {0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00}, // 53 5
-        {0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00}, // 54 6
-        {0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00}, // 55 7
-        {0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00}, // 56 8
-        {0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00}, // 57 9
-        {0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00}, // 58 :
-        {0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06}, // 59 ;
-        {0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00}, // 60 <
-        {0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00}, // 61 =
-        {0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00}, // 62 >
-        {0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00}, // 63 ?
-        {0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00}, // 64 @
-        {0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00}, // 65 A
-        {0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00}, // 66 B
-        {0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00}, // 67 C
-        {0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00}, // 68 D
-        {0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00}, // 69 E
-        {0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00}, // 70 F
-        {0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00}, // 71 G
-        {0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00}, // 72 H
-        {0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00}, // 73 I
-        {0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00}, // 74 J
-        {0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00}, // 75 K
-        {0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00}, // 76 L
-        {0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00}, // 77 M
-        {0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00}, // 78 N
-        {0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00}, // 79 O
-        {0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00}, // 80 P
-        {0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00}, // 81 Q
-        {0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00}, // 82 R
-        {0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00}, // 83 S
-        {0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00}, // 84 T
-        {0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00}, // 85 U
-        {0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00}, // 86 V
-        {0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00}, // 87 W
-        {0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00}, // 88 X
-        {0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00}, // 89 Y
-        {0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00}, // 90 Z
-        {0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00}, // 91 [
-        {0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00}, // 92 backslash
-        {0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00}, // 93 ]
-        {0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00}, // 94 ^
-        {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF}, // 95 _
-        {0x0C,0x0C,0x18,0x00,0x00,0x00,0x00,0x00}, // 96 `
-        {0x00,0x00,0x1E,0x30,0x3E,0x33,0x6E,0x00}, // 97 a
-        {0x07,0x06,0x06,0x3E,0x66,0x66,0x3B,0x00}, // 98 b
-        {0x00,0x00,0x1E,0x33,0x03,0x33,0x1E,0x00}, // 99 c
-        {0x38,0x30,0x30,0x3E,0x33,0x33,0x6E,0x00}, // 100 d
-        {0x00,0x00,0x1E,0x33,0x3F,0x03,0x1E,0x00}, // 101 e
-        {0x1C,0x36,0x06,0x0F,0x06,0x06,0x0F,0x00}, // 102 f
-        {0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x1F}, // 103 g
-        {0x07,0x06,0x36,0x6E,0x66,0x66,0x67,0x00}, // 104 h
-        {0x0C,0x00,0x0E,0x0C,0x0C,0x0C,0x1E,0x00}, // 105 i
-        {0x30,0x00,0x30,0x30,0x30,0x33,0x33,0x1E}, // 106 j
-        {0x07,0x06,0x66,0x36,0x1E,0x36,0x67,0x00}, // 107 k
-        {0x0E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00}, // 108 l
-        {0x00,0x00,0x33,0x7F,0x7F,0x6B,0x63,0x00}, // 109 m
-        {0x00,0x00,0x1F,0x33,0x33,0x33,0x33,0x00}, // 110 n
-        {0x00,0x00,0x1E,0x33,0x33,0x33,0x1E,0x00}, // 111 o
-        {0x00,0x00,0x3B,0x66,0x66,0x3E,0x06,0x0F}, // 112 p
-        {0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x78}, // 113 q
-        {0x00,0x00,0x3B,0x6E,0x66,0x06,0x0F,0x00}, // 114 r
-        {0x00,0x00,0x3E,0x03,0x1E,0x30,0x1F,0x00}, // 115 s
-        {0x08,0x0C,0x3E,0x0C,0x0C,0x2C,0x18,0x00}, // 116 t
-        {0x00,0x00,0x33,0x33,0x33,0x33,0x6E,0x00}, // 117 u
-        {0x00,0x00,0x33,0x33,0x33,0x1E,0x0C,0x00}, // 118 v
-        {0x00,0x00,0x63,0x6B,0x7F,0x7F,0x36,0x00}, // 119 w
-        {0x00,0x00,0x63,0x36,0x1C,0x36,0x63,0x00}, // 120 x
-        {0x00,0x00,0x33,0x33,0x33,0x3E,0x30,0x1F}, // 121 y
-        {0x00,0x00,0x3F,0x19,0x0C,0x26,0x3F,0x00}, // 122 z
-        {0x38,0x0C,0x0C,0x07,0x0C,0x0C,0x38,0x00}, // 123 {
-        {0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00}, // 124 |
-        {0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00}, // 125 }
-        {0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00}, // 126 ~
-    };
-    
-    const int charW = 8, charH = 8;
-    const int charsPerRow = 16;
-    
-    // Render each character to the atlas
-    for (int c = 32; c < 127; c++) {
-        int idx = c - 32;
-        int col = idx % charsPerRow;
-        int row = idx / charsPerRow + 1;  // +1 to skip solid white row
-        
-        const uint8_t* charData = font8x8[idx];
-        
-        for (int py = 0; py < 8; py++) {
-            uint8_t rowBits = charData[py];
-            for (int px = 0; px < 8; px++) {
-                // Bit 0 is leftmost pixel in this font data
-                bool on = (rowBits >> px) & 1;
-                int x = col * charW + px;
-                int y = row * charH + py;
-                if (x < (int)tr->font.atlasWidth && y < (int)tr->font.atlasHeight) {
-                    pixels[y * tr->font.atlasWidth + x] = on ? 255 : 0;
-                }
-            }
-        }
+    // Check if font was loaded
+    if (tr->font.fontData.empty()) {
+        std::cerr << "[fiction] No font data, using blank atlas" << std::endl;
+        vkUnmapMemory(tr->device, stagingMemory);
+        goto copy_to_gpu;
     }
     
-    // Update glyph UV coordinates for the new layout
-    float charWidthUV = (float)charW / tr->font.atlasWidth;
-    float charHeightUV = (float)charH / tr->font.atlasHeight;
-    
-    for (int c = 32; c < 127; c++) {
-        int idx = c - 32;
-        int col = idx % charsPerRow;
-        int row = idx / charsPerRow + 1;
+    {
+        // Get codepoints to render
+        std::vector<int32_t> codepoints = get_required_codepoints();
         
-        GlyphInfo& gi = tr->font.glyphs[(char)c];
-        gi.u0 = col * charWidthUV;
-        gi.v0 = row * charHeightUV;
-        gi.u1 = gi.u0 + charWidthUV;
-        gi.v1 = gi.v0 + charHeightUV;
-        gi.width = 8.0f;
-        gi.height = 8.0f;
-        gi.advance = 9.0f;
-        gi.xoffset = 0.0f;
-        gi.yoffset = 0.0f;
+        // Pack glyphs into atlas using simple row-based packing
+        int cursorX = 32;  // Start after solid white block
+        int cursorY = 0;
+        int rowHeight = 0;
+        int padding = 2;
+        
+        for (int32_t cp : codepoints) {
+            // Skip space - we handle it specially
+            if (cp == ' ') {
+                GlyphInfo gi;
+                gi.u0 = 0; gi.v0 = 0; gi.u1 = 0.01f; gi.v1 = 0.01f;
+                gi.width = 0;
+                gi.height = 0;
+                gi.advance = tr->font.spaceWidth;
+                gi.xoffset = 0;
+                gi.yoffset = 0;
+                tr->font.glyphs[cp] = gi;
+                continue;
+            }
+            
+            // Get glyph metrics
+            int glyphIndex = stbtt_FindGlyphIndex(&tr->font.fontInfo, cp);
+            if (glyphIndex == 0 && cp != 0) {
+                // Glyph not found, skip
+                continue;
+            }
+            
+            int advance, lsb;
+            stbtt_GetCodepointHMetrics(&tr->font.fontInfo, cp, &advance, &lsb);
+            
+            int x0, y0, x1, y1;
+            stbtt_GetCodepointBitmapBox(&tr->font.fontInfo, cp, tr->font.scale, tr->font.scale,
+                                        &x0, &y0, &x1, &y1);
+            
+            int glyphW = x1 - x0;
+            int glyphH = y1 - y0;
+            
+            if (glyphW <= 0 || glyphH <= 0) {
+                // Empty glyph
+                GlyphInfo gi;
+                gi.u0 = 0; gi.v0 = 0; gi.u1 = 0; gi.v1 = 0;
+                gi.width = 0;
+                gi.height = 0;
+                gi.advance = advance * tr->font.scale;
+                gi.xoffset = 0;
+                gi.yoffset = 0;
+                tr->font.glyphs[cp] = gi;
+                continue;
+            }
+            
+            // Check if we need to wrap to next row
+            if (cursorX + glyphW + padding > (int)tr->font.atlasWidth) {
+                cursorX = 0;
+                cursorY += rowHeight + padding;
+                rowHeight = 0;
+            }
+            
+            // Check if we're out of vertical space
+            if (cursorY + glyphH > (int)tr->font.atlasHeight) {
+                std::cerr << "[fiction] Font atlas full at codepoint " << cp << std::endl;
+                break;
+            }
+            
+            // Render glyph to atlas
+            stbtt_MakeCodepointBitmap(&tr->font.fontInfo,
+                                      pixels + cursorY * tr->font.atlasWidth + cursorX,
+                                      glyphW, glyphH,
+                                      tr->font.atlasWidth,  // stride
+                                      tr->font.scale, tr->font.scale,
+                                      cp);
+            
+            // Store glyph info
+            GlyphInfo gi;
+            gi.u0 = (float)cursorX / tr->font.atlasWidth;
+            gi.v0 = (float)cursorY / tr->font.atlasHeight;
+            gi.u1 = (float)(cursorX + glyphW) / tr->font.atlasWidth;
+            gi.v1 = (float)(cursorY + glyphH) / tr->font.atlasHeight;
+            gi.width = (float)glyphW;
+            gi.height = (float)glyphH;
+            gi.advance = advance * tr->font.scale;
+            gi.xoffset = (float)x0;
+            gi.yoffset = (float)y0 + tr->font.ascent;  // Adjust for baseline
+            tr->font.glyphs[cp] = gi;
+            
+            // Advance cursor
+            cursorX += glyphW + padding;
+            rowHeight = std::max(rowHeight, glyphH);
+        }
+        
+        std::cout << "[fiction] Rendered " << tr->font.glyphs.size() << " glyphs to atlas" << std::endl;
     }
     
     vkUnmapMemory(tr->device, stagingMemory);
     
+copy_to_gpu:
     // Copy to image
     VkCommandBuffer cmd;
     VkCommandBufferAllocateInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -1260,17 +1345,22 @@ inline void add_history_entry(int type, const char* speaker, const char* text,
     get_pending_history().push_back(entry);
 }
 
-// Add a choice entry
-inline void add_choice_entry(const char* text) {
+// Add a choice entry with selected status
+inline void add_choice_entry_with_selected(const char* text, bool selected) {
     DialogueEntry entry;
-    entry.type = EntryType::Choice;
+    entry.type = selected ? EntryType::ChoiceSelected : EntryType::Choice;
     entry.speaker = "";
     entry.text = text ? text : "";
     entry.speakerR = 0.85f;
     entry.speakerG = 0.55f;
     entry.speakerB = 0.25f;
-    entry.selected = false;
+    entry.selected = selected;
     get_pending_choices().push_back(entry);
+}
+
+// Add a choice entry (convenience wrapper)
+inline void add_choice_entry(const char* text) {
+    add_choice_entry_with_selected(text, false);
 }
 
 // Build vertices from pending entries
