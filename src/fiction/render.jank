@@ -174,6 +174,70 @@
   [x width]
   (fiction/set_panel_position (cpp/float. x) (cpp/float. width)))
 
+;; =============================================================================
+;; Style Configuration (all live-tweakable from REPL)
+;; =============================================================================
+
+(defn set-text-scale!
+  "Set base text scale (default 1.0)."
+  [scale]
+  (fiction/set_text_scale (cpp/float. scale)))
+
+(defn set-speaker-scale!
+  "Set speaker name scale relative to text (default 1.25)."
+  [scale]
+  (fiction/set_speaker_scale (cpp/float. scale)))
+
+(defn set-line-spacing!
+  "Set extra spacing between lines in pixels (default 4.0)."
+  [spacing]
+  (fiction/set_line_spacing (cpp/float. spacing)))
+
+(defn set-entry-spacing!
+  "Set lineSpacing multiplier between dialogue entries (default 2.0)."
+  [spacing]
+  (fiction/set_entry_spacing (cpp/float. spacing)))
+
+(defn set-panel-padding!
+  "Set inner panel padding in pixels (default 20.0)."
+  [padding]
+  (fiction/set_panel_padding (cpp/float. padding)))
+
+(defn set-choice-indent!
+  "Set indent for choice text in pixels (default 20.0)."
+  [indent]
+  (fiction/set_choice_indent (cpp/float. indent)))
+
+(defn set-text-color!
+  "Set default dialogue text color (RGB 0.0-1.0)."
+  [r g b]
+  (fiction/set_text_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
+
+(defn set-narration-color!
+  "Set narration text color (RGB 0.0-1.0)."
+  [r g b]
+  (fiction/set_narration_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
+
+(defn set-choice-color!
+  "Set choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (fiction/set_choice_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
+
+(defn set-choice-hover-color!
+  "Set hovered choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (fiction/set_choice_hover_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
+
+(defn set-choice-selected-color!
+  "Set selected choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (fiction/set_choice_selected_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
+
+(defn set-choice-selected-hover-color!
+  "Set hovered selected choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (fiction/set_choice_selected_hover_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
+
 (defn get-vertex-count
   "Get the number of text vertices to render."
   []

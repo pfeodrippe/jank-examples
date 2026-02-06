@@ -114,6 +114,35 @@ struct DialogueEntry {
 };
 
 // =============================================================================
+// Panel Style — all visual config, settable from jank
+// =============================================================================
+
+struct PanelStyle {
+    // Layout
+    float panelX = 0.70f;         // Panel X position (fraction of screen)
+    float panelWidth = 0.30f;     // Panel width (fraction of screen)
+    float panelPadding = 20.0f;   // Inner padding in pixels
+    float lineSpacing = 4.0f;     // Extra spacing between lines
+    float entrySpacing = 2.0f;    // lineSpacing multiplier between entries
+    float choiceIndent = 20.0f;   // Indent for choice text
+
+    // Scale
+    float textScale = 1.0f;       // Base text scale
+    float speakerScale = 1.25f;   // Speaker name scale (relative to textScale)
+
+    // Panel background
+    float bgR = 0.0f, bgG = 0.0f, bgB = 0.0f, bgA = 0.0f;
+
+    // Text colors
+    float textR = 0.8f, textG = 0.8f, textB = 0.8f;
+    float narrationR = 0.75f, narrationG = 0.75f, narrationB = 0.78f;
+    float choiceR = 0.85f, choiceG = 0.55f, choiceB = 0.25f;
+    float choiceHoverR = 1.0f, choiceHoverG = 0.8f, choiceHoverB = 0.4f;
+    float choiceSelectedR = 0.5f, choiceSelectedG = 0.5f, choiceSelectedB = 0.5f;
+    float choiceSelectedHoverR = 0.7f, choiceSelectedHoverG = 0.7f, choiceSelectedHoverB = 0.7f;
+};
+
+// =============================================================================
 // Text Renderer State
 // =============================================================================
 
@@ -150,18 +179,12 @@ struct TextRenderer {
     float screenWidth = 1280.0f;
     float screenHeight = 720.0f;
     
-    // Panel layout
-    float panelX = 0.70f;      // Start at 70% of screen width
-    float panelWidth = 0.30f;  // 30% of screen
-    float panelPadding = 20.0f;
-    float lineSpacing = 4.0f;
+    // Visual style (all settable from jank)
+    PanelStyle style;
     
     // Scroll state
     float scrollOffset = 0.0f;
     float maxScroll = 0.0f;
-    
-    // Colors
-    float bgR = 0.0f, bgG = 0.0f, bgB = 0.0f, bgA = 0.0f;
     
     // Mouse state
     float mouseX = 0.0f;
@@ -1154,52 +1177,54 @@ inline float render_dialogue_entry(TextRenderer* tr,
                                    float y,
                                    float scale,
                                    bool isHovered = false) {
-    float panelStartX = tr->screenWidth * tr->panelX + tr->panelPadding;
-    float textWidth = tr->screenWidth * tr->panelWidth - tr->panelPadding * 2;
-    float lineH = tr->font.lineHeight * scale + tr->lineSpacing;
+    float panelStartX = tr->screenWidth * tr->style.panelX + tr->style.panelPadding;
+    float textWidth = tr->screenWidth * tr->style.panelWidth - tr->style.panelPadding * 2;
+    float lineH = tr->font.lineHeight * scale + tr->style.lineSpacing;
     
     float currentY = y;
     
-    // Colors based on entry type
-    float textR = 0.8f, textG = 0.8f, textB = 0.8f;
+    // Colors based on entry type (from config)
+    float textR = tr->style.textR, textG = tr->style.textG, textB = tr->style.textB;
     
     switch (entry.type) {
         case EntryType::Choice:
             if (isHovered) {
-                textR = 1.0f; textG = 0.8f; textB = 0.4f;  // Bright yellow-orange on hover
+                textR = tr->style.choiceHoverR; textG = tr->style.choiceHoverG; textB = tr->style.choiceHoverB;
             } else {
-                textR = 0.85f; textG = 0.55f; textB = 0.25f;  // Orange
+                textR = tr->style.choiceR; textG = tr->style.choiceG; textB = tr->style.choiceB;
             }
             break;
         case EntryType::ChoiceSelected:
             if (isHovered) {
-                textR = 0.7f; textG = 0.7f; textB = 0.7f;  // Lighter grey on hover
+                textR = tr->style.choiceSelectedHoverR; textG = tr->style.choiceSelectedHoverG; textB = tr->style.choiceSelectedHoverB;
             } else {
-                textR = 0.5f; textG = 0.5f; textB = 0.5f;  // Muted grey
+                textR = tr->style.choiceSelectedR; textG = tr->style.choiceSelectedG; textB = tr->style.choiceSelectedB;
             }
             break;
         case EntryType::Narration:
-            textR = 0.75f; textG = 0.75f; textB = 0.78f;  // Slightly blue-grey
+            textR = tr->style.narrationR; textG = tr->style.narrationG; textB = tr->style.narrationB;
             break;
         default:
             break;
     }
     
-    // Render speaker name if present (ALL CAPS)
+    // Render speaker name if present (ALL CAPS, larger scale)
     if (!entry.speaker.empty()) {
+        float speakerS = scale * tr->style.speakerScale;
+        float speakerLineH = tr->font.lineHeight * speakerS + tr->style.lineSpacing;
         std::string upperSpeaker = entry.speaker;
         for (auto& c : upperSpeaker) c = std::toupper(static_cast<unsigned char>(c));
-        float speakerEndX = render_text_string(tr, upperSpeaker, panelStartX, currentY, scale,
+        float speakerEndX = render_text_string(tr, upperSpeaker, panelStartX, currentY, speakerS,
                           entry.speakerR, entry.speakerG, entry.speakerB, 1.0f);
         
         // Small painted square to the left of speaker name
         auto* pr = get_particle_renderer();
         if (pr && pr->initialized) {
-            float size = lineH * 0.45f;  // Small square
+            float size = speakerLineH * 0.40f;
             float gap = 8.0f;
             SpeakerParticleQuad spq;
             spq.x = panelStartX - gap - size;
-            spq.y = currentY + (lineH - size) * 0.5f;  // Vertically centered
+            spq.y = currentY + (speakerLineH - size) * 0.5f;
             spq.w = size;
             spq.h = size;
             spq.r = entry.speakerR;
@@ -1208,7 +1233,7 @@ inline float render_dialogue_entry(TextRenderer* tr,
             pr->speakerQuads.push_back(spq);
         }
         
-        currentY += lineH;
+        currentY += speakerLineH;
     }
     
     // Word-wrap and render the text
@@ -1216,7 +1241,7 @@ inline float render_dialogue_entry(TextRenderer* tr,
     for (const auto& line : lines) {
         // Add indent for choices
         float indent = (entry.type == EntryType::Choice || 
-                        entry.type == EntryType::ChoiceSelected) ? 20.0f : 0.0f;
+                        entry.type == EntryType::ChoiceSelected) ? tr->style.choiceIndent : 0.0f;
         
         render_text_string(tr, line, panelStartX + indent, currentY, scale,
                           textR, textG, textB, 1.0f);
@@ -1224,7 +1249,7 @@ inline float render_dialogue_entry(TextRenderer* tr,
     }
     
     // Add spacing after entry
-    currentY += tr->lineSpacing * 2;
+    currentY += tr->style.lineSpacing * 2;
     
     return currentY;
 }
@@ -1235,13 +1260,13 @@ inline void render_dialogue_panel(TextRenderer* tr,
     tr->vertexCount = 0;  // Reset vertices
     tr->choiceBounds.clear();  // Reset choice bounds
     
-    float panelX = tr->screenWidth * tr->panelX;
-    float panelW = tr->screenWidth * tr->panelWidth;
+    float panelX = tr->screenWidth * tr->style.panelX;
+    float panelW = tr->screenWidth * tr->style.panelWidth;
     float panelH = tr->screenHeight;
     
     // Draw panel background
     add_rect(tr, panelX, 0, panelW, panelH,
-             tr->bgR, tr->bgG, tr->bgB, tr->bgA);
+             tr->style.bgR, tr->style.bgG, tr->style.bgB, tr->style.bgA);
     
     // Film strip edge decoration (right side)
     float stripWidth = 15.0f;
@@ -1249,8 +1274,8 @@ inline void render_dialogue_panel(TextRenderer* tr,
              0.05f, 0.05f, 0.05f, 1.0f);
     
     // Render dialogue history
-    float scale = 1.0f;
-    float y = tr->panelPadding - tr->scrollOffset;
+    float scale = tr->style.textScale;
+    float y = tr->style.panelPadding - tr->scrollOffset;
     
     for (const auto& entry : history) {
         if (y > tr->screenHeight) break;  // Off-screen below
@@ -1262,37 +1287,37 @@ inline void render_dialogue_panel(TextRenderer* tr,
         } else {
             // Skip but account for height
             auto lines = wrap_text(tr, entry.text, 
-                                   tr->screenWidth * tr->panelWidth - tr->panelPadding * 2,
+                                   tr->screenWidth * tr->style.panelWidth - tr->style.panelPadding * 2,
                                    scale);
-            float lineH = tr->font.lineHeight * scale + tr->lineSpacing;
+            float lineH = tr->font.lineHeight * scale + tr->style.lineSpacing;
             y += (!entry.speaker.empty() ? lineH : 0);
             y += lines.size() * lineH;
-            y += tr->lineSpacing * 2;
+            y += tr->style.lineSpacing * 2;
         }
         // Extra gap between dialogue entries
-        y += tr->lineSpacing * 2;
+        y += tr->style.lineSpacing * tr->style.entrySpacing;
     }
     
     // Separator before choices
     if (!choices.empty()) {
         float sepY = y + 10;
-        add_rect(tr, panelX + tr->panelPadding, sepY, 
-                 panelW - tr->panelPadding * 2, 1.0f,
+        add_rect(tr, panelX + tr->style.panelPadding, sepY, 
+                 panelW - tr->style.panelPadding * 2, 1.0f,
                  0.4f, 0.4f, 0.4f, 0.5f);
         y = sepY + 20;
     }
     
     // Determine which choice is hovered based on mouse position
     tr->hoveredChoice = -1;
-    float textWidth = tr->screenWidth * tr->panelWidth - tr->panelPadding * 2;
-    float lineH = tr->font.lineHeight * scale + tr->lineSpacing;
+    float textWidth = tr->screenWidth * tr->style.panelWidth - tr->style.panelPadding * 2;
+    float lineH = tr->font.lineHeight * scale + tr->style.lineSpacing;
     
     // Pre-calculate choice positions to determine hover
     float choiceY = y;
     for (size_t i = 0; i < choices.size(); i++) {
         std::string numberedText = std::to_string(i + 1) + ". " + choices[i].text;
         auto lines = wrap_text(tr, numberedText, textWidth, scale);
-        float entryHeight = lines.size() * lineH + tr->lineSpacing * 2;
+        float entryHeight = lines.size() * lineH + tr->style.lineSpacing * 2;
         
         // Check if mouse is within this choice's bounds
         if (tr->mouseX >= panelX && tr->mouseX <= panelX + panelW &&
@@ -2151,14 +2176,89 @@ inline bool text_renderer_initialized() {
 inline void set_panel_colors(float r, float g, float b, float a) {
     TextRenderer* tr = get_text_renderer();
     if (!tr) return;
-    tr->bgR = r; tr->bgG = g; tr->bgB = b; tr->bgA = a;
+    tr->style.bgR = r; tr->style.bgG = g; tr->style.bgB = b; tr->style.bgA = a;
 }
 
 inline void set_panel_position(float x, float width) {
     TextRenderer* tr = get_text_renderer();
     if (!tr) return;
-    tr->panelX = x;
-    tr->panelWidth = width;
+    tr->style.panelX = x;
+    tr->style.panelWidth = width;
+}
+
+// Set text and speaker scale
+inline void set_text_scale(float scale) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.textScale = scale;
+}
+
+inline void set_speaker_scale(float scale) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.speakerScale = scale;
+}
+
+// Set spacing
+inline void set_line_spacing(float spacing) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.lineSpacing = spacing;
+}
+
+inline void set_entry_spacing(float spacing) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.entrySpacing = spacing;
+}
+
+inline void set_panel_padding(float padding) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.panelPadding = padding;
+}
+
+inline void set_choice_indent(float indent) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.choiceIndent = indent;
+}
+
+// Set text colors
+inline void set_text_color(float r, float g, float b) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.textR = r; tr->style.textG = g; tr->style.textB = b;
+}
+
+inline void set_narration_color(float r, float g, float b) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.narrationR = r; tr->style.narrationG = g; tr->style.narrationB = b;
+}
+
+inline void set_choice_color(float r, float g, float b) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.choiceR = r; tr->style.choiceG = g; tr->style.choiceB = b;
+}
+
+inline void set_choice_hover_color(float r, float g, float b) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.choiceHoverR = r; tr->style.choiceHoverG = g; tr->style.choiceHoverB = b;
+}
+
+inline void set_choice_selected_color(float r, float g, float b) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.choiceSelectedR = r; tr->style.choiceSelectedG = g; tr->style.choiceSelectedB = b;
+}
+
+inline void set_choice_selected_hover_color(float r, float g, float b) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->style.choiceSelectedHoverR = r; tr->style.choiceSelectedHoverG = g; tr->style.choiceSelectedHoverB = b;
 }
 
 inline uint32_t get_text_vertex_count() {
