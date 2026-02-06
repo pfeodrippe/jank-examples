@@ -1185,9 +1185,11 @@ inline float render_dialogue_entry(TextRenderer* tr,
             break;
     }
     
-    // Render speaker name if present
+    // Render speaker name if present (ALL CAPS)
     if (!entry.speaker.empty()) {
-        float speakerEndX = render_text_string(tr, entry.speaker, panelStartX, currentY, scale,
+        std::string upperSpeaker = entry.speaker;
+        for (auto& c : upperSpeaker) c = std::toupper(static_cast<unsigned char>(c));
+        float speakerEndX = render_text_string(tr, upperSpeaker, panelStartX, currentY, scale,
                           entry.speakerR, entry.speakerG, entry.speakerB, 1.0f);
         
         // Small painted square to the left of speaker name
@@ -1267,6 +1269,8 @@ inline void render_dialogue_panel(TextRenderer* tr,
             y += lines.size() * lineH;
             y += tr->lineSpacing * 2;
         }
+        // Extra gap between dialogue entries
+        y += tr->lineSpacing * 2;
     }
     
     // Separator before choices
