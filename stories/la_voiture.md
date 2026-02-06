@@ -23,6 +23,6 @@ Vous sentez un souffle chaud derrière vous.
 	:: Ouvrir la poignée.
 		#∆V La poignée est froide et humide et en quelque sorte, vous entendez un clic, elle s’ouvre.
 		Dans l’intérieur, il existe un dossier épais sur le siège passager avec un petit autocollant à l’avant.
-			:: Lire le l’autocollant.
-				« Maman… »
+		:: Lire le l’autocollant.
+			« Maman… »
 	:: Frapper à la porte.

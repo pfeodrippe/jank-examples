@@ -8,6 +8,7 @@
    [fiction.parser :as parser]
    [fiction.state :as state]
    [fiction.render :as text-render]
+   [vybe.flecs :as vf]
    ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]
    [jank.nrepl-server.server :as server]))
 
@@ -22,9 +23,10 @@
 (def ^:private bg-image-path "resources/fiction/bg-1.png")
 
 ;; =============================================================================
-;; File Watching (for hot-reloading story files)
+;; File Watching (atom-based, ECS system registered separately)
 ;; =============================================================================
 
+;; Simple atom-based file watcher (reliable fallback)
 (defonce ^:private *last-mod-time (atom 0))
 
 (defn- file-modified?
@@ -192,10 +194,10 @@
         ;; Process events from queue (jank-side)
         (process-events!)
 
-        ;; Check for story file changes (hot-reload)
+        ;; Check for story file changes (hot-reload, preserves state)
         (when (file-modified?)
           (println "Story file changed, reloading...")
-          (load-story!))
+          (state/reload-story-from-file! story-path))
 
         ;; Build text vertices and draw frame
         (text-render/build-dialogue-vertices!)

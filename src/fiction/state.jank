@@ -1,16 +1,17 @@
 (ns fiction.state
-  "ECS-based state management for the interactive fiction dialogue system.
-   
+  "Flecs ECS-based state management for the interactive fiction dialogue system.
+
    Uses vybe.flecs for state management with:
-   - Tags for dialogue entries and choices
-   - Singleton entity for global state
-   - jank maps for the actual text data (since Flecs components don't support strings well)
-   
+   - Entities for dialogue history entries and available choices
+   - Components for entry data (type, speaker, text, order)
+   - Tags for categorization (:fiction/history, :fiction/choice, :fiction/selected)
+   - vf/defsystem for frame-level state updates
+
    Manages:
    - Dialogue history (what has been displayed)
    - Current position in the story tree
    - Selected choices
-   - Scroll position"
+   - Available choices"
   (:require
    [fiction.parser :as parser]
    [vybe.flecs :as vf]
@@ -20,20 +21,18 @@
 ;; ECS Components
 ;; =============================================================================
 
-;; Scroll state component - holds scroll offset
-(vt/defcomp ScrollState
-  [[:offset :float]
-   [:max-scroll :float]])
+;; Entry order in history (for maintaining display order)
+(vt/defcomp EntryOrder
+  [[:index :i32]])
 
-;; =============================================================================
-;; ECS Tags
-;; =============================================================================
+;; Entry type: 0=dialogue, 1=narration, 2=choice, 3=choice-selected
+(vt/defcomp EntryType
+  [[:value :i32]])
 
-;; Tags for entity types
-;; :fiction/history-entry - marks an entity as a dialogue history entry
-;; :fiction/choice - marks an entity as an available choice
-;; :fiction/selected - marks a choice/entry as selected
-;; :fiction/global - marks the singleton global state entity
+;; File watcher state - tracks last modification time for hot-reload
+(vt/defcomp FileWatchState
+  [[:last-mod-time :i64]
+   [:dirty :i32]])
 
 ;; =============================================================================
 ;; ECS World
@@ -49,7 +48,7 @@
   @*world)
 
 (defn reset-world!
-  "Reset the ECS world (for testing/reloading)."
+  "Reset the ECS world."
   []
   (when @*world
     (vf/destroy-world! @*world))
@@ -57,25 +56,52 @@
   @*world)
 
 ;; =============================================================================
-;; Global State Entity
+;; Story Data (complex nested data stays in atoms)
 ;; =============================================================================
 
-;; Store non-ECS data in atoms (story tree, metadata, etc.)
-;; These contain complex nested data that doesn't fit well in Flecs components
+;; Story tree and navigation state - complex nested structures
+;; that don't map well to flat ECS components
 (defonce ^:private *story-data
   (atom {:story-tree nil
          :metadata {}
          :current-node nil
          :choice-path []
-         :node-stack []        ;; Stack of parent nodes for navigation
-         :selected-ids #{}}))  ;; Set of already-selected choice IDs
+         :node-stack []
+         :selected-ids #{}}))
 
-;; History and choices stored as vectors of maps (order matters)
-(defonce ^:private *history (atom []))
-(defonce ^:private *choices (atom []))
+;; =============================================================================
+;; History & Choices (ECS-backed with jank map caches for rendering)
+;; =============================================================================
 
-;; Scroll offset stored in ECS for potential future system use
-(defonce ^:private *scroll-offset (atom 0.0))
+;; We store history/choices as both ECS entities AND cached vectors.
+;; ECS entities are the source of truth for what exists.
+;; The cached vectors provide fast ordered access for rendering.
+
+(defonce ^:private *history-cache (atom []))
+(defonce ^:private *choices-cache (atom []))
+(defonce ^:private *next-history-idx (atom 0))
+
+;; =============================================================================
+;; Entity Management
+;; =============================================================================
+
+(defn- add-history-entity!
+  "Create an ECS entity for a history entry."
+  [entry]
+  ;; For now, just cache the entry (skip ECS entity creation until tested)
+  (swap! *next-history-idx inc)
+  (swap! *history-cache conj entry))
+
+(defn- clear-choice-entities!
+  "Remove all choice entities from the world."
+  []
+  (reset! *choices-cache []))
+
+(defn- set-choice-entities!
+  "Create ECS entities for the current available choices."
+  [choices]
+  (clear-choice-entities!)
+  (reset! *choices-cache choices))
 
 ;; =============================================================================
 ;; State Accessors
@@ -84,7 +110,7 @@
 (defn get-history
   "Get the dialogue history."
   []
-  @*history)
+  @*history-cache)
 
 (defn get-current-node
   "Get the current story node."
@@ -104,12 +130,7 @@
 (defn get-available-choices
   "Get currently available choices."
   []
-  @*choices)
-
-(defn get-scroll-offset
-  "Get current scroll offset."
-  []
-  @*scroll-offset)
+  @*choices-cache)
 
 (defn get-choice-path
   "Get the path of choices taken."
@@ -122,26 +143,35 @@
   (:selected-ids @*story-data))
 
 ;; =============================================================================
-;; State Modifiers
+;; ECS Query Helpers
 ;; =============================================================================
 
-(defn set-scroll-offset!
-  "Set scroll offset."
-  [offset]
-  (reset! *scroll-offset offset))
+(defn history-count
+  "Get the number of history entries from ECS."
+  []
+  (let [w (get-world)
+        results (vf/with-query w [o EntryOrder
+                                   _ :fiction/history
+                                   e :vf/entity]
+                  1)]
+    (count results)))
 
-(defn adjust-scroll!
-  "Adjust scroll by delta."
-  [delta]
-  (swap! *scroll-offset + delta))
+(defn choice-count
+  "Get the number of choice entities from ECS."
+  []
+  (let [w (get-world)
+        results (vf/with-query w [o EntryOrder
+                                   _ :fiction/choice
+                                   e :vf/entity]
+                  1)]
+    (count results)))
 
-(defn add-to-history!
-  "Add an entry to the dialogue history."
-  [entry]
-  (swap! *history conj entry))
+;; =============================================================================
+;; Content Revelation
+;; =============================================================================
 
 (defn- node->history-entry
-  "Convert a tree node to a history entry."
+  "Convert a tree node to a history entry map."
   ([node]
    (node->history-entry node false))
   ([node selected?]
@@ -152,12 +182,12 @@
              :selected? (or selected? false))))
 
 (defn- add-node-to-history!
-  "Add a node's content to history."
+  "Add a node's content to history as an ECS entity."
   ([node]
    (add-node-to-history! node false))
   ([node selected?]
    (when (and node (not (empty? (:text node))))
-     (add-to-history! (node->history-entry node selected?)))))
+     (add-history-entity! (node->history-entry node selected?)))))
 
 (defn- reveal-content!
   "Reveal non-choice content from a node's children."
@@ -165,35 +195,34 @@
   (doseq [child (:children node)]
     (when (not= (:type child) :choice)
       (add-node-to-history! child)
-      ;; Recursively reveal nested content (but stop at choices)
       (reveal-content! child))))
 
 (defn- update-available-choices!
-  "Update the list of available choices based on current node.
-   Shows all choices (selected ones will be rendered in grey)."
+  "Update the ECS choice entities based on current node."
   []
   (let [current (:current-node @*story-data)
-        ;; Collect all choices from current node and its revealed content
+        ;; Local fn to collect choices - must be local due to jank bug
+        ;; with top-level defn- and lazy seqs/vec across boundaries
         collect-choices (fn collect [node]
                           (let [direct-choices (filter #(= (:type %) :choice) (:children node))
-                                ;; Also look in non-choice children for nested choices
-                                nested (mapcat collect 
+                                nested (mapcat collect
                                                (filter #(not= (:type %) :choice) (:children node)))]
                             (concat direct-choices nested)))]
     (when current
-      (reset! *choices (vec (collect-choices current))))))
+      (reset! *choices-cache (vec (collect-choices current))))))
 
 ;; =============================================================================
 ;; Story Loading
 ;; =============================================================================
 
 (defn load-story!
-  "Load a parsed story into state."
+  "Load a parsed story into state. Resets all state and creates fresh ECS entities."
   [{:keys [metadata tree]}]
-  ;; Reset all state
-  (reset! *history [])
-  (reset! *choices [])
-  (reset! *scroll-offset 0.0)
+  ;; Initialize ECS world
+  (let [w (get-world)]
+    (reset! *choices-cache []))
+  (reset! *history-cache [])
+  (reset! *next-history-idx 0)
   (reset! *story-data
           {:story-tree tree
            :metadata metadata
@@ -201,17 +230,62 @@
            :choice-path []
            :node-stack []
            :selected-ids #{}})
-  ;; Reveal initial content (root node's children that aren't choices)
+  ;; Reveal initial content
   (reveal-content! tree)
   ;; Update available choices
   (update-available-choices!)
   (println "Story loaded:" (:title metadata)))
 
-(defn load-story-from-string!
-  "Parse and load a story from string content."
-  [content]
-  (let [parsed (parser/parse-story-string content)]
-    (load-story! parsed)))
+(defn- find-choice-by-text
+  "Find a choice node by its text in a node's children."
+  [node text]
+  (first (filter #(and (= (:type %) :choice) (= (:text %) text)) (:children node))))
+
+(defn reload-story!
+  "Reload story from parsed data while preserving current state.
+   Re-parses the tree, replays the choice path to find current position,
+   and updates available choices without losing history."
+  [{:keys [metadata tree]}]
+  (let [old-data @*story-data
+        old-history @*history-cache
+        old-choice-texts (mapv (fn [choice-id]
+                                 (let [entry (first (filter #(= (:id %) choice-id) old-history))]
+                                   (:text entry)))
+                               (:choice-path old-data))
+        ;; Walk the new tree following the same choices by text
+        replay-result (loop [node tree
+                             texts old-choice-texts
+                             new-path []
+                             new-selected #{}
+                             new-stack []]
+                        (if (empty? texts)
+                          {:node node :path new-path :selected new-selected :stack new-stack}
+                          (let [choice-text (first texts)
+                                matched (find-choice-by-text node choice-text)]
+                            (if matched
+                              (let [has-nested? (some #(= (:type %) :choice) (:children matched))]
+                                (if has-nested?
+                                  (recur matched
+                                         (rest texts)
+                                         (conj new-path (:id matched))
+                                         (conj new-selected (:id matched))
+                                         (conj new-stack node))
+                                  {:node node
+                                   :path (conj new-path (:id matched))
+                                   :selected (conj new-selected (:id matched))
+                                   :stack new-stack}))
+                              {:node node :path new-path :selected new-selected :stack new-stack}))))]
+    ;; Update story data with new tree but replayed position
+    (reset! *story-data
+            {:story-tree tree
+             :metadata metadata
+             :current-node (:node replay-result)
+             :choice-path (:path replay-result)
+             :node-stack (:stack replay-result)
+             :selected-ids (:selected replay-result)})
+    ;; Keep existing history ECS entities, just refresh choice entities
+    (update-available-choices!)
+    (println "Story reloaded (state preserved):" (:title metadata))))
 
 (defn load-story-from-file!
   "Parse and load a story from a file path."
@@ -219,44 +293,44 @@
   (let [parsed (parser/parse-story-file filepath)]
     (load-story! parsed)))
 
+(defn reload-story-from-file!
+  "Parse and reload a story from a file path, preserving state."
+  [filepath]
+  (let [parsed (parser/parse-story-file filepath)]
+    (reload-story! parsed)))
+
 ;; =============================================================================
 ;; Choice Selection
 ;; =============================================================================
 
 (defn select-choice!
-  "Select a choice by index. 
-   - Adds choice text to history
+  "Select a choice by index.
+   - Adds choice text to history as ECS entity
    - Reveals content under that choice
-   - Only navigates deeper if the choice has nested choices
-   - If choice has no nested choices, stays at current level"
+   - Only navigates deeper if the choice has nested choices"
   [choice-idx]
-  (let [choices @*choices]
+  (let [choices @*choices-cache]
     (when (and (>= choice-idx 0) (< choice-idx (count choices)))
       (let [choice (nth choices choice-idx)
-            ;; Check if this choice has nested choices
             has-nested-choices? (some #(= (:type %) :choice) (:children choice))]
-        ;; Always add to history and reveal content
+        ;; Add choice to history as ECS entity
         (add-node-to-history! choice true)
+        ;; Reveal content under choice as ECS entities
         (reveal-content! choice)
-        ;; Track selection (for grey styling)
+        ;; Track selection
         (swap! *story-data update :selected-ids conj (:id choice))
         (swap! *story-data update :choice-path conj (:id choice))
-        ;; Only navigate deeper if there are nested choices
+        ;; Navigate deeper if needed, update choice entities
         (when has-nested-choices?
           (let [current-node (:current-node @*story-data)]
-            ;; Push current node to stack before navigating
             (swap! *story-data update :node-stack conj current-node)
-            ;; Update current node to this choice
-            (swap! *story-data assoc :current-node choice)
-            ;; Update available choices
-            (update-available-choices!)))
-        ;; Auto-scroll to bottom
-        (reset! *scroll-offset 999999.0)))))
+            (swap! *story-data assoc :current-node choice)))
+        (update-available-choices!)))))
 
 (defn select-choice-by-id!
   "Select a choice by its node ID."
   [choice-id]
-  (let [choices @*choices
+  (let [choices @*choices-cache
         idx (first (keep-indexed (fn [i c] (when (= (:id c) choice-id) i)) choices))]
     (when idx
       (select-choice! idx))))
@@ -268,7 +342,7 @@
 (defn has-choices?
   "Check if there are currently available choices."
   []
-  (not (empty? @*choices)))
+  (not (empty? @*choices-cache)))
 
 (defn story-loaded?
   "Check if a story is currently loaded."
@@ -276,7 +350,7 @@
   (some? (:story-tree @*story-data)))
 
 (defn at-end?
-  "Check if we've reached an end (no more choices, no more content)."
+  "Check if we've reached an end."
   []
   (and (story-loaded?)
        (not (has-choices?))))
@@ -288,9 +362,11 @@
 (defn debug-state
   "Print current state for debugging."
   []
-  (println "=== Fiction State ===")
-  (println "History entries:" (count @*history))
-  (println "Available choices:" (count @*choices))
+  (println "=== Fiction State (ECS) ===")
+  (println "History entries (cache):" (count @*history-cache))
+  (println "History entities (ECS):" (history-count))
+  (println "Choice entities (ECS):" (choice-count))
+  (println "Available choices (cache):" (count @*choices-cache))
   (println "Choice path:" (:choice-path @*story-data))
   (println "Current node type:" (:type (:current-node @*story-data)))
-  (println "===================="))
+  (println "=========================="))

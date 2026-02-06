@@ -47,7 +47,7 @@
           (recur (inc i) (conj lines (str (engine/get_file_line (cpp/int. i))))))))))
 
 (defn- count-leading-spaces
-  "Count leading spaces/tabs in a string. Tab = 1 unit."
+  "Count leading whitespace in a string. Tab = 4 spaces for consistent indentation."
   [s]
   (loop [i 0
          depth 0]
@@ -56,7 +56,7 @@
       (let [c (nth s i)]
         (cond
           (= c \space) (recur (inc i) (inc depth))
-          (= c \tab) (recur (inc i) (inc depth))
+          (= c \tab) (recur (inc i) (+ depth 4))
           :else depth)))))
 
 (defn- parse-character-prefix
