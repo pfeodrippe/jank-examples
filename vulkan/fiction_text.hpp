@@ -19,6 +19,8 @@
 #include <fstream>
 #include <iostream>
 #include <cstring>
+#include <chrono>
+#include <sys/stat.h>
 
 // stb_truetype for proper font rendering
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -173,6 +175,43 @@ struct TextRenderer {
 };
 
 // =============================================================================
+// Speaker Name Particle Effect
+// =============================================================================
+
+struct SpeakerParticleQuad {
+    float x, y, w, h;       // Position and size in pixels
+    float r, g, b;           // Speaker color
+};
+
+struct ParticleRenderer {
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    
+    // Vertex buffer for particle quads (separate from text)
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+    void* vertexMapped = nullptr;
+    uint32_t maxVertices = 4096;
+    uint32_t vertexCount = 0;
+    
+    // Collected speaker name positions for this frame
+    std::vector<SpeakerParticleQuad> speakerQuads;
+    
+    // Time tracking for animation
+    std::chrono::steady_clock::time_point startTimePoint;
+    
+    bool initialized = false;
+};
+
+// Use inline global for JIT compatibility
+inline ParticleRenderer* g_particle_renderer = nullptr;
+
+inline ParticleRenderer*& get_particle_renderer() {
+    return g_particle_renderer;
+}
+
+// =============================================================================
 // ODR-safe global accessor
 // =============================================================================
 
@@ -216,6 +255,16 @@ inline BackgroundRenderer*& get_bg_renderer() {
 
 // Forward declaration for SPIRV loading
 inline std::vector<uint32_t> load_text_spirv(const std::string& path);
+
+// Forward declarations for pipeline creation and hot reload
+inline VkPipeline create_pipeline(VkDevice device,
+                                   const std::string& shaderDir,
+                                   const std::string& shaderName,
+                                   VkPipelineLayout pipelineLayout,
+                                   VkRenderPass renderPass,
+                                   bool alphaBlend);
+inline void watch_shader(const std::string& name, bool alphaBlend,
+                          VkPipeline* pipeline, VkPipelineLayout* pipelineLayout);
 
 inline bool load_background_image(const char* filepath,
                                    VkDevice device,
@@ -446,25 +495,6 @@ inline bool load_background_image(const char* filepath,
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     
     // Load background shaders and create pipeline
-    auto vertSpirv = load_text_spirv(shaderDir + "/bg.vert.spv");
-    auto fragSpirv = load_text_spirv(shaderDir + "/bg.frag.spv");
-    
-    if (vertSpirv.empty() || fragSpirv.empty()) {
-        std::cerr << "[fiction] Failed to load bg shaders from " << shaderDir << std::endl;
-        return false;
-    }
-    
-    VkShaderModule vertModule, fragModule;
-    VkShaderModuleCreateInfo vertModInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    vertModInfo.codeSize = vertSpirv.size() * sizeof(uint32_t);
-    vertModInfo.pCode = vertSpirv.data();
-    vkCreateShaderModule(device, &vertModInfo, nullptr, &vertModule);
-    
-    VkShaderModuleCreateInfo fragModInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    fragModInfo.codeSize = fragSpirv.size() * sizeof(uint32_t);
-    fragModInfo.pCode = fragSpirv.data();
-    vkCreateShaderModule(device, &fragModInfo, nullptr, &fragModule);
-    
     // Push constant range
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -479,94 +509,15 @@ inline bool load_background_image(const char* filepath,
     plInfo.pPushConstantRanges = &pushRange;
     vkCreatePipelineLayout(device, &plInfo, nullptr, &bg->pipelineLayout);
     
-    // Shader stages
-    VkPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertModule;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragModule;
-    stages[1].pName = "main";
-    
-    // Same vertex format as text (reuse TextVertex)
-    VkVertexInputBindingDescription bindingDesc{};
-    bindingDesc.binding = 0;
-    bindingDesc.stride = sizeof(TextVertex);
-    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    
-    VkVertexInputAttributeDescription attrDescs[3] = {};
-    attrDescs[0].location = 0; attrDescs[0].format = VK_FORMAT_R32G32_SFLOAT; attrDescs[0].offset = offsetof(TextVertex, x);
-    attrDescs[1].location = 1; attrDescs[1].format = VK_FORMAT_R32G32_SFLOAT; attrDescs[1].offset = offsetof(TextVertex, u);
-    attrDescs[2].location = 2; attrDescs[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; attrDescs[2].offset = offsetof(TextVertex, r);
-    
-    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    vertexInput.vertexBindingDescriptionCount = 1;
-    vertexInput.pVertexBindingDescriptions = &bindingDesc;
-    vertexInput.vertexAttributeDescriptionCount = 3;
-    vertexInput.pVertexAttributeDescriptions = attrDescs;
-    
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    
-    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-    
-    VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    rasterizer.lineWidth = 1.0f;
-    
-    VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    
-    VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depthStencil.depthTestEnable = VK_FALSE;
-    depthStencil.depthWriteEnable = VK_FALSE;
-    
-    // No blending for background - it's opaque, fills the screen
-    VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.blendEnable = VK_FALSE;
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    
-    VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &blendAttachment;
-    
-    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
-    
-    VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = stages;
-    pipelineInfo.pVertexInputState = &vertexInput;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = bg->pipelineLayout;
-    pipelineInfo.renderPass = renderPass;
-    pipelineInfo.subpass = 0;
-    
-    VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                                 &pipelineInfo, nullptr, &bg->pipeline);
-    
-    vkDestroyShaderModule(device, vertModule, nullptr);
-    vkDestroyShaderModule(device, fragModule, nullptr);
-    
-    if (result != VK_SUCCESS) {
-        std::cerr << "[fiction] Failed to create bg pipeline" << std::endl;
+    // Use generic pipeline creator (no alpha blend for opaque background)
+    bg->pipeline = create_pipeline(device, shaderDir, "bg",
+                                    bg->pipelineLayout, renderPass, false);
+    if (bg->pipeline == VK_NULL_HANDLE) {
         return false;
     }
+    
+    // Register bg pipeline for hot reload
+    watch_shader("bg", false, &bg->pipeline, &bg->pipelineLayout);
     
     // Create vertex buffer for fullscreen quad (6 vertices)
     VkDeviceSize vbSize = 6 * sizeof(TextVertex);
@@ -690,6 +641,108 @@ inline void cleanup_bg_renderer() {
     get_bg_renderer() = nullptr;
 }
 
+// =============================================================================
+// Particle Renderer Init / Cleanup
+// =============================================================================
+
+inline bool init_particle_renderer(VkDevice device,
+                                    VkPhysicalDevice physicalDevice,
+                                    VkRenderPass renderPass,
+                                    const std::string& shaderDir) {
+    // Check shader files exist first
+    auto vertSpirv = load_text_spirv(shaderDir + "/particle.vert.spv");
+    auto fragSpirv = load_text_spirv(shaderDir + "/particle.frag.spv");
+    
+    if (vertSpirv.empty() || fragSpirv.empty()) {
+        std::cerr << "[fiction] Particle shaders not found in " << shaderDir
+                  << ", skipping particle renderer" << std::endl;
+        return false;
+    }
+    
+    auto* pr = new ParticleRenderer();
+    get_particle_renderer() = pr;
+    
+    // Record start time for animation
+    pr->startTimePoint = std::chrono::steady_clock::now();
+    
+    // Push constant range: vec2 screenSize + float time + float padding = 16 bytes
+    // Accessible from both vertex and fragment shaders
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushRange.offset = 0;
+    pushRange.size = 16;  // sizeof(vec2) + sizeof(float) + sizeof(float)
+    
+    // Pipeline layout — no descriptor sets (fully procedural shader)
+    VkPipelineLayoutCreateInfo plInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    plInfo.setLayoutCount = 0;
+    plInfo.pSetLayouts = nullptr;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pushRange;
+    vkCreatePipelineLayout(device, &plInfo, nullptr, &pr->pipelineLayout);
+    
+    // Use generic pipeline creator (alpha blend for particles)
+    pr->pipeline = create_pipeline(device, shaderDir, "particle",
+                                    pr->pipelineLayout, renderPass, true);
+    if (pr->pipeline == VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(device, pr->pipelineLayout, nullptr);
+        delete pr;
+        get_particle_renderer() = nullptr;
+        return false;
+    }
+    
+    // Create vertex buffer (host-visible, persistently mapped)
+    VkDeviceSize vbSize = pr->maxVertices * sizeof(TextVertex);
+    
+    VkBufferCreateInfo vbInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    vbInfo.size = vbSize;
+    vbInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    vbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(device, &vbInfo, nullptr, &pr->vertexBuffer);
+    
+    VkMemoryRequirements vbMemReq;
+    vkGetBufferMemoryRequirements(device, pr->vertexBuffer, &vbMemReq);
+    
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+    uint32_t vbMemType = 0;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((vbMemReq.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            vbMemType = i;
+            break;
+        }
+    }
+    
+    VkMemoryAllocateInfo vbAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    vbAllocInfo.allocationSize = vbMemReq.size;
+    vbAllocInfo.memoryTypeIndex = vbMemType;
+    vkAllocateMemory(device, &vbAllocInfo, nullptr, &pr->vertexMemory);
+    vkBindBufferMemory(device, pr->vertexBuffer, pr->vertexMemory, 0);
+    vkMapMemory(device, pr->vertexMemory, 0, vbSize, 0, &pr->vertexMapped);
+    
+    pr->initialized = true;
+    std::cout << "[fiction] Particle renderer initialized" << std::endl;
+    return true;
+}
+
+inline void cleanup_particle_renderer() {
+    auto* pr = get_particle_renderer();
+    if (!pr) return;
+    
+    auto device = fiction_engine::get_device();
+    if (pr->vertexBuffer) {
+        vkUnmapMemory(device, pr->vertexMemory);
+        vkDestroyBuffer(device, pr->vertexBuffer, nullptr);
+        vkFreeMemory(device, pr->vertexMemory, nullptr);
+    }
+    if (pr->pipeline) vkDestroyPipeline(device, pr->pipeline, nullptr);
+    if (pr->pipelineLayout) vkDestroyPipelineLayout(device, pr->pipelineLayout, nullptr);
+    
+    delete pr;
+    get_particle_renderer() = nullptr;
+}
+
 // Forward declaration
 inline void cleanup_text_renderer();
 
@@ -716,7 +769,7 @@ inline uint32_t find_text_memory_type(TextRenderer* tr, uint32_t typeFilter, VkM
 
 // Default font path - can be overridden
 inline std::string& get_font_path() {
-    static std::string path = "vendor/imgui/misc/fonts/Roboto-Medium.ttf";
+    static std::string path = "fonts/CrimsonPro-Regular.ttf";
     return path;
 }
 
@@ -1134,8 +1187,25 @@ inline float render_dialogue_entry(TextRenderer* tr,
     
     // Render speaker name if present
     if (!entry.speaker.empty()) {
-        render_text_string(tr, entry.speaker, panelStartX, currentY, scale,
+        float speakerEndX = render_text_string(tr, entry.speaker, panelStartX, currentY, scale,
                           entry.speakerR, entry.speakerG, entry.speakerB, 1.0f);
+        
+        // Small painted square to the left of speaker name
+        auto* pr = get_particle_renderer();
+        if (pr && pr->initialized) {
+            float size = lineH * 0.45f;  // Small square
+            float gap = 8.0f;
+            SpeakerParticleQuad spq;
+            spq.x = panelStartX - gap - size;
+            spq.y = currentY + (lineH - size) * 0.5f;  // Vertically centered
+            spq.w = size;
+            spq.h = size;
+            spq.r = entry.speakerR;
+            spq.g = entry.speakerG;
+            spq.b = entry.speakerB;
+            pr->speakerQuads.push_back(spq);
+        }
+        
         currentY += lineH;
     }
     
@@ -1249,6 +1319,34 @@ inline void render_dialogue_panel(TextRenderer* tr,
     
     // Update max scroll
     tr->maxScroll = std::max(0.0f, y + tr->scrollOffset - tr->screenHeight + 100);
+    
+    // Generate particle quad vertices from collected speaker positions
+    auto* pr = get_particle_renderer();
+    if (pr && pr->initialized && !pr->speakerQuads.empty()) {
+        pr->vertexCount = 0;
+        TextVertex* pverts = (TextVertex*)pr->vertexMapped;
+        
+        for (const auto& spq : pr->speakerQuads) {
+            if (pr->vertexCount + 6 > pr->maxVertices) break;
+            
+            // Two triangles covering the speaker name quad
+            // UV: 0-1 across the quad, color = speaker RGB
+            float x0 = spq.x, y0 = spq.y;
+            float x1 = spq.x + spq.w, y1 = spq.y + spq.h;
+            float r = spq.r, g = spq.g, b = spq.b, a = 1.0f;
+            
+            // Triangle 1: top-left, top-right, bottom-left
+            pverts[pr->vertexCount + 0] = {x0, y0, 0.0f, 0.0f, r, g, b, a};
+            pverts[pr->vertexCount + 1] = {x1, y0, 1.0f, 0.0f, r, g, b, a};
+            pverts[pr->vertexCount + 2] = {x0, y1, 0.0f, 1.0f, r, g, b, a};
+            // Triangle 2: top-right, bottom-right, bottom-left
+            pverts[pr->vertexCount + 3] = {x1, y0, 1.0f, 0.0f, r, g, b, a};
+            pverts[pr->vertexCount + 4] = {x1, y1, 1.0f, 1.0f, r, g, b, a};
+            pverts[pr->vertexCount + 5] = {x0, y1, 0.0f, 1.0f, r, g, b, a};
+            
+            pr->vertexCount += 6;
+        }
+    }
 }
 
 // =============================================================================
@@ -1269,32 +1367,267 @@ inline std::vector<uint32_t> load_text_spirv(const std::string& path) {
 }
 
 // =============================================================================
+// Shader Hot Reload System
+// =============================================================================
+// Polls .spv file modification times each frame. When a shader changes,
+// recreates the affected pipeline on the fly. Works for bg, text, and particle
+// pipelines. To use: edit .vert/.frag source, run `make build-fiction-shaders`
+// (or have a file watcher do it), and the running app picks up the new .spv.
+
+// Generic pipeline creation: one function for all pipelines.
+// Only the things that differ are parameterized:
+//   - shader name (vert/frag .spv prefix)
+//   - pipeline layout (already created, owns push constants + descriptor sets)
+//   - render pass
+//   - alpha blending on/off
+inline VkPipeline create_pipeline(VkDevice device,
+                                   const std::string& shaderDir,
+                                   const std::string& shaderName,
+                                   VkPipelineLayout pipelineLayout,
+                                   VkRenderPass renderPass,
+                                   bool alphaBlend) {
+    auto vertSpirv = load_text_spirv(shaderDir + "/" + shaderName + ".vert.spv");
+    auto fragSpirv = load_text_spirv(shaderDir + "/" + shaderName + ".frag.spv");
+    if (vertSpirv.empty() || fragSpirv.empty()) {
+        std::cerr << "[fiction] Failed to load " << shaderName << " shaders" << std::endl;
+        return VK_NULL_HANDLE;
+    }
+    
+    VkShaderModule vertModule, fragModule;
+    VkShaderModuleCreateInfo vertModInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    vertModInfo.codeSize = vertSpirv.size() * sizeof(uint32_t);
+    vertModInfo.pCode = vertSpirv.data();
+    vkCreateShaderModule(device, &vertModInfo, nullptr, &vertModule);
+    
+    VkShaderModuleCreateInfo fragModInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    fragModInfo.codeSize = fragSpirv.size() * sizeof(uint32_t);
+    fragModInfo.pCode = fragSpirv.data();
+    vkCreateShaderModule(device, &fragModInfo, nullptr, &fragModule);
+    
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertModule;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragModule;
+    stages[1].pName = "main";
+    
+    VkVertexInputBindingDescription bindingDesc{};
+    bindingDesc.binding = 0;
+    bindingDesc.stride = sizeof(TextVertex);
+    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    
+    VkVertexInputAttributeDescription attrDescs[3] = {};
+    attrDescs[0].location = 0; attrDescs[0].format = VK_FORMAT_R32G32_SFLOAT; attrDescs[0].offset = offsetof(TextVertex, x);
+    attrDescs[1].location = 1; attrDescs[1].format = VK_FORMAT_R32G32_SFLOAT; attrDescs[1].offset = offsetof(TextVertex, u);
+    attrDescs[2].location = 2; attrDescs[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; attrDescs[2].offset = offsetof(TextVertex, r);
+    
+    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &bindingDesc;
+    vertexInput.vertexAttributeDescriptionCount = 3;
+    vertexInput.pVertexAttributeDescriptions = attrDescs;
+    
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    
+    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewportState.viewportCount = 1; viewportState.scissorCount = 1;
+    
+    VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.lineWidth = 1.0f;
+    
+    VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depthStencil.depthTestEnable = VK_FALSE; depthStencil.depthWriteEnable = VK_FALSE;
+    
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    if (alphaBlend) {
+        blendAttachment.blendEnable = VK_TRUE;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    } else {
+        blendAttachment.blendEnable = VK_FALSE;
+    }
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    
+    VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    colorBlending.attachmentCount = 1; colorBlending.pAttachments = &blendAttachment;
+    
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamicState.dynamicStateCount = 2; dynamicState.pDynamicStates = dynamicStates;
+    
+    VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipelineInfo.stageCount = 2; pipelineInfo.pStages = stages;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.renderPass = renderPass;
+    pipelineInfo.subpass = 0;
+    
+    VkPipeline pipeline;
+    VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    
+    vkDestroyShaderModule(device, vertModule, nullptr);
+    vkDestroyShaderModule(device, fragModule, nullptr);
+    
+    if (result != VK_SUCCESS) {
+        std::cerr << "[fiction] Failed to create " << shaderName << " pipeline" << std::endl;
+        return VK_NULL_HANDLE;
+    }
+    
+    std::cout << "[fiction] Pipeline '" << shaderName << "' created OK" << std::endl;
+    return pipeline;
+}
+
+// Swap an old pipeline for a newly created one. Returns true on success.
+inline bool hot_reload_pipeline(VkDevice device,
+                                 const std::string& shaderDir,
+                                 const std::string& shaderName,
+                                 VkPipelineLayout pipelineLayout,
+                                 VkRenderPass renderPass,
+                                 bool alphaBlend,
+                                 VkPipeline& outPipeline) {
+    VkPipeline newPipeline = create_pipeline(device, shaderDir, shaderName,
+                                              pipelineLayout, renderPass, alphaBlend);
+    if (newPipeline == VK_NULL_HANDLE) return false;
+    
+    if (outPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, outPipeline, nullptr);
+    }
+    outPipeline = newPipeline;
+    return true;
+}
+
+// =============================================================================
+// Shader File Watching
+// =============================================================================
+
+struct ShaderWatch {
+    std::string name;           // e.g. "bg", "text", "particle"
+    time_t vertModTime = 0;
+    time_t fragModTime = 0;
+    bool alphaBlend;            // pipeline blend mode
+    // Pointers to the pipeline and layout to hot-swap
+    VkPipeline* pipeline = nullptr;
+    VkPipelineLayout* pipelineLayout = nullptr;
+};
+
+struct ShaderHotReload {
+    std::vector<ShaderWatch> watches;
+    std::string shaderDir;
+    float pollInterval = 0.5f;
+    std::chrono::steady_clock::time_point lastPollTime;
+    bool initialized = false;
+};
+
+inline ShaderHotReload* g_shader_hot_reload = nullptr;
+
+inline ShaderHotReload*& get_shader_hot_reload() {
+    return g_shader_hot_reload;
+}
+
+inline time_t get_file_mod_time_shader(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        return st.st_mtime;
+    }
+    return 0;
+}
+
+// Register a shader pair for hot reload watching.
+// Call after the pipeline + layout are created.
+inline void watch_shader(const std::string& name, bool alphaBlend,
+                          VkPipeline* pipeline, VkPipelineLayout* pipelineLayout) {
+    auto* hr = get_shader_hot_reload();
+    if (!hr) return;
+    
+    ShaderWatch w;
+    w.name = name;
+    w.alphaBlend = alphaBlend;
+    w.pipeline = pipeline;
+    w.pipelineLayout = pipelineLayout;
+    w.vertModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".vert.spv");
+    w.fragModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".frag.spv");
+    hr->watches.push_back(w);
+}
+
+inline void init_shader_hot_reload(const std::string& shaderDir) {
+    auto* hr = new ShaderHotReload();
+    get_shader_hot_reload() = hr;
+    hr->shaderDir = shaderDir;
+    hr->lastPollTime = std::chrono::steady_clock::now();
+    hr->initialized = true;
+    std::cout << "[fiction] Shader hot reload initialized, watching " << shaderDir << std::endl;
+}
+
+// Call each frame to check for shader changes
+inline void poll_shader_hot_reload() {
+    auto* hr = get_shader_hot_reload();
+    if (!hr || !hr->initialized) return;
+    
+    auto now = std::chrono::steady_clock::now();
+    float elapsed = std::chrono::duration<float>(now - hr->lastPollTime).count();
+    if (elapsed < hr->pollInterval) return;
+    hr->lastPollTime = now;
+    
+    auto device = fiction_engine::get_device();
+    auto renderPass = fiction_engine::get_render_pass();
+    bool anyChanged = false;
+    
+    for (auto& w : hr->watches) {
+        time_t newVert = get_file_mod_time_shader(hr->shaderDir + "/" + w.name + ".vert.spv");
+        time_t newFrag = get_file_mod_time_shader(hr->shaderDir + "/" + w.name + ".frag.spv");
+        
+        if ((newVert != w.vertModTime && newVert != 0) ||
+            (newFrag != w.fragModTime && newFrag != 0)) {
+            if (!anyChanged) {
+                // Wait idle once before any pipeline recreation
+                vkDeviceWaitIdle(device);
+                anyChanged = true;
+            }
+            
+            std::cout << "[fiction] Hot reload: " << w.name << " shaders changed" << std::endl;
+            hot_reload_pipeline(device, hr->shaderDir, w.name,
+                                *w.pipelineLayout, renderPass, w.alphaBlend,
+                                *w.pipeline);
+            w.vertModTime = newVert;
+            w.fragModTime = newFrag;
+        }
+    }
+}
+
+inline void cleanup_shader_hot_reload() {
+    auto* hr = get_shader_hot_reload();
+    if (!hr) return;
+    delete hr;
+    get_shader_hot_reload() = nullptr;
+}
+
+// =============================================================================
 // Create graphics pipeline for text rendering
 // =============================================================================
 
 inline bool create_text_pipeline(TextRenderer* tr, const std::string& shaderDir) {
-    // Load pre-compiled SPIR-V shaders
-    auto vertSpirv = load_text_spirv(shaderDir + "/text.vert.spv");
-    auto fragSpirv = load_text_spirv(shaderDir + "/text.frag.spv");
-    
-    if (vertSpirv.empty() || fragSpirv.empty()) {
-        std::cerr << "[fiction] Failed to load text shaders from " << shaderDir << std::endl;
-        return false;
-    }
-    
-    // Create shader modules
-    VkShaderModule vertModule, fragModule;
-    
-    VkShaderModuleCreateInfo vertInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    vertInfo.codeSize = vertSpirv.size() * sizeof(uint32_t);
-    vertInfo.pCode = vertSpirv.data();
-    vkCreateShaderModule(tr->device, &vertInfo, nullptr, &vertModule);
-    
-    VkShaderModuleCreateInfo fragInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    fragInfo.codeSize = fragSpirv.size() * sizeof(uint32_t);
-    fragInfo.pCode = fragSpirv.data();
-    vkCreateShaderModule(tr->device, &fragInfo, nullptr, &fragModule);
-    
     // Create descriptor set layout (binding 0 = font atlas sampler)
     VkDescriptorSetLayoutBinding samplerBinding{};
     samplerBinding.binding = 0;
@@ -1353,122 +1686,13 @@ inline bool create_text_pipeline(TextRenderer* tr, const std::string& shaderDir)
     pipelineLayoutInfo.pPushConstantRanges = &pushRange;
     vkCreatePipelineLayout(tr->device, &pipelineLayoutInfo, nullptr, &tr->pipelineLayout);
     
-    // Shader stages
-    VkPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertModule;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragModule;
-    stages[1].pName = "main";
-    
-    // Vertex input: position (vec2), texcoord (vec2), color (vec4)
-    VkVertexInputBindingDescription bindingDesc{};
-    bindingDesc.binding = 0;
-    bindingDesc.stride = sizeof(TextVertex);
-    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    
-    VkVertexInputAttributeDescription attrDescs[3] = {};
-    // Position
-    attrDescs[0].location = 0;
-    attrDescs[0].binding = 0;
-    attrDescs[0].format = VK_FORMAT_R32G32_SFLOAT;
-    attrDescs[0].offset = offsetof(TextVertex, x);
-    // TexCoord
-    attrDescs[1].location = 1;
-    attrDescs[1].binding = 0;
-    attrDescs[1].format = VK_FORMAT_R32G32_SFLOAT;
-    attrDescs[1].offset = offsetof(TextVertex, u);
-    // Color
-    attrDescs[2].location = 2;
-    attrDescs[2].binding = 0;
-    attrDescs[2].format = VK_FORMAT_R32G32B32A32_SFLOAT;
-    attrDescs[2].offset = offsetof(TextVertex, r);
-    
-    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    vertexInput.vertexBindingDescriptionCount = 1;
-    vertexInput.pVertexBindingDescriptions = &bindingDesc;
-    vertexInput.vertexAttributeDescriptionCount = 3;
-    vertexInput.pVertexAttributeDescriptions = attrDescs;
-    
-    // Input assembly
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    
-    // Viewport/scissor (dynamic)
-    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-    
-    // Rasterizer
-    VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    rasterizer.lineWidth = 1.0f;
-    
-    // Multisampling
-    VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    
-    // Depth stencil (disabled for 2D text overlay)
-    VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depthStencil.depthTestEnable = VK_FALSE;
-    depthStencil.depthWriteEnable = VK_FALSE;
-    
-    // Blending (alpha blending for text)
-    VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.blendEnable = VK_TRUE;
-    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    
-    VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &blendAttachment;
-    
-    // Dynamic state
-    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
-    
-    // Create pipeline
-    VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = stages;
-    pipelineInfo.pVertexInputState = &vertexInput;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = tr->pipelineLayout;
-    pipelineInfo.renderPass = tr->renderPass;
-    pipelineInfo.subpass = 0;
-    
-    VkResult result = vkCreateGraphicsPipelines(tr->device, VK_NULL_HANDLE, 1, 
-                                                 &pipelineInfo, nullptr, &tr->pipeline);
-    
-    // Cleanup shader modules
-    vkDestroyShaderModule(tr->device, vertModule, nullptr);
-    vkDestroyShaderModule(tr->device, fragModule, nullptr);
-    
-    if (result != VK_SUCCESS) {
-        std::cerr << "[fiction] Failed to create text pipeline" << std::endl;
+    // Use generic pipeline creator (alpha blend for text)
+    tr->pipeline = create_pipeline(tr->device, shaderDir, "text",
+                                    tr->pipelineLayout, tr->renderPass, true);
+    if (tr->pipeline == VK_NULL_HANDLE) {
         return false;
     }
     
-    std::cout << "[fiction] Text pipeline created successfully" << std::endl;
     return true;
 }
 
@@ -1693,12 +1917,55 @@ copy_to_gpu:
 }
 
 // =============================================================================
+// Render particles to command buffer
+// =============================================================================
+
+inline void record_particle_commands(VkCommandBuffer cmd) {
+    auto* pr = get_particle_renderer();
+    auto* tr = get_text_renderer();
+    if (!pr || !pr->initialized || !tr || pr->vertexCount == 0) return;
+    
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->pipeline);
+    
+    // Push constants: {screenWidth, screenHeight, elapsedTime, padding}
+    float elapsed = std::chrono::duration<float>(
+        std::chrono::steady_clock::now() - pr->startTimePoint).count();
+    float pushData[4] = {tr->screenWidth, tr->screenHeight, elapsed, 0.0f};
+    vkCmdPushConstants(cmd, pr->pipelineLayout,
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                        0, sizeof(pushData), pushData);
+    
+    VkViewport viewport{};
+    viewport.width = tr->screenWidth;
+    viewport.height = tr->screenHeight;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    
+    VkRect2D scissor{};
+    scissor.extent = {(uint32_t)tr->screenWidth, (uint32_t)tr->screenHeight};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &pr->vertexBuffer, &offset);
+    vkCmdDraw(cmd, pr->vertexCount, 1, 0, 0);
+    
+    // Clear speaker quads for next frame
+    pr->speakerQuads.clear();
+}
+
+// =============================================================================
 // Render text to command buffer
 // =============================================================================
 
 inline void record_text_commands(VkCommandBuffer cmd) {
-    // Draw background first (behind text)
+    // Poll for shader hot reload changes
+    poll_shader_hot_reload();
+    
+    // Draw background first (behind everything)
     record_bg_commands(cmd);
+    
+    // Draw particles (between bg and text)
+    record_particle_commands(cmd);
     
     TextRenderer* tr = get_text_renderer();
     if (!tr || !tr->pipeline || tr->vertexCount == 0) return;
@@ -1784,6 +2051,9 @@ inline bool init_text_renderer(VkDevice device,
     tr->screenWidth = screenWidth;
     tr->screenHeight = screenHeight;
     
+    // Initialize shader hot reload BEFORE creating any pipelines
+    init_shader_hot_reload(shaderDir);
+    
     // Create font atlas (Vulkan resources)
     create_simple_font_atlas(tr);
     
@@ -1799,6 +2069,16 @@ inline bool init_text_renderer(VkDevice device,
         return false;
     }
     
+    // Register text pipeline for hot reload
+    watch_shader("text", true, &tr->pipeline, &tr->pipelineLayout);
+    
+    // Initialize particle renderer (optional — continues if shaders missing)
+    init_particle_renderer(device, physicalDevice, renderPass, shaderDir);
+    auto* pr = get_particle_renderer();
+    if (pr && pr->initialized) {
+        watch_shader("particle", true, &pr->pipeline, &pr->pipelineLayout);
+    }
+    
     tr->initialized = true;
     
     // Register render callback with the engine
@@ -1809,7 +2089,9 @@ inline bool init_text_renderer(VkDevice device,
 }
 
 inline void cleanup_text_renderer() {
-    // Clean up background renderer first
+    // Clean up sub-renderers and hot reload first
+    cleanup_particle_renderer();
+    cleanup_shader_hot_reload();
     cleanup_bg_renderer();
     
     TextRenderer* tr = get_text_renderer();

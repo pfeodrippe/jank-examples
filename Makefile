@@ -283,7 +283,7 @@ build-sdf-deps-standalone: $(SDF_ALL_OBJS) $(SHADERS_SPV) vulkan/libsdf_deps.$(S
 # ============================================================================
 
 # Fiction shaders
-FICTION_SHADERS_SRC = vulkan_fiction/text.vert vulkan_fiction/text.frag vulkan_fiction/bg.vert vulkan_fiction/bg.frag
+FICTION_SHADERS_SRC = vulkan_fiction/text.vert vulkan_fiction/text.frag vulkan_fiction/bg.vert vulkan_fiction/bg.frag vulkan_fiction/particle.vert vulkan_fiction/particle.frag
 FICTION_SHADERS_SPV = $(FICTION_SHADERS_SRC:.vert=.vert.spv) $(FICTION_SHADERS_SRC:.frag=.frag.spv)
 
 vulkan_fiction/%.vert.spv: vulkan_fiction/%.vert

@@ -56,6 +56,8 @@
   - [ ] wasm
   - [ ] audio
   - [ ] anims
+  - [ ] visuals
+    - [ ] text bg should move with it (e.g. scrolling)
 - [ ] ipad simple animation app
   - [x] gpu brush drawing
     - [x] draw
