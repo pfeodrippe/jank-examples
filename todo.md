@@ -51,7 +51,11 @@
   - [x] jit sim
   - [x] jit device
 - [ ] simple game
-  - [ ]
+  - [x] ui
+  - [x] bg
+  - [ ] wasm
+  - [ ] audio
+  - [ ] anims
 - [ ] ipad simple animation app
   - [x] gpu brush drawing
     - [x] draw

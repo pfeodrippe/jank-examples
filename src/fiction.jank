@@ -1,6 +1,6 @@
 (ns fiction
   "Disco Elysium-style narrative game.
-   
+
    Standalone Vulkan application with text rendering for
    dialogue and choices."
   (:refer-clojure :exclude [run!])
@@ -8,7 +8,8 @@
    [fiction.parser :as parser]
    [fiction.state :as state]
    [fiction.render :as text-render]
-   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]))
+   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]
+   [jank.nrepl-server.server :as server]))
 
 ;; =============================================================================
 ;; Story Loading
@@ -16,6 +17,24 @@
 
 ;; Path to the story file
 (def ^:private story-path "stories/la_voiture.md")
+
+;; Background image path
+(def ^:private bg-image-path "resources/fiction/bg-1.png")
+
+;; =============================================================================
+;; File Watching (for hot-reloading story files)
+;; =============================================================================
+
+(defonce ^:private *last-mod-time (atom 0))
+
+(defn- file-modified?
+  "Check if the story file has been modified since last check."
+  []
+  (let [current-time (engine/get_file_mod_time story-path)
+        last-time @*last-mod-time]
+    (reset! *last-mod-time current-time)
+    (and (not= last-time 0)
+         (not= current-time last-time))))
 
 (defn load-story!
   "Load the story from file."
@@ -44,15 +63,15 @@
         (println "Selected choice:" (inc choice-idx))
         (state/select-choice! choice-idx)
         (text-render/scroll-to-bottom!)))
-    
+
     ;; Up arrow - scroll up
     (= scancode SCANCODE_UP)
     (text-render/scroll! -30.0)
-    
+
     ;; Down arrow - scroll down
     (= scancode SCANCODE_DOWN)
     (text-render/scroll! 30.0)
-    
+
     :else nil))
 
 (defn process-scroll-event!
@@ -87,22 +106,22 @@
           ;; Key down (type 1)
           (= event-type 1)
           (process-key-event! (engine/get_event_scancode (cpp/int. i)))
-          
+
           ;; Scroll (type 3)
           (= event-type 3)
           (process-scroll-event! (engine/get_event_scroll_y (cpp/int. i)))
-          
+
           ;; Mouse motion (type 4)
           (= event-type 4)
           (process-mouse-motion! (engine/get_event_mouse_x (cpp/int. i))
                                   (engine/get_event_mouse_y (cpp/int. i)))
-          
+
           ;; Mouse button down (type 5)
           (= event-type 5)
           (process-mouse-click! (engine/get_event_mouse_x (cpp/int. i))
                                  (engine/get_event_mouse_y (cpp/int. i))
                                  (engine/get_event_mouse_button (cpp/int. i)))
-          
+
           ;; Key up (type 2), mouse up (type 6) - ignore for now
           :else nil)))))
 
@@ -124,23 +143,34 @@
   (println "  Up/Down  = Scroll dialogue")
   (println "  ESC      = Quit")
   (println "")
-  
+
   ;; Initialize Vulkan engine
   (when-not (engine/init "La Voiture")
     (println "ERROR: Failed to initialize Vulkan")
     false)
-  
+
   ;; Initialize text renderer (uses fiction_engine handles internally)
   (let [width (engine/get_screen_width)
         height (engine/get_screen_height)]
     (text-render/init! width height "vulkan_fiction"))
-  
+
+  ;; Load background image
+  (println "About to load background...")
+  (text-render/init-background! bg-image-path "vulkan_fiction")
+  (println "Background loaded.")
+
   ;; Load story from file
   (load-story!)
-  
-  ;; Set dark panel background
-  (text-render/set-panel-colors! 0.08 0.08 0.08 0.95)
-  
+
+  ;; Initialize file watcher timestamp
+  (reset! *last-mod-time (engine/get_file_mod_time story-path))
+
+  ;; No panel background - let bg-1.png show through directly
+  (text-render/set-panel-colors! 0.0 0.0 0.0 0.0)
+
+  ;; Position panel over the core black bar of bg-1.png (X: 60%-90%)
+  (text-render/set-panel-position! 0.61 0.26)
+
   (println "")
   (println "Ready. Make your choice...")
   (println "")
@@ -158,16 +188,21 @@
       (when-not (engine/should_close)
         ;; Poll SDL events (populates event queue)
         (engine/poll_events)
-        
+
         ;; Process events from queue (jank-side)
         (process-events!)
-        
+
+        ;; Check for story file changes (hot-reload)
+        (when (file-modified?)
+          (println "Story file changed, reloading...")
+          (load-story!))
+
         ;; Build text vertices and draw frame
         (text-render/build-dialogue-vertices!)
         (engine/draw_frame)
-        
+
         (recur)))
-    
+
     ;; Cleanup
     (text-render/cleanup!)
     (engine/cleanup)
@@ -175,4 +210,5 @@
     (println "Au revoir.")))
 
 (defn -main [& args]
+  (server/start-server {:port 5700})
   (run!))

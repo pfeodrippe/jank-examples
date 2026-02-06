@@ -24,6 +24,11 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
+// stb_image for background image loading (implementation in stb_impl.o)
+// Disable thread_local in stb_image - macOS JIT can't resolve _tlv_bootstrap
+#define STBI_NO_THREAD_LOCALS
+#include "stb_image.h"
+
 namespace fiction {
 
 // =============================================================================
@@ -154,7 +159,7 @@ struct TextRenderer {
     float maxScroll = 0.0f;
     
     // Colors
-    float bgR = 0.08f, bgG = 0.08f, bgB = 0.08f, bgA = 0.95f;
+    float bgR = 0.0f, bgG = 0.0f, bgB = 0.0f, bgA = 0.0f;
     
     // Mouse state
     float mouseX = 0.0f;
@@ -174,6 +179,515 @@ struct TextRenderer {
 inline TextRenderer*& get_text_renderer() {
     static TextRenderer* ptr = nullptr;
     return ptr;
+}
+
+// =============================================================================
+// Background Renderer
+// =============================================================================
+
+struct BackgroundRenderer {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+    VkImageView imageView = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    
+    // Vertex buffer for the fullscreen quad (6 vertices)
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+    
+    int imgWidth = 0;
+    int imgHeight = 0;
+    
+    bool initialized = false;
+};
+
+// Use cpp/raw-safe global for JIT compatibility (no static local TLV guards)
+inline BackgroundRenderer* g_bg_renderer = nullptr;
+
+inline BackgroundRenderer*& get_bg_renderer() {
+    return g_bg_renderer;
+}
+
+// Forward declaration for SPIRV loading
+inline std::vector<uint32_t> load_text_spirv(const std::string& path);
+
+inline bool load_background_image(const char* filepath,
+                                   VkDevice device,
+                                   VkPhysicalDevice physicalDevice,
+                                   VkQueue graphicsQueue,
+                                   VkCommandPool commandPool,
+                                   VkRenderPass renderPass,
+                                   float screenWidth,
+                                   float screenHeight,
+                                   const std::string& shaderDir) {
+    // Load image with stb_image
+    int w, h, channels;
+    unsigned char* pixels = stbi_load(filepath, &w, &h, &channels, 4); // Force RGBA
+    if (!pixels) {
+        std::cerr << "[fiction] Failed to load background: " << filepath << std::endl;
+        return false;
+    }
+    
+    std::cout << "[fiction] Background loaded: " << w << "x" << h << " (" << channels << " ch)" << std::endl;
+    
+    auto* bg = new BackgroundRenderer();
+    get_bg_renderer() = bg;
+    bg->imgWidth = w;
+    bg->imgHeight = h;
+    
+    // Create Vulkan image (RGBA8)
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.extent = {(uint32_t)w, (uint32_t)h, 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    
+    vkCreateImage(device, &imageInfo, nullptr, &bg->image);
+    
+    VkMemoryRequirements memReq;
+    vkGetImageMemoryRequirements(device, bg->image, &memReq);
+    
+    // Find device-local memory
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+    uint32_t memTypeIdx = 0;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((memReq.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            memTypeIdx = i;
+            break;
+        }
+    }
+    
+    VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = memTypeIdx;
+    vkAllocateMemory(device, &allocInfo, nullptr, &bg->imageMemory);
+    vkBindImageMemory(device, bg->image, bg->imageMemory, 0);
+    
+    // Create image view
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = bg->image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    vkCreateImageView(device, &viewInfo, nullptr, &bg->imageView);
+    
+    // Create sampler
+    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    vkCreateSampler(device, &samplerInfo, nullptr, &bg->sampler);
+    
+    // Upload pixel data via staging buffer
+    VkDeviceSize imageSize = w * h * 4;
+    
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+    
+    VkBufferCreateInfo bufInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufInfo.size = imageSize;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer);
+    
+    VkMemoryRequirements stagingReq;
+    vkGetBufferMemoryRequirements(device, stagingBuffer, &stagingReq);
+    
+    uint32_t stagingMemType = 0;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((stagingReq.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            stagingMemType = i;
+            break;
+        }
+    }
+    
+    VkMemoryAllocateInfo stagingAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    stagingAllocInfo.allocationSize = stagingReq.size;
+    stagingAllocInfo.memoryTypeIndex = stagingMemType;
+    vkAllocateMemory(device, &stagingAllocInfo, nullptr, &stagingMemory);
+    vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+    
+    void* data;
+    vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
+    memcpy(data, pixels, imageSize);
+    vkUnmapMemory(device, stagingMemory);
+    
+    stbi_image_free(pixels);
+    
+    // Transfer image layout and copy
+    VkCommandBuffer cmd;
+    VkCommandBufferAllocateInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdInfo.commandPool = commandPool;
+    cmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdInfo.commandBufferCount = 1;
+    vkAllocateCommandBuffers(device, &cmdInfo, &cmd);
+    
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    
+    // Transition to TRANSFER_DST
+    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = bg->image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+    
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, bg->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    
+    // Transition to SHADER_READ_ONLY
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    
+    vkEndCommandBuffer(cmd);
+    
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphicsQueue);
+    
+    vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+    
+    // Create descriptor set layout
+    VkDescriptorSetLayoutBinding samplerBinding{};
+    samplerBinding.binding = 0;
+    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerBinding.descriptorCount = 1;
+    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &samplerBinding;
+    vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &bg->descriptorSetLayout);
+    
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 1;
+    
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    vkCreateDescriptorPool(device, &poolInfo, nullptr, &bg->descriptorPool);
+    
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo dsAllocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    dsAllocInfo.descriptorPool = bg->descriptorPool;
+    dsAllocInfo.descriptorSetCount = 1;
+    dsAllocInfo.pSetLayouts = &bg->descriptorSetLayout;
+    vkAllocateDescriptorSets(device, &dsAllocInfo, &bg->descriptorSet);
+    
+    // Update descriptor set
+    VkDescriptorImageInfo descImageInfo{};
+    descImageInfo.sampler = bg->sampler;
+    descImageInfo.imageView = bg->imageView;
+    descImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = bg->descriptorSet;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &descImageInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    
+    // Load background shaders and create pipeline
+    auto vertSpirv = load_text_spirv(shaderDir + "/bg.vert.spv");
+    auto fragSpirv = load_text_spirv(shaderDir + "/bg.frag.spv");
+    
+    if (vertSpirv.empty() || fragSpirv.empty()) {
+        std::cerr << "[fiction] Failed to load bg shaders from " << shaderDir << std::endl;
+        return false;
+    }
+    
+    VkShaderModule vertModule, fragModule;
+    VkShaderModuleCreateInfo vertModInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    vertModInfo.codeSize = vertSpirv.size() * sizeof(uint32_t);
+    vertModInfo.pCode = vertSpirv.data();
+    vkCreateShaderModule(device, &vertModInfo, nullptr, &vertModule);
+    
+    VkShaderModuleCreateInfo fragModInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    fragModInfo.codeSize = fragSpirv.size() * sizeof(uint32_t);
+    fragModInfo.pCode = fragSpirv.data();
+    vkCreateShaderModule(device, &fragModInfo, nullptr, &fragModule);
+    
+    // Push constant range
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(float) * 2;
+    
+    // Pipeline layout
+    VkPipelineLayoutCreateInfo plInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &bg->descriptorSetLayout;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pushRange;
+    vkCreatePipelineLayout(device, &plInfo, nullptr, &bg->pipelineLayout);
+    
+    // Shader stages
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertModule;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragModule;
+    stages[1].pName = "main";
+    
+    // Same vertex format as text (reuse TextVertex)
+    VkVertexInputBindingDescription bindingDesc{};
+    bindingDesc.binding = 0;
+    bindingDesc.stride = sizeof(TextVertex);
+    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    
+    VkVertexInputAttributeDescription attrDescs[3] = {};
+    attrDescs[0].location = 0; attrDescs[0].format = VK_FORMAT_R32G32_SFLOAT; attrDescs[0].offset = offsetof(TextVertex, x);
+    attrDescs[1].location = 1; attrDescs[1].format = VK_FORMAT_R32G32_SFLOAT; attrDescs[1].offset = offsetof(TextVertex, u);
+    attrDescs[2].location = 2; attrDescs[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; attrDescs[2].offset = offsetof(TextVertex, r);
+    
+    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &bindingDesc;
+    vertexInput.vertexAttributeDescriptionCount = 3;
+    vertexInput.pVertexAttributeDescriptions = attrDescs;
+    
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    
+    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+    
+    VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.lineWidth = 1.0f;
+    
+    VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depthStencil.depthTestEnable = VK_FALSE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    
+    // No blending for background - it's opaque, fills the screen
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.blendEnable = VK_FALSE;
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    
+    VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &blendAttachment;
+    
+    VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+    
+    VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = stages;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = bg->pipelineLayout;
+    pipelineInfo.renderPass = renderPass;
+    pipelineInfo.subpass = 0;
+    
+    VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                                 &pipelineInfo, nullptr, &bg->pipeline);
+    
+    vkDestroyShaderModule(device, vertModule, nullptr);
+    vkDestroyShaderModule(device, fragModule, nullptr);
+    
+    if (result != VK_SUCCESS) {
+        std::cerr << "[fiction] Failed to create bg pipeline" << std::endl;
+        return false;
+    }
+    
+    // Create vertex buffer for fullscreen quad (6 vertices)
+    VkDeviceSize vbSize = 6 * sizeof(TextVertex);
+    
+    VkBufferCreateInfo vbInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    vbInfo.size = vbSize;
+    vbInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    vbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(device, &vbInfo, nullptr, &bg->vertexBuffer);
+    
+    VkMemoryRequirements vbMemReq;
+    vkGetBufferMemoryRequirements(device, bg->vertexBuffer, &vbMemReq);
+    
+    uint32_t vbMemType = 0;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((vbMemReq.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            vbMemType = i;
+            break;
+        }
+    }
+    
+    VkMemoryAllocateInfo vbAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    vbAllocInfo.allocationSize = vbMemReq.size;
+    vbAllocInfo.memoryTypeIndex = vbMemType;
+    vkAllocateMemory(device, &vbAllocInfo, nullptr, &bg->vertexMemory);
+    vkBindBufferMemory(device, bg->vertexBuffer, bg->vertexMemory, 0);
+    
+    // Fill vertex data - fullscreen quad covering entire screen
+    void* vbData;
+    vkMapMemory(device, bg->vertexMemory, 0, vbSize, 0, &vbData);
+    TextVertex* verts = (TextVertex*)vbData;
+    
+    float sw = screenWidth;
+    float sh = screenHeight;
+    
+    // Two triangles covering the full screen, UV mapped to full texture
+    // Triangle 1: top-left, top-right, bottom-left
+    verts[0] = {0,  0,  0, 0, 1, 1, 1, 1};
+    verts[1] = {sw, 0,  1, 0, 1, 1, 1, 1};
+    verts[2] = {0,  sh, 0, 1, 1, 1, 1, 1};
+    // Triangle 2: top-right, bottom-right, bottom-left
+    verts[3] = {sw, 0,  1, 0, 1, 1, 1, 1};
+    verts[4] = {sw, sh, 1, 1, 1, 1, 1, 1};
+    verts[5] = {0,  sh, 0, 1, 1, 1, 1, 1};
+    
+    vkUnmapMemory(device, bg->vertexMemory);
+    
+    bg->initialized = true;
+    std::cout << "[fiction] Background renderer initialized" << std::endl;
+    return true;
+}
+
+inline void record_bg_commands(VkCommandBuffer cmd) {
+    auto* bg = get_bg_renderer();
+    auto* tr = get_text_renderer();
+    if (!bg || !bg->initialized || !tr) return;
+    
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bg->pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bg->pipelineLayout,
+                            0, 1, &bg->descriptorSet, 0, nullptr);
+    
+    float screenSize[2] = {tr->screenWidth, tr->screenHeight};
+    vkCmdPushConstants(cmd, bg->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                       0, sizeof(screenSize), screenSize);
+    
+    VkViewport viewport{};
+    viewport.width = tr->screenWidth;
+    viewport.height = tr->screenHeight;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    
+    VkRect2D scissor{};
+    scissor.extent = {(uint32_t)tr->screenWidth, (uint32_t)tr->screenHeight};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &bg->vertexBuffer, &offset);
+    vkCmdDraw(cmd, 6, 1, 0, 0);
+}
+
+// Simple init that gets Vulkan handles from fiction_engine
+inline bool load_background_image_simple(const char* filepath,
+                                          const std::string& shaderDir = "vulkan_fiction") {
+    auto* tr = get_text_renderer();
+    if (!tr) {
+        std::cerr << "[fiction] Text renderer must be initialized before background" << std::endl;
+        return false;
+    }
+    return load_background_image(
+        filepath,
+        fiction_engine::get_device(),
+        fiction_engine::get_physical_device(),
+        fiction_engine::get_graphics_queue(),
+        fiction_engine::get_command_pool(),
+        fiction_engine::get_render_pass(),
+        tr->screenWidth,
+        tr->screenHeight,
+        shaderDir
+    );
+}
+
+inline void cleanup_bg_renderer() {
+    auto* bg = get_bg_renderer();
+    if (!bg) return;
+    
+    auto device = fiction_engine::get_device();
+    if (bg->vertexBuffer) { vkDestroyBuffer(device, bg->vertexBuffer, nullptr); }
+    if (bg->vertexMemory) { vkFreeMemory(device, bg->vertexMemory, nullptr); }
+    if (bg->pipeline) { vkDestroyPipeline(device, bg->pipeline, nullptr); }
+    if (bg->pipelineLayout) { vkDestroyPipelineLayout(device, bg->pipelineLayout, nullptr); }
+    if (bg->descriptorPool) { vkDestroyDescriptorPool(device, bg->descriptorPool, nullptr); }
+    if (bg->descriptorSetLayout) { vkDestroyDescriptorSetLayout(device, bg->descriptorSetLayout, nullptr); }
+    if (bg->sampler) { vkDestroySampler(device, bg->sampler, nullptr); }
+    if (bg->imageView) { vkDestroyImageView(device, bg->imageView, nullptr); }
+    if (bg->image) { vkDestroyImage(device, bg->image, nullptr); }
+    if (bg->imageMemory) { vkFreeMemory(device, bg->imageMemory, nullptr); }
+    
+    delete bg;
+    get_bg_renderer() = nullptr;
 }
 
 // Forward declaration
@@ -268,7 +782,7 @@ inline void create_simple_font_atlas(TextRenderer* tr) {
         }
         
         // Font size in pixels
-        float fontSize = 20.0f;
+        float fontSize = 32.0f;
         tr->font.scale = stbtt_ScaleForPixelHeight(&tr->font.fontInfo, fontSize);
         
         int ascent, descent, lineGap;
@@ -1183,6 +1697,9 @@ copy_to_gpu:
 // =============================================================================
 
 inline void record_text_commands(VkCommandBuffer cmd) {
+    // Draw background first (behind text)
+    record_bg_commands(cmd);
+    
     TextRenderer* tr = get_text_renderer();
     if (!tr || !tr->pipeline || tr->vertexCount == 0) return;
     
@@ -1284,7 +1801,7 @@ inline bool init_text_renderer(VkDevice device,
     
     tr->initialized = true;
     
-    // Register text render callback with the engine
+    // Register render callback with the engine
     fiction_engine::set_render_callback(record_text_commands);
     
     std::cout << "[fiction] Text renderer initialized" << std::endl;
@@ -1292,6 +1809,9 @@ inline bool init_text_renderer(VkDevice device,
 }
 
 inline void cleanup_text_renderer() {
+    // Clean up background renderer first
+    cleanup_bg_renderer();
+    
     TextRenderer* tr = get_text_renderer();
     if (!tr) return;
     
@@ -1346,6 +1866,13 @@ inline void set_panel_colors(float r, float g, float b, float a) {
     TextRenderer* tr = get_text_renderer();
     if (!tr) return;
     tr->bgR = r; tr->bgG = g; tr->bgB = b; tr->bgA = a;
+}
+
+inline void set_panel_position(float x, float width) {
+    TextRenderer* tr = get_text_renderer();
+    if (!tr) return;
+    tr->panelX = x;
+    tr->panelWidth = width;
 }
 
 inline uint32_t get_text_vertex_count() {

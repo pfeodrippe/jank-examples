@@ -21,6 +21,11 @@
    (cpp/float. (+ 0.0 screen-height))
    shader-dir))
 
+(defn init-background!
+  "Load background image. Must be called after init!."
+  [image-path shader-dir]
+  (fiction/load_background_image_simple image-path shader-dir))
+
 (defn cleanup!
   "Clean up text renderer resources."
   []
@@ -118,16 +123,16 @@
   []
   ;; Clear previous entries
   (fiction/clear_pending_entries)
-  
+
   ;; Add all history entries
   (doseq [entry (state/get-history)]
     (add-history-entry! entry))
-  
+
   ;; Add all available choices (marking already-selected ones)
   (let [selected-ids (state/get-selected-ids)]
     (doseq [choice (state/get-available-choices)]
       (add-choice-entry! choice selected-ids)))
-  
+
   ;; Build vertices from pending entries
   (fiction/build_dialogue_from_pending))
 
@@ -159,8 +164,15 @@
 (defn set-panel-colors!
   "Set the dialogue panel background color."
   [r g b a]
-  (fiction/set_panel_colors 
+  (fiction/set_panel_colors
    (cpp/float. r) (cpp/float. g) (cpp/float. b) (cpp/float. a)))
+
+(defn set-panel-position!
+  "Set the dialogue panel position and width (as fractions of screen width).
+   x: start position (0.0 = left, 1.0 = right)
+   width: panel width (0.0 to 1.0)"
+  [x width]
+  (fiction/set_panel_position (cpp/float. x) (cpp/float. width)))
 
 (defn get-vertex-count
   "Get the number of text vertices to render."

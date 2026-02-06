@@ -162,8 +162,8 @@ build-imgui-vulkan: $(IMGUI_VULKAN_OBJS)
 	@echo "ImGui Vulkan/SDL3 objects built."
 
 # STB implementation
-vulkan/stb_impl.o: vulkan/stb_impl.c vulkan/stb_image_write.h
-	$(CC) $(CFLAGS) -Ivulkan -c $< -o $@
+vulkan/stb_impl.o: vulkan/stb_impl.c vulkan/stb_image_write.h vulkan/stb_image.h
+	$(CC) $(CFLAGS) -Ivulkan -DSTBI_NO_THREAD_LOCALS -c $< -o $@
 
 # TinyGLTF implementation (for GLB export)
 vulkan/tinygltf_impl.o: vulkan/tinygltf_impl.cpp vulkan/marching_cubes.hpp
@@ -283,7 +283,7 @@ build-sdf-deps-standalone: $(SDF_ALL_OBJS) $(SHADERS_SPV) vulkan/libsdf_deps.$(S
 # ============================================================================
 
 # Fiction shaders
-FICTION_SHADERS_SRC = vulkan_fiction/text.vert vulkan_fiction/text.frag
+FICTION_SHADERS_SRC = vulkan_fiction/text.vert vulkan_fiction/text.frag vulkan_fiction/bg.vert vulkan_fiction/bg.frag
 FICTION_SHADERS_SPV = $(FICTION_SHADERS_SRC:.vert=.vert.spv) $(FICTION_SHADERS_SRC:.frag=.frag.spv)
 
 vulkan_fiction/%.vert.spv: vulkan_fiction/%.vert

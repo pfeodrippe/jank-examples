@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
 
 namespace fiction_engine {
 
@@ -721,6 +722,15 @@ inline const char* get_file_line(int index) {
         return "";
     }
     return lines[index].c_str();
+}
+
+// File modification time (for hot-reloading)
+inline int64_t get_file_mod_time(const char* path) {
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return static_cast<int64_t>(st.st_mtime);
+    }
+    return 0;
 }
 
 } // namespace fiction_engine
