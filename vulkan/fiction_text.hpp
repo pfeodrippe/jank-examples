@@ -21,6 +21,7 @@
 #include <cstring>
 #include <chrono>
 #include <sys/stat.h>
+#include <cstdio>  // For popen/pclose
 
 // stb_truetype for proper font rendering
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -823,6 +824,7 @@ inline std::vector<int32_t> get_required_codepoints() {
         0x2013, 0x2014,  // – —
         0x2018, 0x2019, 0x201C, 0x201D,  // ' ' " "
         0x2026,  // …
+        0x00A0,  //   (NO-BREAK SPACE - used with French guillemets)
         0x0394,  // Δ (Delta - used in story format #∆)
     };
     
@@ -1583,20 +1585,55 @@ inline time_t get_file_mod_time_shader(const std::string& path) {
     return 0;
 }
 
+// Compile a shader source file to SPIR-V using glslc
+inline bool compile_shader_source(const std::string& srcPath, const std::string& outPath, const std::string& stage) {
+    std::string cmd = "glslc -fshader-stage=" + stage + " " + srcPath + " -o " + outPath + " 2>&1";
+    std::cout << "[fiction] Compiling shader: " << srcPath << " -> " << outPath << std::endl;
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) {
+        std::cerr << "[fiction] ERROR: Failed to run glslc for " << srcPath << std::endl;
+        return false;
+    }
+
+    char buffer[1024];
+    std::string output;
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        output += buffer;
+    }
+
+    int status = pclose(pipe);
+    if (status != 0) {
+        std::cerr << "[fiction] ERROR: Shader compilation failed for " << srcPath << std::endl;
+        if (!output.empty()) {
+            std::cerr << "[fiction] Compiler output:\n" << output << std::endl;
+        }
+        return false;
+    }
+
+    if (!output.empty()) {
+        std::cout << "[fiction] Compiler output:\n" << output << std::endl;
+    }
+
+    std::cout << "[fiction] Successfully compiled: " << outPath << std::endl;
+    return true;
+}
+
 // Register a shader pair for hot reload watching.
 // Call after the pipeline + layout are created.
 inline void watch_shader(const std::string& name, bool alphaBlend,
                           VkPipeline* pipeline, VkPipelineLayout* pipelineLayout) {
     auto* hr = get_shader_hot_reload();
     if (!hr) return;
-    
+
     ShaderWatch w;
     w.name = name;
     w.alphaBlend = alphaBlend;
     w.pipeline = pipeline;
     w.pipelineLayout = pipelineLayout;
-    w.vertModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".vert.spv");
-    w.fragModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".frag.spv");
+    // Watch source files, not compiled .spv files
+    w.vertModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".vert");
+    w.fragModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".frag");
     hr->watches.push_back(w);
 }
 
@@ -1613,34 +1650,68 @@ inline void init_shader_hot_reload(const std::string& shaderDir) {
 inline void poll_shader_hot_reload() {
     auto* hr = get_shader_hot_reload();
     if (!hr || !hr->initialized) return;
-    
+
     auto now = std::chrono::steady_clock::now();
     float elapsed = std::chrono::duration<float>(now - hr->lastPollTime).count();
     if (elapsed < hr->pollInterval) return;
     hr->lastPollTime = now;
-    
+
     auto device = fiction_engine::get_device();
     auto renderPass = fiction_engine::get_render_pass();
     bool anyChanged = false;
-    
+
     for (auto& w : hr->watches) {
-        time_t newVert = get_file_mod_time_shader(hr->shaderDir + "/" + w.name + ".vert.spv");
-        time_t newFrag = get_file_mod_time_shader(hr->shaderDir + "/" + w.name + ".frag.spv");
-        
-        if ((newVert != w.vertModTime && newVert != 0) ||
-            (newFrag != w.fragModTime && newFrag != 0)) {
+        std::string vertSrc = hr->shaderDir + "/" + w.name + ".vert";
+        std::string fragSrc = hr->shaderDir + "/" + w.name + ".frag";
+        std::string vertSpv = hr->shaderDir + "/" + w.name + ".vert.spv";
+        std::string fragSpv = hr->shaderDir + "/" + w.name + ".frag.spv";
+
+        // Check source file modification times
+        time_t newVertSrc = get_file_mod_time_shader(vertSrc);
+        time_t newFragSrc = get_file_mod_time_shader(fragSrc);
+
+        bool vertChanged = (newVertSrc != w.vertModTime && newVertSrc != 0);
+        bool fragChanged = (newFragSrc != w.fragModTime && newFragSrc != 0);
+
+        if (vertChanged || fragChanged) {
+            std::cout << "[fiction] Hot reload detected: " << w.name << " source changed ("
+                      << (vertChanged ? "vert " : "")
+                      << (fragChanged ? "frag" : "")
+                      << ")" << std::endl;
+
+            // Compile changed shaders
+            if (vertChanged) {
+                if (!compile_shader_source(vertSrc, vertSpv, "vert")) {
+                    // Compilation failed, don't update mod time so we retry next poll
+                    continue;
+                }
+            }
+            if (fragChanged) {
+                if (!compile_shader_source(fragSrc, fragSpv, "frag")) {
+                    continue;
+                }
+            }
+
             if (!anyChanged) {
                 // Wait idle once before any pipeline recreation
                 vkDeviceWaitIdle(device);
                 anyChanged = true;
             }
-            
-            std::cout << "[fiction] Hot reload: " << w.name << " shaders changed" << std::endl;
-            hot_reload_pipeline(device, hr->shaderDir, w.name,
-                                *w.pipelineLayout, renderPass, w.alphaBlend,
-                                *w.pipeline);
-            w.vertModTime = newVert;
-            w.fragModTime = newFrag;
+
+            std::cout << "[fiction] Hot reload: reloading " << w.name << " pipeline..." << std::endl;
+
+            if (hot_reload_pipeline(device, hr->shaderDir, w.name,
+                                    *w.pipelineLayout, renderPass, w.alphaBlend,
+                                    *w.pipeline)) {
+                std::cout << "[fiction] Hot reload: " << w.name << " pipeline updated successfully"
+                          << std::endl;
+                // Only update mod times on success
+                w.vertModTime = newVertSrc;
+                w.fragModTime = newFragSrc;
+            } else {
+                std::cerr << "[fiction] Hot reload ERROR: " << w.name
+                          << " pipeline recreation failed!" << std::endl;
+            }
         }
     }
 }
@@ -1953,9 +2024,9 @@ inline void record_particle_commands(VkCommandBuffer cmd) {
     auto* pr = get_particle_renderer();
     auto* tr = get_text_renderer();
     if (!pr || !pr->initialized || !tr || pr->vertexCount == 0) return;
-    
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->pipeline);
-    
+
     // Push constants: {screenWidth, screenHeight, elapsedTime, padding}
     float elapsed = std::chrono::duration<float>(
         std::chrono::steady_clock::now() - pr->startTimePoint).count();
@@ -1963,21 +2034,21 @@ inline void record_particle_commands(VkCommandBuffer cmd) {
     vkCmdPushConstants(cmd, pr->pipelineLayout,
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                         0, sizeof(pushData), pushData);
-    
+
     VkViewport viewport{};
     viewport.width = tr->screenWidth;
     viewport.height = tr->screenHeight;
     viewport.maxDepth = 1.0f;
     vkCmdSetViewport(cmd, 0, 1, &viewport);
-    
+
     VkRect2D scissor{};
     scissor.extent = {(uint32_t)tr->screenWidth, (uint32_t)tr->screenHeight};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    
+
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &pr->vertexBuffer, &offset);
     vkCmdDraw(cmd, pr->vertexCount, 1, 0, 0);
-    
+
     // Clear speaker quads for next frame
     pr->speakerQuads.clear();
 }

@@ -29,9 +29,9 @@ void main() {
     // Unique seed per instance
     float seed = hash2(floor(fragScreenPos / 4.0));
 
-    // Center of the square with very gentle drift
+    // Center of the square with gentle drift - oscillating left/right
     vec2 center = vec2(0.5, 0.5);
-    center.x += sin(t * 0.5 + seed * 6.28) * 0.03;
+    center.x += sin(t * 0.5 + seed * 6.28) * 0.03 + sin(t * 0.3) * 0.15;  // Oscillate left-right
     center.y += cos(t * 0.4 + seed * 4.17) * 0.03;
 
     // Slightly irregular square shape using smooth box SDF
@@ -44,7 +44,7 @@ void main() {
     d.y += wobY;
 
     // Rounded square — radius varies per instance
-    float r = 0.06 + hash(seed * 71.0) * 0.04;
+    float r = 0.06 + hash(seed * 71.0) * 0.1;
     float halfSize = 0.32 + hash(seed * 37.0) * 0.06;
     vec2 q = d - halfSize + r;
     float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -66,7 +66,7 @@ void main() {
     float alpha = shape * paint * 0.88;
 
     // Very subtle pulse
-    alpha *= 0.92 + 0.08 * sin(t * 1.1 + seed * 6.28);
+    alpha *= 0.92 + 0.15 * sin(t * 5.1 + seed * 7.28);
 
     outColor = vec4(color * alpha, alpha);
 
