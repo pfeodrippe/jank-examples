@@ -45,12 +45,12 @@ void main() {
 
     // Rounded square — radius varies per instance
     float r = 0.06 + hash(seed * 71.0) * 0.1;
-    float halfSize = 0.32 + hash(seed * 37.0) * 0.06;
+    float halfSize = 0.32 + hash(seed * 37.0) * 0.001;
     vec2 q = d - halfSize + r;
     float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 
     // Soft painted edge
-    float shape = 1.0 - smoothstep(-0.02, 0.04, sdf);
+    float shape = 1.0 - smoothstep(-0.02, 0.2, sdf);
 
     // Paint texture — slight opacity variation
     float paint = 0.85 + 0.15 * sin(uv.x * 25.0 + seed * 50.0)
@@ -63,10 +63,10 @@ void main() {
     float edgeDark = smoothstep(-0.04, 0.02, sdf);
     color = mix(color, color * 0.7, edgeDark * 0.25);
 
-    float alpha = shape * paint * 0.88;
+    float alpha = shape * paint * 0.93;
 
     // Very subtle pulse
-    alpha *= 0.92 + 0.15 * sin(t * 5.1 + seed * 7.28);
+    alpha *= 0.97 + 0.15 * sin(t * 4.1 + seed * 7.28);
 
     outColor = vec4(color * alpha, alpha);
 
