@@ -9,6 +9,166 @@
    ["vulkan/fiction_text.hpp" :as fiction :scope "fiction"]))
 
 ;; =============================================================================
+;; Style Configuration
+;; =============================================================================
+
+;; Helper to safely get style reference
+(defmacro ^:private with-style [& body]
+  `(let [~'tr (cpp/* (fiction/get_text_renderer))
+         ~'style (cpp/.-style ~'tr)]
+     ~@body))
+
+(defn set-text-scale!
+  "Set base text scale (default 1.0)."
+  [scale]
+  (with-style
+    (cpp/= (cpp/.-textScale style) (cpp/float. scale))))
+
+(defn set-speaker-scale!
+  "Set speaker name scale relative to text (default 1.25)."
+  [scale]
+  (with-style
+    (cpp/= (cpp/.-speakerScale style) (cpp/float. scale))))
+
+(defn set-line-spacing!
+  "Set extra spacing between lines in pixels (default 4.0)."
+  [spacing]
+  (with-style
+    (cpp/= (cpp/.-lineSpacing style) (cpp/float. spacing))))
+
+(defn set-entry-spacing!
+  "Set lineSpacing multiplier between dialogue entries (default 2.0)."
+  [spacing]
+  (with-style
+    (cpp/= (cpp/.-entrySpacing style) (cpp/float. spacing))))
+
+(defn set-panel-padding!
+  "Set inner panel padding in pixels (default 20.0)."
+  [padding]
+  (with-style
+    (cpp/= (cpp/.-panelPadding style) (cpp/float. padding))))
+
+(defn set-choice-indent!
+  "Set indent for choice text in pixels (default 20.0)."
+  [indent]
+  (with-style
+    (cpp/= (cpp/.-choiceIndent style) (cpp/float. indent))))
+
+(defn set-panel-x!
+  "Set panel X position as fraction of screen (default 0.70)."
+  [x]
+  (with-style
+    (cpp/= (cpp/.-panelX style) (cpp/float. x))))
+
+(defn set-panel-width!
+  "Set panel width as fraction of screen (default 0.30)."
+  [width]
+  (with-style
+    (cpp/= (cpp/.-panelWidth style) (cpp/float. width))))
+
+(defn set-bottom-margin!
+  "Set bottom margin in pixels (default 250.0)."
+  [margin]
+  (with-style
+    (cpp/= (cpp/.-bottomMargin style) (cpp/float. margin))))
+
+(defn set-auto-scroll!
+  "Enable/disable auto-scroll animation (default true)."
+  [enabled]
+  (cpp/= (cpp/.-autoScrollEnabled (cpp/* (fiction/get_text_renderer)))
+         (cpp/bool. enabled)))
+
+(defn set-scroll-speed!
+  "Set auto-scroll speed in lines per second (default 16.0)."
+  [speed]
+  (cpp/= (cpp/.-scrollAnimationSpeed (cpp/* (fiction/get_text_renderer)))
+         (cpp/float. speed)))
+
+(defn set-panel-bg-color!
+  "Set panel background color (RGBA 0.0-1.0)."
+  [r g b a]
+  (with-style
+    (cpp/= (cpp/.-bgR style) (cpp/float. r))
+    (cpp/= (cpp/.-bgG style) (cpp/float. g))
+    (cpp/= (cpp/.-bgB style) (cpp/float. b))
+    (cpp/= (cpp/.-bgA style) (cpp/float. a))))
+
+(defn set-text-color!
+  "Set default dialogue text color (RGB 0.0-1.0)."
+  [r g b]
+  (with-style
+    (cpp/= (cpp/.-textR style) (cpp/float. r))
+    (cpp/= (cpp/.-textG style) (cpp/float. g))
+    (cpp/= (cpp/.-textB style) (cpp/float. b))))
+
+(defn set-narration-color!
+  "Set narration text color (RGB 0.0-1.0)."
+  [r g b]
+  (with-style
+    (cpp/= (cpp/.-narrationR style) (cpp/float. r))
+    (cpp/= (cpp/.-narrationG style) (cpp/float. g))
+    (cpp/= (cpp/.-narrationB style) (cpp/float. b))))
+
+(defn set-choice-color!
+  "Set choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (with-style
+    (cpp/= (cpp/.-choiceR style) (cpp/float. r))
+    (cpp/= (cpp/.-choiceG style) (cpp/float. g))
+    (cpp/= (cpp/.-choiceB style) (cpp/float. b))))
+
+(defn set-choice-hover-color!
+  "Set hovered choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (with-style
+    (cpp/= (cpp/.-choiceHoverR style) (cpp/float. r))
+    (cpp/= (cpp/.-choiceHoverG style) (cpp/float. g))
+    (cpp/= (cpp/.-choiceHoverB style) (cpp/float. b))))
+
+(defn set-choice-selected-color!
+  "Set selected choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (with-style
+    (cpp/= (cpp/.-choiceSelectedR style) (cpp/float. r))
+    (cpp/= (cpp/.-choiceSelectedG style) (cpp/float. g))
+    (cpp/= (cpp/.-choiceSelectedB style) (cpp/float. b))))
+
+(defn set-choice-selected-hover-color!
+  "Set hovered selected choice text color (RGB 0.0-1.0)."
+  [r g b]
+  (with-style
+    (cpp/= (cpp/.-choiceSelectedHoverR style) (cpp/float. r))
+    (cpp/= (cpp/.-choiceSelectedHoverG style) (cpp/float. g))
+    (cpp/= (cpp/.-choiceSelectedHoverB style) (cpp/float. b))))
+
+;; Convenience macro to set multiple layout properties at once
+(defmacro set-layout!
+  "Set multiple layout properties from a hashmap.
+
+   Example:
+   (set-layout! {:panel-x 0.65
+                 :panel-width 0.35
+                 :text-scale 1.2
+                 :bottom-margin 300})"
+  [m]
+  `(do
+     ~@(mapcat (fn [[k# v#]]
+                (case k#
+                  :text-scale `((set-text-scale! ~v#))
+                  :speaker-scale `((set-speaker-scale! ~v#))
+                  :line-spacing `((set-line-spacing! ~v#))
+                  :entry-spacing `((set-entry-spacing! ~v#))
+                  :panel-padding `((set-panel-padding! ~v#))
+                  :choice-indent `((set-choice-indent! ~v#))
+                  :panel-x `((set-panel-x! ~v#))
+                  :panel-width `((set-panel-width! ~v#))
+                  :bottom-margin `((set-bottom-margin! ~v#))
+                  :auto-scroll `((set-auto-scroll! ~v#))
+                  :scroll-speed `((set-scroll-speed! ~v#))
+                  nil))
+              m)))
+
+;; =============================================================================
 ;; Initialization
 ;; =============================================================================
 
@@ -19,7 +179,19 @@
   (fiction/init_text_renderer_simple
    (cpp/float. (+ 0.0 screen-width))
    (cpp/float. (+ 0.0 screen-height))
-   shader-dir))
+   shader-dir)
+  ;; Set default layout
+  #_(set-layout! {:panel-x 0.7
+                :panel-width 0.3
+                :text-scale 1.0
+                :speaker-scale 1.25
+                :line-spacing 4.0
+                :entry-spacing 2.0
+                :panel-padding 20.0
+                :choice-indent 20.0
+                :bottom-margin 300.0
+                :auto-scroll true
+                :scroll-speed 16.0}))
 
 (defn init-background!
   "Load background image. Must be called after init!."
@@ -147,16 +319,6 @@
 ;; Scroll Control
 ;; =============================================================================
 
-(defn scroll!
-  "Scroll the dialogue panel by delta pixels."
-  [delta]
-  (fiction/scroll_dialogue (cpp/float. delta)))
-
-(defn scroll-to-bottom!
-  "Scroll to the bottom of the dialogue."
-  []
-  (fiction/scroll_to_bottom))
-
 ;; =============================================================================
 ;; Panel Customization
 ;; =============================================================================
@@ -174,69 +336,35 @@
   [x width]
   (fiction/set_panel_position (cpp/float. x) (cpp/float. width)))
 
+
+(defn update-mouse-position!
+  "Update the mouse position for hover detection."
+  [x y]
+  (fiction/update_mouse_position (cpp/float. x) (cpp/float. y)))
+
+(defn get-hovered-choice
+  "Get the index of the currently hovered choice (-1 if none)."
+  []
+  (fiction/get_hovered_choice))
+
+(defn scroll!
+  "Scroll the dialogue panel by delta pixels."
+  [delta]
+  (fiction/scroll_dialogue (cpp/float. delta)))
+
+(defn scroll-dialogue!
+  "Scroll the dialogue panel by delta pixels."
+  [delta]
+  (fiction/scroll_dialogue (cpp/float. delta)))
+
+(defn scroll-to-bottom!
+  "Scroll to the bottom of the dialogue."
+  []
+  (fiction/scroll_to_bottom true))
+
 ;; =============================================================================
-;; Style Configuration (all live-tweakable from REPL)
+;; Getters
 ;; =============================================================================
-
-(defn set-text-scale!
-  "Set base text scale (default 1.0)."
-  [scale]
-  (fiction/set_text_scale (cpp/float. scale)))
-
-(defn set-speaker-scale!
-  "Set speaker name scale relative to text (default 1.25)."
-  [scale]
-  (fiction/set_speaker_scale (cpp/float. scale)))
-
-(defn set-line-spacing!
-  "Set extra spacing between lines in pixels (default 4.0)."
-  [spacing]
-  (fiction/set_line_spacing (cpp/float. spacing)))
-
-(defn set-entry-spacing!
-  "Set lineSpacing multiplier between dialogue entries (default 2.0)."
-  [spacing]
-  (fiction/set_entry_spacing (cpp/float. spacing)))
-
-(defn set-panel-padding!
-  "Set inner panel padding in pixels (default 20.0)."
-  [padding]
-  (fiction/set_panel_padding (cpp/float. padding)))
-
-(defn set-choice-indent!
-  "Set indent for choice text in pixels (default 20.0)."
-  [indent]
-  (fiction/set_choice_indent (cpp/float. indent)))
-
-(defn set-text-color!
-  "Set default dialogue text color (RGB 0.0-1.0)."
-  [r g b]
-  (fiction/set_text_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
-
-(defn set-narration-color!
-  "Set narration text color (RGB 0.0-1.0)."
-  [r g b]
-  (fiction/set_narration_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
-
-(defn set-choice-color!
-  "Set choice text color (RGB 0.0-1.0)."
-  [r g b]
-  (fiction/set_choice_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
-
-(defn set-choice-hover-color!
-  "Set hovered choice text color (RGB 0.0-1.0)."
-  [r g b]
-  (fiction/set_choice_hover_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
-
-(defn set-choice-selected-color!
-  "Set selected choice text color (RGB 0.0-1.0)."
-  [r g b]
-  (fiction/set_choice_selected_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
-
-(defn set-choice-selected-hover-color!
-  "Set hovered selected choice text color (RGB 0.0-1.0)."
-  [r g b]
-  (fiction/set_choice_selected_hover_color (cpp/float. r) (cpp/float. g) (cpp/float. b)))
 
 (defn get-vertex-count
   "Get the number of text vertices to render."

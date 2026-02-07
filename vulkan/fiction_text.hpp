@@ -123,6 +123,7 @@ struct PanelStyle {
     float panelX = 0.70f;         // Panel X position (fraction of screen)
     float panelWidth = 0.30f;     // Panel width (fraction of screen)
     float panelPadding = 20.0f;   // Inner padding in pixels
+    float bottomMargin = 250.0f;  // Extra space at bottom (for ~10 lines of text)
     float lineSpacing = 4.0f;     // Extra spacing between lines
     float entrySpacing = 2.0f;    // lineSpacing multiplier between entries
     float choiceIndent = 20.0f;   // Indent for choice text
@@ -186,6 +187,11 @@ struct TextRenderer {
     // Scroll state
     float scrollOffset = 0.0f;
     float maxScroll = 0.0f;
+    float targetScrollOffset = 0.0f;   // For auto-scroll animation
+    float scrollAnimationSpeed = 16.0f;  // Lines per second (2x faster)
+    bool autoScrollEnabled = true;      // Enable auto-scroll when new content added
+    bool isAutoScrolling = false;       // Currently in auto-scroll animation
+    int lastEntryCount = 0;             // Track when new entries are added
     
     // Mouse state
     float mouseX = 0.0f;
@@ -1348,8 +1354,37 @@ inline void render_dialogue_panel(TextRenderer* tr,
         choiceNum++;
     }
     
-    // Update max scroll
-    tr->maxScroll = std::max(0.0f, y + tr->scrollOffset - tr->screenHeight + 100);
+    // Update max scroll (leave room at bottom for reading)
+    tr->maxScroll = std::max(0.0f, y + tr->scrollOffset - tr->screenHeight + tr->style.bottomMargin);
+    
+    // Check if new entries were added
+    int currentEntryCount = history.size() + choices.size();
+    bool newContentAdded = (currentEntryCount > tr->lastEntryCount);
+    tr->lastEntryCount = currentEntryCount;
+    
+    // Auto-scroll animation: only when new content added
+    if (tr->autoScrollEnabled && tr->maxScroll > 0 && newContentAdded) {
+        tr->isAutoScrolling = true;
+        tr->targetScrollOffset = tr->maxScroll;
+    }
+    
+    // Perform auto-scroll animation
+    if (tr->isAutoScrolling) {
+        float diff = tr->targetScrollOffset - tr->scrollOffset;
+        if (std::abs(diff) > 0.5f) {
+            float dt = 1.0f / 60.0f;
+            float step = tr->scrollAnimationSpeed * tr->font.lineHeight * tr->style.textScale * dt;
+            if (diff > 0) {
+                tr->scrollOffset += std::min(diff, step);
+            } else {
+                tr->scrollOffset -= std::min(std::abs(diff), step);
+            }
+        } else {
+            // Animation complete - let user scroll freely
+            tr->scrollOffset = tr->targetScrollOffset;
+            tr->isAutoScrolling = false;
+        }
+    }
     
     // Generate particle quad vertices from collected speaker positions
     auto* pr = get_particle_renderer();
@@ -2225,14 +2260,22 @@ inline void scroll_dialogue(float delta) {
     TextRenderer* tr = get_text_renderer();
     if (!tr) return;
     
+    // User manually scrolling - cancel auto-scroll and let them control
+    tr->isAutoScrolling = false;
     tr->scrollOffset = std::max(0.0f, std::min(tr->maxScroll, tr->scrollOffset + delta));
 }
 
-inline void scroll_to_bottom() {
+inline void scroll_to_bottom(bool animated = true) {
     TextRenderer* tr = get_text_renderer();
     if (!tr) return;
     
-    tr->scrollOffset = tr->maxScroll;
+    if (animated) {
+        tr->autoScrollEnabled = true;
+        tr->targetScrollOffset = tr->maxScroll;
+    } else {
+        tr->scrollOffset = tr->maxScroll;
+        tr->targetScrollOffset = tr->maxScroll;
+    }
 }
 
 // =============================================================================
