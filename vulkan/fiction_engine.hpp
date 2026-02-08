@@ -524,10 +524,17 @@ inline void set_scroll_callback(ScrollCallback cb) { get_scroll_callback() = cb;
 inline void poll_events() {
     auto* e = get_engine();
     if (!e) return;
-    
-    // Clear previous frame's events
-    get_event_queue().clear();
-    
+
+    float pixelScale = 1.0f;
+    if (e->window) {
+        int winW = 0;
+        int winH = 0;
+        SDL_GetWindowSize(e->window, &winW, &winH);
+        if (winW > 0) {
+            pixelScale = static_cast<float>(e->framebufferWidth) / static_cast<float>(winW);
+        }
+    }
+
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -559,13 +566,22 @@ inline void poll_events() {
                 }
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                get_event_queue().push_back({4, 0, 0.0f, event.motion.x, event.motion.y, 0});
+                get_event_queue().push_back({4, 0, 0.0f,
+                                             event.motion.x * pixelScale,
+                                             event.motion.y * pixelScale,
+                                             0});
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                get_event_queue().push_back({5, 0, 0.0f, event.button.x, event.button.y, (int)event.button.button});
+                get_event_queue().push_back({5, 0, 0.0f,
+                                             event.button.x * pixelScale,
+                                             event.button.y * pixelScale,
+                                             (int)event.button.button});
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                get_event_queue().push_back({6, 0, 0.0f, event.button.x, event.button.y, (int)event.button.button});
+                get_event_queue().push_back({6, 0, 0.0f,
+                                             event.button.x * pixelScale,
+                                             event.button.y * pixelScale,
+                                             (int)event.button.button});
                 break;
         }
     }
@@ -574,6 +590,11 @@ inline void poll_events() {
 // Get number of events in queue
 inline int get_event_count() {
     return static_cast<int>(get_event_queue().size());
+}
+
+// Clear events after client-side processing.
+inline void clear_events() {
+    get_event_queue().clear();
 }
 
 // Get event at index (returns type, or 0 if out of range)

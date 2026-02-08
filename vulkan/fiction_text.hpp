@@ -217,6 +217,11 @@ struct ParticleRenderer {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkBuffer uniformBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory uniformMemory = VK_NULL_HANDLE;
+    void* uniformMapped = nullptr;
     
     // Vertex buffer for particle quads (separate from text)
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
@@ -292,9 +297,12 @@ inline VkPipeline create_pipeline(VkDevice device,
                                    const std::string& shaderName,
                                    VkPipelineLayout pipelineLayout,
                                    VkRenderPass renderPass,
-                                   bool alphaBlend);
+                                   bool alphaBlend,
+                                   const char* vertEntry = "main",
+                                   const char* fragEntry = "main");
 inline void watch_shader(const std::string& name, bool alphaBlend,
-                          VkPipeline* pipeline, VkPipelineLayout* pipelineLayout);
+                          VkPipeline* pipeline, VkPipelineLayout* pipelineLayout,
+                          const char* vertEntry = "main", const char* fragEntry = "main");
 
 inline bool load_background_image(const char* filepath,
                                    VkDevice device,
@@ -675,6 +683,8 @@ inline void cleanup_bg_renderer() {
 // Particle Renderer Init / Cleanup
 // =============================================================================
 
+inline void cleanup_particle_renderer();
+
 inline bool init_particle_renderer(VkDevice device,
                                     VkPhysicalDevice physicalDevice,
                                     VkRenderPass renderPass,
@@ -694,59 +704,104 @@ inline bool init_particle_renderer(VkDevice device,
     
     // Record start time for animation
     pr->startTimePoint = std::chrono::steady_clock::now();
-    
-    // Push constant range: vec2 screenSize + float time + float padding = 16 bytes
-    // Accessible from both vertex and fragment shaders
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushRange.offset = 0;
-    pushRange.size = 16;  // sizeof(vec2) + sizeof(float) + sizeof(float)
-    
-    // Pipeline layout — no descriptor sets (fully procedural shader)
+
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+    auto find_host_visible_mem = [&](uint32_t typeBits) -> uint32_t {
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((typeBits & (1u << i)) &&
+                (memProps.memoryTypes[i].propertyFlags &
+                 (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                return i;
+            }
+        }
+        return 0;
+    };
+
+    // Uniform descriptor set for shared WGSL shader uniforms.
+    VkDescriptorSetLayoutBinding uniformBinding{};
+    uniformBinding.binding = 0;
+    uniformBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uniformBinding.descriptorCount = 1;
+    uniformBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dslInfo.bindingCount = 1;
+    dslInfo.pBindings = &uniformBinding;
+    vkCreateDescriptorSetLayout(device, &dslInfo, nullptr, &pr->descriptorSetLayout);
+
     VkPipelineLayoutCreateInfo plInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    plInfo.setLayoutCount = 0;
-    plInfo.pSetLayouts = nullptr;
-    plInfo.pushConstantRangeCount = 1;
-    plInfo.pPushConstantRanges = &pushRange;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &pr->descriptorSetLayout;
+    plInfo.pushConstantRangeCount = 0;
+    plInfo.pPushConstantRanges = nullptr;
     vkCreatePipelineLayout(device, &plInfo, nullptr, &pr->pipelineLayout);
-    
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSize.descriptorCount = 1;
+    VkDescriptorPoolCreateInfo dpInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    dpInfo.maxSets = 1;
+    dpInfo.poolSizeCount = 1;
+    dpInfo.pPoolSizes = &poolSize;
+    vkCreateDescriptorPool(device, &dpInfo, nullptr, &pr->descriptorPool);
+
+    VkDescriptorSetAllocateInfo dsAlloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    dsAlloc.descriptorPool = pr->descriptorPool;
+    dsAlloc.descriptorSetCount = 1;
+    dsAlloc.pSetLayouts = &pr->descriptorSetLayout;
+    vkAllocateDescriptorSets(device, &dsAlloc, &pr->descriptorSet);
+
+    VkBufferCreateInfo ubInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    ubInfo.size = sizeof(float) * 4;  // vec2 screenSize + time + yFlip
+    ubInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    ubInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(device, &ubInfo, nullptr, &pr->uniformBuffer);
+
+    VkMemoryRequirements ubMemReq;
+    vkGetBufferMemoryRequirements(device, pr->uniformBuffer, &ubMemReq);
+    VkMemoryAllocateInfo ubAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ubAllocInfo.allocationSize = ubMemReq.size;
+    ubAllocInfo.memoryTypeIndex = find_host_visible_mem(ubMemReq.memoryTypeBits);
+    vkAllocateMemory(device, &ubAllocInfo, nullptr, &pr->uniformMemory);
+    vkBindBufferMemory(device, pr->uniformBuffer, pr->uniformMemory, 0);
+    vkMapMemory(device, pr->uniformMemory, 0, ubInfo.size, 0, &pr->uniformMapped);
+
+    VkDescriptorBufferInfo ubDesc{};
+    ubDesc.buffer = pr->uniformBuffer;
+    ubDesc.offset = 0;
+    ubDesc.range = ubInfo.size;
+    VkWriteDescriptorSet ubWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    ubWrite.dstSet = pr->descriptorSet;
+    ubWrite.dstBinding = 0;
+    ubWrite.descriptorCount = 1;
+    ubWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ubWrite.pBufferInfo = &ubDesc;
+    vkUpdateDescriptorSets(device, 1, &ubWrite, 0, nullptr);
+
     // Use generic pipeline creator (alpha blend for particles)
     pr->pipeline = create_pipeline(device, shaderDir, "particle",
-                                    pr->pipelineLayout, renderPass, true);
+                                    pr->pipelineLayout, renderPass, true,
+                                    "vs_main", "fs_main");
     if (pr->pipeline == VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, pr->pipelineLayout, nullptr);
-        delete pr;
-        get_particle_renderer() = nullptr;
+        cleanup_particle_renderer();
         return false;
     }
-    
+
     // Create vertex buffer (host-visible, persistently mapped)
     VkDeviceSize vbSize = pr->maxVertices * sizeof(TextVertex);
-    
     VkBufferCreateInfo vbInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     vbInfo.size = vbSize;
     vbInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     vbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     vkCreateBuffer(device, &vbInfo, nullptr, &pr->vertexBuffer);
-    
+
     VkMemoryRequirements vbMemReq;
     vkGetBufferMemoryRequirements(device, pr->vertexBuffer, &vbMemReq);
-    
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
-    uint32_t vbMemType = 0;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-        if ((vbMemReq.memoryTypeBits & (1 << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
-            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            vbMemType = i;
-            break;
-        }
-    }
-    
     VkMemoryAllocateInfo vbAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     vbAllocInfo.allocationSize = vbMemReq.size;
-    vbAllocInfo.memoryTypeIndex = vbMemType;
+    vbAllocInfo.memoryTypeIndex = find_host_visible_mem(vbMemReq.memoryTypeBits);
     vkAllocateMemory(device, &vbAllocInfo, nullptr, &pr->vertexMemory);
     vkBindBufferMemory(device, pr->vertexBuffer, pr->vertexMemory, 0);
     vkMapMemory(device, pr->vertexMemory, 0, vbSize, 0, &pr->vertexMapped);
@@ -766,8 +821,15 @@ inline void cleanup_particle_renderer() {
         vkDestroyBuffer(device, pr->vertexBuffer, nullptr);
         vkFreeMemory(device, pr->vertexMemory, nullptr);
     }
+    if (pr->uniformBuffer) {
+        vkUnmapMemory(device, pr->uniformMemory);
+        vkDestroyBuffer(device, pr->uniformBuffer, nullptr);
+        vkFreeMemory(device, pr->uniformMemory, nullptr);
+    }
     if (pr->pipeline) vkDestroyPipeline(device, pr->pipeline, nullptr);
     if (pr->pipelineLayout) vkDestroyPipelineLayout(device, pr->pipelineLayout, nullptr);
+    if (pr->descriptorPool) vkDestroyDescriptorPool(device, pr->descriptorPool, nullptr);
+    if (pr->descriptorSetLayout) vkDestroyDescriptorSetLayout(device, pr->descriptorSetLayout, nullptr);
     
     delete pr;
     get_particle_renderer() = nullptr;
@@ -1267,6 +1329,13 @@ inline void render_dialogue_panel(TextRenderer* tr,
                                   const std::vector<DialogueEntry>& choices) {
     tr->vertexCount = 0;  // Reset vertices
     tr->choiceBounds.clear();  // Reset choice bounds
+
+    // Reset particle data every frame so quads always follow current text layout.
+    auto* pr = get_particle_renderer();
+    if (pr && pr->initialized) {
+        pr->speakerQuads.clear();
+        pr->vertexCount = 0;
+    }
     
     float panelX = tr->screenWidth * tr->style.panelX;
     float panelW = tr->screenWidth * tr->style.panelWidth;
@@ -1387,7 +1456,6 @@ inline void render_dialogue_panel(TextRenderer* tr,
     }
     
     // Generate particle quad vertices from collected speaker positions
-    auto* pr = get_particle_renderer();
     if (pr && pr->initialized && !pr->speakerQuads.empty()) {
         pr->vertexCount = 0;
         TextVertex* pverts = (TextVertex*)pr->vertexMapped;
@@ -1435,10 +1503,10 @@ inline std::vector<uint32_t> load_text_spirv(const std::string& path) {
 // =============================================================================
 // Shader Hot Reload System
 // =============================================================================
-// Polls .spv file modification times each frame. When a shader changes,
-// recreates the affected pipeline on the fly. Works for bg, text, and particle
-// pipelines. To use: edit .vert/.frag source, run `make build-fiction-shaders`
-// (or have a file watcher do it), and the running app picks up the new .spv.
+// Polls source file modification times each frame. When a shader changes,
+// recreates the affected pipeline on the fly. Works for bg/text GLSL shaders
+// and particle WGSL shader. Run `make build-fiction-shaders` once up front;
+// hot reload then recompiles changed sources on demand.
 
 // Generic pipeline creation: one function for all pipelines.
 // Only the things that differ are parameterized:
@@ -1451,7 +1519,9 @@ inline VkPipeline create_pipeline(VkDevice device,
                                    const std::string& shaderName,
                                    VkPipelineLayout pipelineLayout,
                                    VkRenderPass renderPass,
-                                   bool alphaBlend) {
+                                   bool alphaBlend,
+                                   const char* vertEntry,
+                                   const char* fragEntry) {
     auto vertSpirv = load_text_spirv(shaderDir + "/" + shaderName + ".vert.spv");
     auto fragSpirv = load_text_spirv(shaderDir + "/" + shaderName + ".frag.spv");
     if (vertSpirv.empty() || fragSpirv.empty()) {
@@ -1474,11 +1544,11 @@ inline VkPipeline create_pipeline(VkDevice device,
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = vertModule;
-    stages[0].pName = "main";
+    stages[0].pName = vertEntry;
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragModule;
-    stages[1].pName = "main";
+    stages[1].pName = fragEntry;
     
     VkVertexInputBindingDescription bindingDesc{};
     bindingDesc.binding = 0;
@@ -1572,9 +1642,12 @@ inline bool hot_reload_pipeline(VkDevice device,
                                  VkPipelineLayout pipelineLayout,
                                  VkRenderPass renderPass,
                                  bool alphaBlend,
+                                 const char* vertEntry,
+                                 const char* fragEntry,
                                  VkPipeline& outPipeline) {
     VkPipeline newPipeline = create_pipeline(device, shaderDir, shaderName,
-                                              pipelineLayout, renderPass, alphaBlend);
+                                              pipelineLayout, renderPass, alphaBlend,
+                                              vertEntry, fragEntry);
     if (newPipeline == VK_NULL_HANDLE) return false;
     
     if (outPipeline != VK_NULL_HANDLE) {
@@ -1590,9 +1663,14 @@ inline bool hot_reload_pipeline(VkDevice device,
 
 struct ShaderWatch {
     std::string name;           // e.g. "bg", "text", "particle"
+    bool usesWgsl = false;      // true when shader is sourced from .wgsl
+    std::string wgslPath;
+    time_t wgslModTime = 0;
     time_t vertModTime = 0;
     time_t fragModTime = 0;
     bool alphaBlend;            // pipeline blend mode
+    const char* vertEntry = "main";
+    const char* fragEntry = "main";
     // Pointers to the pipeline and layout to hot-swap
     VkPipeline* pipeline = nullptr;
     VkPipelineLayout* pipelineLayout = nullptr;
@@ -1620,25 +1698,41 @@ inline time_t get_file_mod_time_shader(const std::string& path) {
     return 0;
 }
 
-// Compile a shader source file to SPIR-V using glslc
-inline bool compile_shader_source(const std::string& srcPath, const std::string& outPath, const std::string& stage) {
-    std::string cmd = "glslc -fshader-stage=" + stage + " " + srcPath + " -o " + outPath + " 2>&1";
-    std::cout << "[fiction] Compiling shader: " << srcPath << " -> " << outPath << std::endl;
+inline std::string shell_quote(const std::string& value) {
+    std::string quoted = "'";
+    for (char c : value) {
+        if (c == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += c;
+        }
+    }
+    quoted += "'";
+    return quoted;
+}
 
+inline bool run_command_capture(const std::string& cmd, std::string& output) {
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) {
-        std::cerr << "[fiction] ERROR: Failed to run glslc for " << srcPath << std::endl;
         return false;
     }
 
     char buffer[1024];
-    std::string output;
     while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
         output += buffer;
     }
 
-    int status = pclose(pipe);
-    if (status != 0) {
+    return pclose(pipe) == 0;
+}
+
+// Compile a shader source file to SPIR-V using glslc
+inline bool compile_shader_source(const std::string& srcPath, const std::string& outPath, const std::string& stage) {
+    std::string cmd = "glslc -fshader-stage=" + stage + " "
+                    + shell_quote(srcPath) + " -o " + shell_quote(outPath) + " 2>&1";
+    std::cout << "[fiction] Compiling shader: " << srcPath << " -> " << outPath << std::endl;
+
+    std::string output;
+    if (!run_command_capture(cmd, output)) {
         std::cerr << "[fiction] ERROR: Shader compilation failed for " << srcPath << std::endl;
         if (!output.empty()) {
             std::cerr << "[fiction] Compiler output:\n" << output << std::endl;
@@ -1654,21 +1748,71 @@ inline bool compile_shader_source(const std::string& srcPath, const std::string&
     return true;
 }
 
-// Register a shader pair for hot reload watching.
+inline bool compile_wgsl_particle(const std::string& wgslPath,
+                                  const std::string& vertSpvPath,
+                                  const std::string& fragSpvPath) {
+    std::string output;
+
+    std::string vertCmd = "naga --input-kind wgsl --keep-coordinate-space --shader-stage vert --entry-point vs_main "
+                        + shell_quote(wgslPath) + " " + shell_quote(vertSpvPath) + " 2>&1";
+    std::cout << "[fiction] Compiling WGSL particle vertex shader: " << wgslPath << std::endl;
+    if (!run_command_capture(vertCmd, output)) {
+        std::cerr << "[fiction] ERROR: WGSL vertex compilation failed for " << wgslPath << std::endl;
+        if (!output.empty()) {
+            std::cerr << "[fiction] Compiler output:\n" << output << std::endl;
+        }
+        return false;
+    }
+    if (!output.empty()) {
+        std::cout << "[fiction] Compiler output:\n" << output << std::endl;
+    }
+
+    output.clear();
+    std::string fragCmd = "naga --input-kind wgsl --keep-coordinate-space --shader-stage frag --entry-point fs_main "
+                        + shell_quote(wgslPath) + " " + shell_quote(fragSpvPath) + " 2>&1";
+    std::cout << "[fiction] Compiling WGSL particle fragment shader: " << wgslPath << std::endl;
+    if (!run_command_capture(fragCmd, output)) {
+        std::cerr << "[fiction] ERROR: WGSL fragment compilation failed for " << wgslPath << std::endl;
+        if (!output.empty()) {
+            std::cerr << "[fiction] Compiler output:\n" << output << std::endl;
+        }
+        return false;
+    }
+    if (!output.empty()) {
+        std::cout << "[fiction] Compiler output:\n" << output << std::endl;
+    }
+
+    std::cout << "[fiction] Successfully compiled particle WGSL to SPIR-V" << std::endl;
+    return true;
+}
+
+// Register a shader for hot reload watching.
 // Call after the pipeline + layout are created.
 inline void watch_shader(const std::string& name, bool alphaBlend,
-                          VkPipeline* pipeline, VkPipelineLayout* pipelineLayout) {
+                          VkPipeline* pipeline, VkPipelineLayout* pipelineLayout,
+                          const char* vertEntry, const char* fragEntry) {
     auto* hr = get_shader_hot_reload();
     if (!hr) return;
 
     ShaderWatch w;
     w.name = name;
     w.alphaBlend = alphaBlend;
+    w.vertEntry = vertEntry;
+    w.fragEntry = fragEntry;
     w.pipeline = pipeline;
     w.pipelineLayout = pipelineLayout;
-    // Watch source files, not compiled .spv files
-    w.vertModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".vert");
-    w.fragModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".frag");
+
+    const std::string wgslPath = hr->shaderDir + "/" + name + ".wgsl";
+    w.wgslModTime = get_file_mod_time_shader(wgslPath);
+    w.usesWgsl = (w.wgslModTime != 0);
+    if (w.usesWgsl) {
+        w.wgslPath = wgslPath;
+    } else {
+        // Watch GLSL source files, not compiled .spv files.
+        w.vertModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".vert");
+        w.fragModTime = get_file_mod_time_shader(hr->shaderDir + "/" + name + ".frag");
+    }
+
     hr->watches.push_back(w);
 }
 
@@ -1696,57 +1840,80 @@ inline void poll_shader_hot_reload() {
     bool anyChanged = false;
 
     for (auto& w : hr->watches) {
-        std::string vertSrc = hr->shaderDir + "/" + w.name + ".vert";
-        std::string fragSrc = hr->shaderDir + "/" + w.name + ".frag";
         std::string vertSpv = hr->shaderDir + "/" + w.name + ".vert.spv";
         std::string fragSpv = hr->shaderDir + "/" + w.name + ".frag.spv";
+        bool changed = false;
 
-        // Check source file modification times
-        time_t newVertSrc = get_file_mod_time_shader(vertSrc);
-        time_t newFragSrc = get_file_mod_time_shader(fragSrc);
-
-        bool vertChanged = (newVertSrc != w.vertModTime && newVertSrc != 0);
-        bool fragChanged = (newFragSrc != w.fragModTime && newFragSrc != 0);
-
-        if (vertChanged || fragChanged) {
-            std::cout << "[fiction] Hot reload detected: " << w.name << " source changed ("
-                      << (vertChanged ? "vert " : "")
-                      << (fragChanged ? "frag" : "")
-                      << ")" << std::endl;
-
-            // Compile changed shaders
-            if (vertChanged) {
-                if (!compile_shader_source(vertSrc, vertSpv, "vert")) {
-                    // Compilation failed, don't update mod time so we retry next poll
-                    continue;
-                }
+        if (w.usesWgsl) {
+            time_t newWgsl = get_file_mod_time_shader(w.wgslPath);
+            changed = (newWgsl != 0 && newWgsl != w.wgslModTime);
+            if (!changed) {
+                continue;
             }
-            if (fragChanged) {
-                if (!compile_shader_source(fragSrc, fragSpv, "frag")) {
-                    continue;
-                }
+            std::cout << "[fiction] Hot reload detected: " << w.name << ".wgsl changed" << std::endl;
+            if (!compile_wgsl_particle(w.wgslPath, vertSpv, fragSpv)) {
+                continue;
             }
 
             if (!anyChanged) {
-                // Wait idle once before any pipeline recreation
                 vkDeviceWaitIdle(device);
                 anyChanged = true;
             }
 
             std::cout << "[fiction] Hot reload: reloading " << w.name << " pipeline..." << std::endl;
-
             if (hot_reload_pipeline(device, hr->shaderDir, w.name,
                                     *w.pipelineLayout, renderPass, w.alphaBlend,
-                                    *w.pipeline)) {
+                                    w.vertEntry, w.fragEntry, *w.pipeline)) {
                 std::cout << "[fiction] Hot reload: " << w.name << " pipeline updated successfully"
                           << std::endl;
-                // Only update mod times on success
-                w.vertModTime = newVertSrc;
-                w.fragModTime = newFragSrc;
+                w.wgslModTime = newWgsl;
             } else {
                 std::cerr << "[fiction] Hot reload ERROR: " << w.name
                           << " pipeline recreation failed!" << std::endl;
             }
+            continue;
+        }
+
+        const std::string vertSrc = hr->shaderDir + "/" + w.name + ".vert";
+        const std::string fragSrc = hr->shaderDir + "/" + w.name + ".frag";
+        time_t newVertSrc = get_file_mod_time_shader(vertSrc);
+        time_t newFragSrc = get_file_mod_time_shader(fragSrc);
+
+        bool vertChanged = (newVertSrc != w.vertModTime && newVertSrc != 0);
+        bool fragChanged = (newFragSrc != w.fragModTime && newFragSrc != 0);
+        changed = vertChanged || fragChanged;
+        if (!changed) {
+            continue;
+        }
+
+        std::cout << "[fiction] Hot reload detected: " << w.name << " source changed ("
+                  << (vertChanged ? "vert " : "")
+                  << (fragChanged ? "frag" : "")
+                  << ")" << std::endl;
+
+        if (vertChanged && !compile_shader_source(vertSrc, vertSpv, "vert")) {
+            continue;
+        }
+        if (fragChanged && !compile_shader_source(fragSrc, fragSpv, "frag")) {
+            continue;
+        }
+
+        if (!anyChanged) {
+            vkDeviceWaitIdle(device);
+            anyChanged = true;
+        }
+
+        std::cout << "[fiction] Hot reload: reloading " << w.name << " pipeline..." << std::endl;
+        if (hot_reload_pipeline(device, hr->shaderDir, w.name,
+                                *w.pipelineLayout, renderPass, w.alphaBlend,
+                                w.vertEntry, w.fragEntry, *w.pipeline)) {
+            std::cout << "[fiction] Hot reload: " << w.name << " pipeline updated successfully"
+                      << std::endl;
+            w.vertModTime = newVertSrc;
+            w.fragModTime = newFragSrc;
+        } else {
+            std::cerr << "[fiction] Hot reload ERROR: " << w.name
+                      << " pipeline recreation failed!" << std::endl;
         }
     }
 }
@@ -2062,13 +2229,13 @@ inline void record_particle_commands(VkCommandBuffer cmd) {
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->pipeline);
 
-    // Push constants: {screenWidth, screenHeight, elapsedTime, padding}
+    // Uniforms: {screenWidth, screenHeight, elapsedTime, yFlip}
     float elapsed = std::chrono::duration<float>(
         std::chrono::steady_clock::now() - pr->startTimePoint).count();
-    float pushData[4] = {tr->screenWidth, tr->screenHeight, elapsed, 0.0f};
-    vkCmdPushConstants(cmd, pr->pipelineLayout,
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                        0, sizeof(pushData), pushData);
+    float uniformData[4] = {tr->screenWidth, tr->screenHeight, elapsed, 1.0f};
+    std::memcpy(pr->uniformMapped, uniformData, sizeof(uniformData));
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->pipelineLayout,
+                            0, 1, &pr->descriptorSet, 0, nullptr);
 
     VkViewport viewport{};
     viewport.width = tr->screenWidth;
@@ -2211,7 +2378,7 @@ inline bool init_text_renderer(VkDevice device,
     init_particle_renderer(device, physicalDevice, renderPass, shaderDir);
     auto* pr = get_particle_renderer();
     if (pr && pr->initialized) {
-        watch_shader("particle", true, &pr->pipeline, &pr->pipelineLayout);
+        watch_shader("particle", true, &pr->pipeline, &pr->pipelineLayout, "vs_main", "fs_main");
     }
     
     tr->initialized = true;

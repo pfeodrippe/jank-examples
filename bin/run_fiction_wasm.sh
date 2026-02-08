@@ -114,6 +114,7 @@ RELEASE=1 ./bin/emscripten-bundle -v \
     --em-flag "--embed-file $SOMETHING_DIR/fonts@/fonts" \
     --em-flag "--embed-file $SOMETHING_DIR/stories@/stories" \
     --em-flag "--embed-file $SOMETHING_DIR/resources/fiction@/resources/fiction" \
+    --em-flag "--embed-file $SOMETHING_DIR/vulkan_fiction/particle.wgsl@/vulkan_fiction/particle.wgsl" \
     "$SOMETHING_DIR/src/fiction.jank"
 
 # Copy HTML file from project

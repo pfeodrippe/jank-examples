@@ -14,6 +14,9 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <array>
+#include <fstream>
+#include <iterator>
 #include <cstring>
 #include <cmath>
 #include <iostream>
@@ -207,6 +210,11 @@ struct ParticleRenderer {
     uint32_t maxVertices = 4096;
     uint32_t vertexCount = 0;
     std::vector<TextVertex> vertices;
+    struct SpeakerParticleQuad {
+        float x, y, w, h;
+        float r, g, b;
+    };
+    std::vector<SpeakerParticleQuad> speakerQuads;
     
     float startTime = 0.0f;
     
@@ -321,6 +329,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return texColor * in.color;
 }
 )";
+
+inline bool read_file_to_string(const std::string& path, std::string& out) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+    out.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return !out.empty();
+}
+
+inline bool load_particle_shader_wgsl(const std::string& shaderDir, std::string& outCode) {
+    std::vector<std::string> candidates;
+    candidates.push_back(shaderDir + "/particle.wgsl");
+    candidates.push_back("/" + shaderDir + "/particle.wgsl");
+    candidates.push_back("vulkan_fiction/particle.wgsl");
+    candidates.push_back("/vulkan_fiction/particle.wgsl");
+
+    for (const auto& path : candidates) {
+        if (read_file_to_string(path, outCode)) {
+            std::cout << "[fiction-wasm] Loaded particle WGSL: " << path << std::endl;
+            return true;
+        }
+    }
+    std::cerr << "[fiction-wasm] Failed to load particle WGSL shader file" << std::endl;
+    return false;
+}
 
 // =============================================================================
 // Stub implementations - TODO: Implement WebGPU rendering
@@ -697,6 +731,29 @@ inline float render_dialogue_entry(TextRenderer* tr,
     if (!entry.speaker.empty()) {
         float speakerS = scale * tr->style.speakerScale;
         float speakerLineH = tr->font.lineHeight * speakerS + tr->style.lineSpacing;
+
+        // Match Vulkan visual: small painted square to the left of speaker name.
+        const float markerSize = speakerLineH * 0.40f;
+        const float markerGap = 8.0f;
+        auto* pr = get_particle_renderer();
+        if (pr && pr->initialized) {
+            ParticleRenderer::SpeakerParticleQuad spq{};
+            spq.x = panelStartX - markerGap - markerSize;
+            spq.y = currentY + (speakerLineH - markerSize) * 0.5f;
+            spq.w = markerSize;
+            spq.h = markerSize;
+            spq.r = entry.speakerR;
+            spq.g = entry.speakerG;
+            spq.b = entry.speakerB;
+            pr->speakerQuads.push_back(spq);
+        } else {
+            add_rect(tr,
+                     panelStartX - markerGap - markerSize,
+                     currentY + (speakerLineH - markerSize) * 0.5f,
+                     markerSize, markerSize,
+                     entry.speakerR, entry.speakerG, entry.speakerB, 1.0f);
+        }
+
         render_text_string(tr, entry.speaker, panelStartX, currentY, speakerS,
                            entry.speakerR, entry.speakerG, entry.speakerB, 1.0f);
         currentY += speakerLineH;
@@ -722,6 +779,12 @@ inline void build_dialogue_from_pending() {
     tr->vertices.clear();
     tr->choiceBounds.clear();
     tr->vertexCount = 0;
+    auto* pr = get_particle_renderer();
+    if (pr) {
+        pr->speakerQuads.clear();
+        pr->vertices.clear();
+        pr->vertexCount = 0;
+    }
 
     float panelX = tr->screenWidth * tr->style.panelX;
     float panelW = tr->screenWidth * tr->style.panelWidth;
@@ -820,6 +883,34 @@ inline void build_dialogue_from_pending() {
         tr->queue.WriteBuffer(tr->vertexBuffer, 0, tr->vertices.data(),
                               tr->vertexCount * sizeof(TextVertex));
     }
+
+    if (pr && pr->initialized && pr->vertexBuffer && tr->queue && !pr->speakerQuads.empty()) {
+        for (const auto& spq : pr->speakerQuads) {
+            if (pr->vertices.size() + 6 > pr->maxVertices) break;
+
+            float x0 = spq.x;
+            float y0 = spq.y;
+            float x1 = spq.x + spq.w;
+            float y1 = spq.y + spq.h;
+            float r = spq.r;
+            float g = spq.g;
+            float b = spq.b;
+            float a = 1.0f;
+
+            pr->vertices.push_back({x0, y0, 0.0f, 0.0f, r, g, b, a});
+            pr->vertices.push_back({x1, y0, 1.0f, 0.0f, r, g, b, a});
+            pr->vertices.push_back({x0, y1, 0.0f, 1.0f, r, g, b, a});
+            pr->vertices.push_back({x1, y0, 1.0f, 0.0f, r, g, b, a});
+            pr->vertices.push_back({x1, y1, 1.0f, 1.0f, r, g, b, a});
+            pr->vertices.push_back({x0, y1, 0.0f, 1.0f, r, g, b, a});
+        }
+
+        pr->vertexCount = static_cast<uint32_t>(pr->vertices.size());
+        if (pr->vertexCount > 0) {
+            tr->queue.WriteBuffer(pr->vertexBuffer, 0, pr->vertices.data(),
+                                  pr->vertexCount * sizeof(TextVertex));
+        }
+    }
 }
 
 inline int get_pending_history_count() {
@@ -869,6 +960,9 @@ inline void cleanup_background_renderer() {
 
 // Helper to create shader module from WGSL (definition below).
 inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const char* code);
+inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const std::string& code);
+inline bool init_particle_renderer(const std::string& shaderDir);
+inline void cleanup_particle_renderer();
 
 inline bool load_background_image_simple(const char* filepath, const std::string& shaderDir) {
     (void)shaderDir; // WebGPU backend uses embedded WGSL shaders.
@@ -1100,6 +1194,23 @@ inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const char* c
     return device.CreateShaderModule(&desc);
 }
 
+inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const std::string& code) {
+    wgpu::ShaderSourceWGSL wgslDesc{};
+    wgslDesc.code = {code.c_str(), code.size()};
+
+    wgpu::ShaderModuleDescriptor desc{};
+    desc.nextInChain = &wgslDesc;
+
+    return device.CreateShaderModule(&desc);
+}
+
+inline void cleanup_particle_renderer() {
+    auto* pr = get_particle_renderer();
+    if (!pr) return;
+    delete pr;
+    get_particle_renderer() = nullptr;
+}
+
 // Forward declaration - implementation after Engine is defined
 bool init_text_renderer_simple_impl(float screenWidth, float screenHeight, const std::string& shaderDir);
 
@@ -1111,6 +1222,7 @@ inline void cleanup_text_renderer() {
     auto* tr = get_text_renderer();
     if (!tr) return;
     
+    cleanup_particle_renderer();
     cleanup_background_renderer();
     
     delete tr;
@@ -1589,6 +1701,25 @@ inline void draw_frame() {
         pass.Draw(6);
     }
 
+    // Render animated speaker particles between background and text.
+    auto* pr = fiction::get_particle_renderer();
+    if (pr && pr->initialized && pr->pipeline && pr->vertexCount > 0) {
+        auto* tr = fiction::get_text_renderer();
+        float elapsed = static_cast<float>(emscripten_get_now() * 0.001) - pr->startTime;
+        float uniforms[4] = {
+            tr ? tr->screenWidth : static_cast<float>(e->canvasWidth),
+            tr ? tr->screenHeight : static_cast<float>(e->canvasHeight),
+            elapsed,
+            -1.0f
+        };
+        e->queue.WriteBuffer(pr->uniformBuffer, 0, uniforms, sizeof(uniforms));
+
+        pass.SetPipeline(pr->pipeline);
+        pass.SetBindGroup(0, pr->bindGroup);
+        pass.SetVertexBuffer(0, pr->vertexBuffer, 0, pr->vertexCount * sizeof(fiction::TextVertex));
+        pass.Draw(pr->vertexCount);
+    }
+
     // Render text on top.
     auto* tr = fiction::get_text_renderer();
     if (tr && tr->textPipeline && tr->vertexCount > 0) {
@@ -1654,6 +1785,131 @@ inline int64_t get_file_mod_time(const char* path) {
 // =============================================================================
 
 namespace fiction {
+
+inline bool init_particle_renderer(const std::string& shaderDir) {
+    auto* e = fiction_engine::get_engine();
+    auto* tr = get_text_renderer();
+    if (!e || !e->deviceReady || !tr) {
+        return false;
+    }
+
+    std::string shaderCode;
+    if (!load_particle_shader_wgsl(shaderDir, shaderCode)) {
+        return false;
+    }
+
+    auto* pr = new ParticleRenderer();
+    get_particle_renderer() = pr;
+    pr->startTime = static_cast<float>(emscripten_get_now() * 0.001);
+
+    wgpu::BufferDescriptor uniformDesc{};
+    uniformDesc.size = 16;  // vec2 screenSize + time + yFlip
+    uniformDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    pr->uniformBuffer = e->device.CreateBuffer(&uniformDesc);
+
+    wgpu::BufferDescriptor vertexDesc{};
+    vertexDesc.size = pr->maxVertices * sizeof(TextVertex);
+    vertexDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+    pr->vertexBuffer = e->device.CreateBuffer(&vertexDesc);
+
+    wgpu::BindGroupLayoutEntry layoutEntry{};
+    layoutEntry.binding = 0;
+    layoutEntry.visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
+    layoutEntry.buffer.type = wgpu::BufferBindingType::Uniform;
+
+    wgpu::BindGroupLayoutDescriptor layoutDesc{};
+    layoutDesc.entryCount = 1;
+    layoutDesc.entries = &layoutEntry;
+    pr->bindGroupLayout = e->device.CreateBindGroupLayout(&layoutDesc);
+
+    wgpu::BindGroupEntry bindEntry{};
+    bindEntry.binding = 0;
+    bindEntry.buffer = pr->uniformBuffer;
+    bindEntry.offset = 0;
+    bindEntry.size = 16;
+
+    wgpu::BindGroupDescriptor bindDesc{};
+    bindDesc.layout = pr->bindGroupLayout;
+    bindDesc.entryCount = 1;
+    bindDesc.entries = &bindEntry;
+    pr->bindGroup = e->device.CreateBindGroup(&bindDesc);
+
+    wgpu::ShaderModule shaderModule = createShaderModule(e->device, shaderCode);
+    if (!shaderModule) {
+        std::cerr << "[fiction-wasm] Failed to create particle shader module" << std::endl;
+        cleanup_particle_renderer();
+        return false;
+    }
+
+    wgpu::PipelineLayoutDescriptor pipelineLayoutDesc{};
+    pipelineLayoutDesc.bindGroupLayoutCount = 1;
+    pipelineLayoutDesc.bindGroupLayouts = &pr->bindGroupLayout;
+    wgpu::PipelineLayout pipelineLayout = e->device.CreatePipelineLayout(&pipelineLayoutDesc);
+
+    std::array<wgpu::VertexAttribute, 3> vertexAttrs{};
+    vertexAttrs[0].format = wgpu::VertexFormat::Float32x2;
+    vertexAttrs[0].offset = 0;
+    vertexAttrs[0].shaderLocation = 0;
+    vertexAttrs[1].format = wgpu::VertexFormat::Float32x2;
+    vertexAttrs[1].offset = 8;
+    vertexAttrs[1].shaderLocation = 1;
+    vertexAttrs[2].format = wgpu::VertexFormat::Float32x4;
+    vertexAttrs[2].offset = 16;
+    vertexAttrs[2].shaderLocation = 2;
+
+    wgpu::VertexBufferLayout vertexBufferLayout{};
+    vertexBufferLayout.arrayStride = sizeof(TextVertex);
+    vertexBufferLayout.stepMode = wgpu::VertexStepMode::Vertex;
+    vertexBufferLayout.attributeCount = vertexAttrs.size();
+    vertexBufferLayout.attributes = vertexAttrs.data();
+
+    wgpu::BlendComponent blendColor{};
+    blendColor.operation = wgpu::BlendOperation::Add;
+    blendColor.srcFactor = wgpu::BlendFactor::SrcAlpha;
+    blendColor.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    wgpu::BlendComponent blendAlpha{};
+    blendAlpha.operation = wgpu::BlendOperation::Add;
+    blendAlpha.srcFactor = wgpu::BlendFactor::One;
+    blendAlpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    wgpu::BlendState blendState{};
+    blendState.color = blendColor;
+    blendState.alpha = blendAlpha;
+
+    wgpu::ColorTargetState colorTarget{};
+    colorTarget.format = e->surfaceFormat;
+    colorTarget.blend = &blendState;
+    colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+    wgpu::FragmentState fragmentState{};
+    fragmentState.module = shaderModule;
+    fragmentState.entryPoint = {"fs_main", strlen("fs_main")};
+    fragmentState.targetCount = 1;
+    fragmentState.targets = &colorTarget;
+
+    wgpu::RenderPipelineDescriptor pipelineDesc{};
+    pipelineDesc.layout = pipelineLayout;
+    pipelineDesc.vertex.module = shaderModule;
+    pipelineDesc.vertex.entryPoint = {"vs_main", strlen("vs_main")};
+    pipelineDesc.vertex.bufferCount = 1;
+    pipelineDesc.vertex.buffers = &vertexBufferLayout;
+    pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    pipelineDesc.primitive.frontFace = wgpu::FrontFace::CCW;
+    pipelineDesc.primitive.cullMode = wgpu::CullMode::None;
+    pipelineDesc.fragment = &fragmentState;
+    pipelineDesc.multisample.count = 1;
+    pipelineDesc.multisample.mask = 0xFFFFFFFF;
+
+    pr->pipeline = e->device.CreateRenderPipeline(&pipelineDesc);
+    if (!pr->pipeline) {
+        std::cerr << "[fiction-wasm] Failed to create particle pipeline" << std::endl;
+        cleanup_particle_renderer();
+        return false;
+    }
+
+    pr->initialized = true;
+    std::cout << "[fiction-wasm] Particle renderer initialized" << std::endl;
+    return true;
+}
 
 inline bool init_text_renderer_simple_impl(float screenWidth, float screenHeight, const std::string& shaderDir) {
     auto* e = fiction_engine::get_engine();
@@ -2031,6 +2287,10 @@ inline bool init_text_renderer_simple_impl(float screenWidth, float screenHeight
     }
     
     std::cout << "[fiction-wasm] Text render pipeline created" << std::endl;
+
+    if (!init_particle_renderer(shaderDir)) {
+        std::cout << "[fiction-wasm] Particle renderer disabled (shader unavailable)" << std::endl;
+    }
     
     tr->initialized = true;
     return true;

@@ -287,14 +287,35 @@ build-sdf-deps-standalone: $(SDF_ALL_OBJS) $(SHADERS_SPV) vulkan/libsdf_deps.$(S
 # ============================================================================
 
 # Fiction shaders
-FICTION_SHADERS_SRC = vulkan_fiction/text.vert vulkan_fiction/text.frag vulkan_fiction/bg.vert vulkan_fiction/bg.frag vulkan_fiction/particle.vert vulkan_fiction/particle.frag
-FICTION_SHADERS_SPV = $(FICTION_SHADERS_SRC:.vert=.vert.spv) $(FICTION_SHADERS_SRC:.frag=.frag.spv)
+FICTION_SHADERS_GLSL_SRC = vulkan_fiction/text.vert vulkan_fiction/text.frag vulkan_fiction/bg.vert vulkan_fiction/bg.frag
+FICTION_SHADERS_GLSL_SPV = $(FICTION_SHADERS_GLSL_SRC:.vert=.vert.spv) $(FICTION_SHADERS_GLSL_SRC:.frag=.frag.spv)
+FICTION_PARTICLE_WGSL = vulkan_fiction/particle.wgsl
+FICTION_PARTICLE_SPV = vulkan_fiction/particle.vert.spv vulkan_fiction/particle.frag.spv
+FICTION_SHADERS_SPV = $(FICTION_SHADERS_GLSL_SPV) $(FICTION_PARTICLE_SPV)
 
 vulkan_fiction/%.vert.spv: vulkan_fiction/%.vert
 	glslc -fshader-stage=vert $< -o $@
 
 vulkan_fiction/%.frag.spv: vulkan_fiction/%.frag
 	glslc -fshader-stage=frag $< -o $@
+
+vulkan_fiction/particle.vert.spv: $(FICTION_PARTICLE_WGSL) Makefile
+	@if command -v naga >/dev/null 2>&1; then \
+		naga --input-kind wgsl --keep-coordinate-space --shader-stage vert --entry-point vs_main $< $@; \
+	else \
+		echo "Error: naga is required to compile $(FICTION_PARTICLE_WGSL)"; \
+		echo "Install with: cargo install naga-cli --locked"; \
+		exit 1; \
+	fi
+
+vulkan_fiction/particle.frag.spv: $(FICTION_PARTICLE_WGSL) Makefile
+	@if command -v naga >/dev/null 2>&1; then \
+		naga --input-kind wgsl --keep-coordinate-space --shader-stage frag --entry-point fs_main $< $@; \
+	else \
+		echo "Error: naga is required to compile $(FICTION_PARTICLE_WGSL)"; \
+		echo "Install with: cargo install naga-cli --locked"; \
+		exit 1; \
+	fi
 
 build-fiction-shaders: $(FICTION_SHADERS_SPV)
 	@echo "Fiction shaders compiled."
