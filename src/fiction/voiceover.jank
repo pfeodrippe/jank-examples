@@ -5,8 +5,7 @@
    dialogue history entries appear, independent from Vulkan/WebGPU renderers."
   (:require
    [fiction.state :as state]
-   [vybe.audio :as audio]
-   ["fiction_gfx/fiction_gfx.hpp" :as engine :scope "fiction_engine"]))
+   [vybe.audio :as audio]))
 
 ;; Root folder for dialogue voice assets.
 (def ^:private voice-root "resources/fiction/voice")
@@ -16,11 +15,10 @@
 ;; Runtime module state.
 (defonce ^:private *enabled (atom false))
 (defonce ^:private *last-history-count (atom 0))
-
-(defn- file-exists?
-  "Return true when a path exists in the current filesystem."
-  [path]
-  (not= 0 (engine/get_file_mod_time path)))
+;; Avoid repeating the same warning spam when assets are missing.
+(defonce ^:private *missing-warned (atom #{}))
+;; Entries waiting for playback (used for wasm unlock / transient failures).
+(defonce ^:private *pending (atom []))
 
 (defn- normalized-locale
   "Resolve locale from metadata, falling back to default."
@@ -54,20 +52,35 @@
 (defn- play-entry!
   "Play voice for a dialogue entry, trying fallbacks in order."
   [entry]
-  (loop [paths (candidate-paths entry)]
-    (if (empty? paths)
-      false
-      (let [path (first paths)]
-        (if (file-exists? path)
+  (let [paths (candidate-paths entry)]
+    (loop [remaining paths]
+      (if (empty? remaining)
+        (let [warn-key (or (:id entry) (str "speaker-" (:speaker entry)) "unknown")]
+          (when-not (contains? @*missing-warned warn-key)
+            (swap! *missing-warned conj warn-key)
+            (println "[voiceover] no playable asset for entry id="
+                     (or (:id entry) "<nil>")
+                     "speaker=" (or (:speaker entry) "<nil>")))
+          false)
+        (let [path (first remaining)]
           (if (audio/play! path)
-            true
-            (recur (rest paths)))
-          (recur (rest paths)))))))
+            (do
+              (println "[voiceover] playing:" path)
+              true)
+            (recur (rest remaining))))))))
+
+(defn- speakable-entry?
+  [entry]
+  (contains? #{:dialogue :narration :choice} (:type entry)))
 
 (defn init!
   "Initialize voice-over playback engine."
   []
-  (reset! *last-history-count 0)
+  ;; Ignore already-revealed startup history to avoid autoplay-policy failures
+  ;; on first frame and to start VO from interactive progression.
+  (reset! *last-history-count (count (state/get-history)))
+  (reset! *missing-warned #{})
+  (reset! *pending [])
   (if (audio/init!)
     (do
       (audio/set-volume! 1.0)
@@ -85,7 +98,8 @@
   (when (audio/initialized?)
     (audio/uninit!))
   (reset! *enabled false)
-  (reset! *last-history-count 0))
+  (reset! *last-history-count 0)
+  (reset! *pending []))
 
 (defn update!
   "Process newly appended history entries and trigger VO once per update.
@@ -102,13 +116,18 @@
     (let [start @*last-history-count]
       (when (< start total)
         (reset! *last-history-count total)
-        (when @*enabled
-          (let [entry (loop [i (dec total)]
-                        (if (< i start)
-                          nil
-                          (let [candidate (nth history i)]
-                            (if (= (:type candidate) :dialogue)
-                              candidate
-                              (recur (dec i))))))]
-            (when entry
-              (play-entry! entry))))))))
+        (let [fresh (loop [i start
+                           out []]
+                      (if (>= i total)
+                        out
+                        (let [entry (nth history i)]
+                          (if (speakable-entry? entry)
+                            (recur (inc i) (conj out entry))
+                            (recur (inc i) out)))))]
+          (when (not (empty? fresh))
+            (swap! *pending into fresh)))))
+    ;; Attempt one pending playback per frame; retry on failure.
+    (when (and @*enabled (not (empty? @*pending)))
+      (let [entry (first @*pending)]
+        (when (play-entry! entry)
+          (swap! *pending subvec 1))))))
