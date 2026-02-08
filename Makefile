@@ -58,7 +58,8 @@ CXXFLAGS = -fPIC -O2 -std=c++17
 .PHONY: clean clean-cache sdf integrated integrated_wasm imgui jolt test tests help \
         build-jolt build-imgui build-flecs build-flecs-wasm build-raylib build-deps \
         build-sdf-deps build-shaders build-imgui-vulkan build-vybe-wasm \
-        fiction fiction-wasm build-fiction-shaders build-fiction-gfx-wasm build-fiction-gfx-native
+        fiction fiction-wasm build-fiction-shaders build-fiction-gfx-wasm build-fiction-gfx-native \
+        clean-fiction-wasm-generated
 
 # Default target
 help:
@@ -320,10 +321,8 @@ fiction_gfx/libfiction_gfx_stub.dylib: fiction_gfx/fiction_gfx_stub.cpp
 		$< -o $@
 
 # Build fiction_gfx WASM object
-fiction_gfx/build-wasm/fiction_gfx_wasm.o: fiction_gfx/fiction_gfx_webgpu.hpp
+fiction_gfx/build-wasm/fiction_gfx_wasm.o: fiction_gfx/fiction_gfx_webgpu.cpp fiction_gfx/fiction_gfx_webgpu.hpp
 	@mkdir -p fiction_gfx/build-wasm
-	@echo '#define FICTION_USE_WEBGPU' > fiction_gfx/fiction_gfx_webgpu.cpp
-	@echo '#include "fiction_gfx_webgpu.hpp"' >> fiction_gfx/fiction_gfx_webgpu.cpp
 	em++ -std=c++20 -O2 -c -fPIC \
 		--use-port=emdawnwebgpu \
 		-DFICTION_USE_WEBGPU -DJANK_TARGET_EMSCRIPTEN -DJANK_TARGET_WASM=1 \
@@ -341,8 +340,15 @@ build-fiction-gfx-native: fiction_gfx/build/fiction_gfx_stub.o fiction_gfx/libfi
 build-fiction-gfx-wasm: fiction_gfx/build-wasm/fiction_gfx_wasm.o
 	@echo "Fiction graphics WASM object built."
 
+# Remove stale emscripten-bundle outputs to avoid cached stale links.
+clean-fiction-wasm-generated:
+	rm -f $(JANK_SRC)/build-wasm/fiction_generated.o \
+		$(JANK_SRC)/build-wasm/fiction.js \
+		$(JANK_SRC)/build-wasm/fiction.wasm \
+		$(JANK_SRC)/build-wasm/fiction.html
+
 # Build and run fiction for WASM (WebGPU)
-fiction-wasm: build-flecs-wasm build-vybe-wasm build-fiction-gfx-wasm build-fiction-gfx-native
+fiction-wasm: clean-fiction-wasm-generated build-flecs-wasm build-vybe-wasm build-fiction-gfx-wasm build-fiction-gfx-native
 	./bin/run_fiction_wasm.sh
 
 # ============================================================================

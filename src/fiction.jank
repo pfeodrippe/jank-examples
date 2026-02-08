@@ -85,14 +85,15 @@
 (defn process-mouse-motion!
   "Process mouse motion for hover detection."
   [x y]
-  (let [scale (engine/get_pixel_scale)]
-    (text-render/update-mouse-position! (* x scale) (* y scale))))
+  (text-render/update-mouse-position! x y))
 
 (defn process-mouse-click!
   "Process mouse click to select hovered choice."
   [x y button]
   ;; Only handle left click (button 1)
   (when (= button 1)
+    ;; Ensure click hit-testing uses the current click coordinates.
+    (process-mouse-motion! x y)
     (let [clicked-choice (text-render/get-clicked-choice)]
       (when (>= clicked-choice 0)
         (println "Selected choice:" (inc clicked-choice))

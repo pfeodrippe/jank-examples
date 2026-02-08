@@ -262,6 +262,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     var ndc: vec2<f32>;
     ndc.x = (in.position.x / uniforms.screenSize.x) * 2.0 - 1.0;
+    // WebGPU surface coordinates are top-left origin, so Y must be flipped here.
     ndc.y = 1.0 - (in.position.y / uniforms.screenSize.y) * 2.0;
     out.position = vec4<f32>(ndc, 0.0, 1.0);
     out.texCoord = in.texCoord;
@@ -306,6 +307,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     var ndc: vec2<f32>;
     ndc.x = (in.position.x / uniforms.screenSize.x) * 2.0 - 1.0;
+    // WebGPU surface coordinates are top-left origin, so Y must be flipped here.
     ndc.y = 1.0 - (in.position.y / uniforms.screenSize.y) * 2.0;
     out.position = vec4<f32>(ndc, 0.0, 1.0);
     out.texCoord = in.texCoord;
@@ -332,7 +334,9 @@ inline bool text_renderer_initialized() {
 inline void scroll_dialogue(float delta) {
     auto* tr = get_text_renderer();
     if (!tr) return;
-    tr->scrollOffset = std::max(0.0f, std::min(tr->scrollOffset - delta * 30.0f, tr->maxScroll));
+    // Manual scroll cancels auto-scroll and uses pixel delta directly (Vulkan parity).
+    tr->isAutoScrolling = false;
+    tr->scrollOffset = std::max(0.0f, std::min(tr->maxScroll, tr->scrollOffset + delta));
 }
 
 inline void scroll_to_bottom(bool animated = true) {
@@ -451,221 +455,369 @@ inline void add_choice_entry(const char* text) {
     add_choice_entry_with_selected(text, false);
 }
 
+inline std::vector<int32_t> get_required_codepoints() {
+    std::vector<int32_t> codepoints;
+
+    // Basic printable ASCII.
+    for (int c = 32; c < 127; c++) {
+        codepoints.push_back(c);
+    }
+
+    // Latin-1 supplement for accented western European text.
+    for (int c = 0x00A0; c <= 0x00FF; c++) {
+        codepoints.push_back(c);
+    }
+
+    // Extra punctuation/ligatures used in story text and metadata.
+    int32_t extras[] = {
+        0x0152, 0x0153, 0x0178, // OE/oe/Y diaeresis
+        0x2013, 0x2014,         // en/em dash
+        0x2018, 0x2019,         // curly single quotes
+        0x201C, 0x201D,         // curly double quotes
+        0x2026,                 // ellipsis
+        0x0394,                 // Delta marker in script
+    };
+    for (int32_t cp : extras) {
+        codepoints.push_back(cp);
+    }
+    return codepoints;
+}
+
+inline int32_t decode_utf8(const std::string& str, size_t& i) {
+    if (i >= str.size()) return 0;
+
+    uint8_t c = static_cast<uint8_t>(str[i]);
+    if ((c & 0x80) == 0) {
+        i++;
+        return c;
+    }
+    auto is_cont = [&](size_t idx) -> bool {
+        if (idx >= str.size()) return false;
+        return (static_cast<uint8_t>(str[idx]) & 0xC0) == 0x80;
+    };
+
+    if ((c & 0xE0) == 0xC0 && i + 1 < str.size() && is_cont(i + 1)) {
+        int32_t cp = (c & 0x1F) << 6;
+        cp |= (static_cast<uint8_t>(str[i + 1]) & 0x3F);
+        i += 2;
+        return cp;
+    }
+    if ((c & 0xF0) == 0xE0 && i + 2 < str.size() && is_cont(i + 1) && is_cont(i + 2)) {
+        int32_t cp = (c & 0x0F) << 12;
+        cp |= (static_cast<uint8_t>(str[i + 1]) & 0x3F) << 6;
+        cp |= (static_cast<uint8_t>(str[i + 2]) & 0x3F);
+        i += 3;
+        return cp;
+    }
+    if ((c & 0xF8) == 0xF0 && i + 3 < str.size() &&
+        is_cont(i + 1) && is_cont(i + 2) && is_cont(i + 3)) {
+        int32_t cp = (c & 0x07) << 18;
+        cp |= (static_cast<uint8_t>(str[i + 1]) & 0x3F) << 12;
+        cp |= (static_cast<uint8_t>(str[i + 2]) & 0x3F) << 6;
+        cp |= (static_cast<uint8_t>(str[i + 3]) & 0x3F);
+        i += 4;
+        return cp;
+    }
+
+    // Fallback for non-UTF-8 bytes (e.g. extended single-byte encodings):
+    // consume one byte only to avoid swallowing neighboring letters.
+    i++;
+    return static_cast<int32_t>(c);
+}
+
+inline void add_text_quad(TextRenderer* tr,
+                          float x, float y, float w, float h,
+                          float u0, float v0, float u1, float v1,
+                          float r, float g, float b, float a) {
+    if (!tr) return;
+    if (tr->vertices.size() + 6 > tr->maxVertices) return;
+
+    TextVertex v;
+    v.r = r; v.g = g; v.b = b; v.a = a;
+
+    v.x = x;     v.y = y;     v.u = u0; v.v = v0; tr->vertices.push_back(v);
+    v.x = x + w; v.y = y;     v.u = u1; v.v = v0; tr->vertices.push_back(v);
+    v.x = x;     v.y = y + h; v.u = u0; v.v = v1; tr->vertices.push_back(v);
+
+    v.x = x + w; v.y = y;     v.u = u1; v.v = v0; tr->vertices.push_back(v);
+    v.x = x + w; v.y = y + h; v.u = u1; v.v = v1; tr->vertices.push_back(v);
+    v.x = x;     v.y = y + h; v.u = u0; v.v = v1; tr->vertices.push_back(v);
+}
+
+inline void add_rect(TextRenderer* tr,
+                     float x, float y, float w, float h,
+                     float r, float g, float b, float a) {
+    // Uses a white patch in the atlas (written during atlas generation).
+    add_text_quad(tr, x, y, w, h, 0.0f, 0.0f, 0.01f, 0.01f, r, g, b, a);
+}
+
+inline float render_text_string(TextRenderer* tr,
+                                const std::string& text,
+                                float x, float y,
+                                float scale,
+                                float r, float g, float b, float a) {
+    float cursorX = x;
+    size_t i = 0;
+    while (i < text.size()) {
+        int32_t cp = decode_utf8(text, i);
+        if (cp == ' ') {
+            cursorX += tr->font.spaceWidth * scale;
+            continue;
+        }
+
+        auto it = tr->font.glyphs.find(cp);
+        if (it == tr->font.glyphs.end()) {
+            it = tr->font.glyphs.find('?');
+            if (it == tr->font.glyphs.end()) {
+                cursorX += tr->font.spaceWidth * scale;
+                continue;
+            }
+        }
+
+        const GlyphInfo& gi = it->second;
+        add_text_quad(tr,
+                      cursorX + gi.xoffset * scale,
+                      y + gi.yoffset * scale,
+                      gi.width * scale,
+                      gi.height * scale,
+                      gi.u0, gi.v0, gi.u1, gi.v1,
+                      r, g, b, a);
+        cursorX += gi.advance * scale;
+    }
+    return cursorX;
+}
+
+inline float measure_text_width(TextRenderer* tr, const std::string& text, float scale) {
+    float width = 0.0f;
+    size_t i = 0;
+    while (i < text.size()) {
+        int32_t cp = decode_utf8(text, i);
+        if (cp == ' ') {
+            width += tr->font.spaceWidth * scale;
+            continue;
+        }
+        auto it = tr->font.glyphs.find(cp);
+        if (it != tr->font.glyphs.end()) {
+            width += it->second.advance * scale;
+        } else {
+            width += tr->font.spaceWidth * scale;
+        }
+    }
+    return width;
+}
+
+inline std::vector<std::string> wrap_text(TextRenderer* tr,
+                                          const std::string& text,
+                                          float maxWidth,
+                                          float scale) {
+    std::vector<std::string> lines;
+    std::string currentLine;
+    float currentWidth = 0.0f;
+
+    size_t i = 0;
+    while (i < text.size()) {
+        size_t wordStart = i;
+        while (i < text.size()) {
+            size_t save = i;
+            int32_t cp = decode_utf8(text, i);
+            if (cp == ' ' || cp == '\n') {
+                i = save;
+                break;
+            }
+        }
+        std::string word = text.substr(wordStart, i - wordStart);
+        float wordWidth = measure_text_width(tr, word, scale);
+
+        if (currentWidth + wordWidth > maxWidth && !currentLine.empty()) {
+            lines.push_back(currentLine);
+            currentLine = word;
+            currentWidth = wordWidth;
+        } else {
+            if (!currentLine.empty()) {
+                currentLine += " ";
+                currentWidth += tr->font.spaceWidth * scale;
+            }
+            currentLine += word;
+            currentWidth += wordWidth;
+        }
+
+        if (i < text.size()) {
+            size_t save = i;
+            int32_t cp = decode_utf8(text, i);
+            if (cp == '\n') {
+                if (!currentLine.empty()) lines.push_back(currentLine);
+                currentLine.clear();
+                currentWidth = 0.0f;
+            } else if (cp != ' ') {
+                i = save;
+            }
+        }
+    }
+
+    if (!currentLine.empty()) lines.push_back(currentLine);
+    return lines;
+}
+
+inline float render_dialogue_entry(TextRenderer* tr,
+                                   const DialogueEntry& entry,
+                                   float y,
+                                   float scale,
+                                   bool isHovered = false) {
+    float panelStartX = tr->screenWidth * tr->style.panelX + tr->style.panelPadding;
+    float textWidth = tr->screenWidth * tr->style.panelWidth - tr->style.panelPadding * 2;
+    float lineH = tr->font.lineHeight * scale + tr->style.lineSpacing;
+    float currentY = y;
+
+    float textR = tr->style.textR;
+    float textG = tr->style.textG;
+    float textB = tr->style.textB;
+
+    switch (entry.type) {
+        case EntryType::Choice:
+            if (isHovered) {
+                textR = tr->style.choiceHoverR; textG = tr->style.choiceHoverG; textB = tr->style.choiceHoverB;
+            } else {
+                textR = tr->style.choiceR; textG = tr->style.choiceG; textB = tr->style.choiceB;
+            }
+            break;
+        case EntryType::ChoiceSelected:
+            if (isHovered) {
+                textR = tr->style.choiceSelectedHoverR; textG = tr->style.choiceSelectedHoverG; textB = tr->style.choiceSelectedHoverB;
+            } else {
+                textR = tr->style.choiceSelectedR; textG = tr->style.choiceSelectedG; textB = tr->style.choiceSelectedB;
+            }
+            break;
+        case EntryType::Narration:
+            textR = tr->style.narrationR; textG = tr->style.narrationG; textB = tr->style.narrationB;
+            break;
+        default:
+            break;
+    }
+
+    if (!entry.speaker.empty()) {
+        float speakerS = scale * tr->style.speakerScale;
+        float speakerLineH = tr->font.lineHeight * speakerS + tr->style.lineSpacing;
+        render_text_string(tr, entry.speaker, panelStartX, currentY, speakerS,
+                           entry.speakerR, entry.speakerG, entry.speakerB, 1.0f);
+        currentY += speakerLineH;
+    }
+
+    auto lines = wrap_text(tr, entry.text, textWidth, scale);
+    for (const auto& line : lines) {
+        float indent = (entry.type == EntryType::Choice || entry.type == EntryType::ChoiceSelected)
+            ? tr->style.choiceIndent
+            : 0.0f;
+        render_text_string(tr, line, panelStartX + indent, currentY, scale, textR, textG, textB, 1.0f);
+        currentY += lineH;
+    }
+
+    currentY += tr->style.lineSpacing * 2;
+    return currentY;
+}
+
 inline void build_dialogue_from_pending() {
     auto* tr = get_text_renderer();
     if (!tr) return;
-    
-    // Clear previous vertices
+
     tr->vertices.clear();
     tr->choiceBounds.clear();
     tr->vertexCount = 0;
-    
-    // Get layout parameters
-    float panelX = tr->style.panelX * tr->screenWidth;
-    float panelWidth = tr->style.panelWidth * tr->screenWidth;
-    float padding = tr->style.panelPadding;
-    float bottomMargin = tr->style.bottomMargin;
-    float lineHeight = tr->font.lineHeight * tr->style.textScale;
-    float entrySpacing = tr->style.entrySpacing;
-    
-    float x = panelX + padding;
-    float y = tr->screenHeight - bottomMargin;
-    float maxWidth = panelWidth - padding * 2;
-    
-    // For each pending history entry, generate text quads
+
+    float panelX = tr->screenWidth * tr->style.panelX;
+    float panelW = tr->screenWidth * tr->style.panelWidth;
+    float panelH = tr->screenHeight;
+    float scale = tr->style.textScale;
+    float y = tr->style.panelPadding - tr->scrollOffset;
+
+    // Panel background (transparent by default, set via style).
+    add_rect(tr, panelX, 0, panelW, panelH,
+             tr->style.bgR, tr->style.bgG, tr->style.bgB, tr->style.bgA);
+
     for (const auto& entry : get_pending_history()) {
-        float r, g, b;
-        
-        switch (entry.type) {
-            case EntryType::Dialogue:
-                r = tr->style.textR;
-                g = tr->style.textG;
-                b = tr->style.textB;
-                break;
-            case EntryType::Narration:
-                r = tr->style.narrationR;
-                g = tr->style.narrationG;
-                b = tr->style.narrationB;
-                break;
-            default:
-                r = tr->style.textR;
-                g = tr->style.textG;
-                b = tr->style.textB;
-                break;
-        }
-        
-        // Add speaker name if present
-        if (!entry.speaker.empty()) {
-            // Use speaker color
-            float sr = entry.speakerR;
-            float sg = entry.speakerG;
-            float sb = entry.speakerB;
-            
-            // Generate vertices for speaker name
-            float cx = x;
-            for (char c : entry.speaker) {
-                if (c == ' ') {
-                    cx += tr->font.spaceWidth * tr->style.speakerScale;
-                    continue;
-                }
-                
-                auto it = tr->font.glyphs.find(static_cast<int32_t>(c));
-                if (it == tr->font.glyphs.end()) continue;
-                
-                const GlyphInfo& g_info = it->second;
-                float scale = tr->style.speakerScale;
-                float gw = g_info.width * scale;
-                float gh = g_info.height * scale;
-                float gx = cx + g_info.xoffset * scale;
-                float gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
-                
-                // Generate quad (6 vertices for 2 triangles)
-                TextVertex v;
-                v.r = sr; v.g = sg; v.b = sb; v.a = 1.0f;
-                
-                // Triangle 1
-                v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
-                tr->vertices.push_back(v);
-                v.x = gx + gw; v.y = gy; v.u = g_info.u1; v.v = g_info.v0;
-                tr->vertices.push_back(v);
-                v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
-                tr->vertices.push_back(v);
-                
-                // Triangle 2
-                v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
-                tr->vertices.push_back(v);
-                v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
-                tr->vertices.push_back(v);
-                v.x = gx; v.y = gy + gh; v.u = g_info.u0; v.v = g_info.v1;
-                tr->vertices.push_back(v);
-                
-                cx += g_info.advance * scale;
-            }
-            y -= lineHeight * tr->style.speakerScale;
-        }
-        
-        // Generate vertices for main text
-        float cx = x;
-        for (char c : entry.text) {
-            if (c == ' ') {
-                cx += tr->font.spaceWidth * tr->style.textScale;
-                continue;
-            }
-            if (c == '\n') {
-                cx = x;
-                y -= lineHeight;
-                continue;
-            }
-            
-            auto it = tr->font.glyphs.find(static_cast<int32_t>(c));
-            if (it == tr->font.glyphs.end()) continue;
-            
-            const GlyphInfo& g_info = it->second;
-            float scale = tr->style.textScale;
-            float gw = g_info.width * scale;
-            float gh = g_info.height * scale;
-            float gx = cx + g_info.xoffset * scale;
-            float gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
-            
-            // Word wrap
-            if (cx + gw > panelX + panelWidth - padding) {
-                cx = x;
-                y -= lineHeight;
-                gx = cx + g_info.xoffset * scale;
-                gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
-            }
-            
-            // Generate quad
-            TextVertex v;
-            v.r = r; v.g = g; v.b = b; v.a = 1.0f;
-            
-            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
-            tr->vertices.push_back(v);
-            v.x = gx + gw; v.y = gy; v.u = g_info.u1; v.v = g_info.v0;
-            tr->vertices.push_back(v);
-            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
-            tr->vertices.push_back(v);
-            
-            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
-            tr->vertices.push_back(v);
-            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
-            tr->vertices.push_back(v);
-            v.x = gx; v.y = gy + gh; v.u = g_info.u0; v.v = g_info.v1;
-            tr->vertices.push_back(v);
-            
-            cx += g_info.advance * scale;
-        }
-        
-        y -= lineHeight + entrySpacing;
-    }
-    
-    // Process choices
-    int choiceIndex = 0;
-    for (const auto& entry : get_pending_choices()) {
-        float choiceY0 = y;
-        
-        float r, g, b;
-        if (entry.selected) {
-            r = tr->style.choiceSelectedR;
-            g = tr->style.choiceSelectedG;
-            b = tr->style.choiceSelectedB;
+        if (y > tr->screenHeight) break;
+
+        if (y + 200 > 0) {
+            y = render_dialogue_entry(tr, entry, y, scale, false);
         } else {
-            r = tr->style.choiceR;
-            g = tr->style.choiceG;
-            b = tr->style.choiceB;
+            auto lines = wrap_text(tr, entry.text,
+                                   tr->screenWidth * tr->style.panelWidth - tr->style.panelPadding * 2,
+                                   scale);
+            float lineH = tr->font.lineHeight * scale + tr->style.lineSpacing;
+            y += (!entry.speaker.empty() ? lineH : 0);
+            y += lines.size() * lineH;
+            y += tr->style.lineSpacing * 2;
         }
-        
-        float cx = x + tr->style.choiceIndent;
-        for (char c : entry.text) {
-            if (c == ' ') {
-                cx += tr->font.spaceWidth * tr->style.textScale;
-                continue;
-            }
-            
-            auto it = tr->font.glyphs.find(static_cast<int32_t>(c));
-            if (it == tr->font.glyphs.end()) continue;
-            
-            const GlyphInfo& g_info = it->second;
-            float scale = tr->style.textScale;
-            float gw = g_info.width * scale;
-            float gh = g_info.height * scale;
-            float gx = cx + g_info.xoffset * scale;
-            float gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
-            
-            TextVertex v;
-            v.r = r; v.g = g; v.b = b; v.a = 1.0f;
-            
-            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
-            tr->vertices.push_back(v);
-            v.x = gx + gw; v.y = gy; v.u = g_info.u1; v.v = g_info.v0;
-            tr->vertices.push_back(v);
-            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
-            tr->vertices.push_back(v);
-            
-            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
-            tr->vertices.push_back(v);
-            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
-            tr->vertices.push_back(v);
-            v.x = gx; v.y = gy + gh; v.u = g_info.u0; v.v = g_info.v1;
-            tr->vertices.push_back(v);
-            
-            cx += g_info.advance * scale;
-        }
-        
-        y -= lineHeight + entrySpacing;
-        
-        ChoiceBounds bounds;
-        bounds.y0 = choiceY0;
-        bounds.y1 = y;
-        bounds.index = choiceIndex++;
-        tr->choiceBounds.push_back(bounds);
+        y += tr->style.lineSpacing * tr->style.entrySpacing;
     }
-    
+
+    if (!get_pending_choices().empty()) {
+        float sepY = y + 10.0f;
+        add_rect(tr, panelX + tr->style.panelPadding, sepY,
+                 panelW - tr->style.panelPadding * 2, 1.0f,
+                 0.4f, 0.4f, 0.4f, 0.5f);
+        y = sepY + 20.0f;
+    }
+
+    tr->hoveredChoice = -1;
+    float textWidth = tr->screenWidth * tr->style.panelWidth - tr->style.panelPadding * 2;
+    float lineH = tr->font.lineHeight * scale + tr->style.lineSpacing;
+
+    float choiceY = y;
+    for (size_t i = 0; i < get_pending_choices().size(); i++) {
+        std::string numberedText = std::to_string(i + 1) + ". " + get_pending_choices()[i].text;
+        auto lines = wrap_text(tr, numberedText, textWidth, scale);
+        float entryHeight = lines.size() * lineH + tr->style.lineSpacing * 2;
+
+        if (tr->mouseX >= panelX && tr->mouseX <= panelX + panelW &&
+            tr->mouseY >= choiceY && tr->mouseY < choiceY + entryHeight) {
+            tr->hoveredChoice = static_cast<int>(i);
+        }
+
+        ChoiceBounds bounds;
+        bounds.y0 = choiceY;
+        bounds.y1 = choiceY + entryHeight;
+        bounds.index = static_cast<int>(i);
+        tr->choiceBounds.push_back(bounds);
+        choiceY += entryHeight;
+    }
+
+    int choiceNum = 1;
+    for (size_t i = 0; i < get_pending_choices().size(); i++) {
+        DialogueEntry numberedChoice = get_pending_choices()[i];
+        numberedChoice.text = std::to_string(choiceNum) + ". " + get_pending_choices()[i].text;
+        bool isHovered = (tr->hoveredChoice == static_cast<int>(i));
+        y = render_dialogue_entry(tr, numberedChoice, y, scale, isHovered);
+        choiceNum++;
+    }
+
+    tr->maxScroll = std::max(0.0f, y + tr->scrollOffset - tr->screenHeight + tr->style.bottomMargin);
+    int currentEntryCount = static_cast<int>(get_pending_history().size() + get_pending_choices().size());
+    bool newContentAdded = (currentEntryCount > tr->lastEntryCount);
+    tr->lastEntryCount = currentEntryCount;
+
+    if (tr->autoScrollEnabled && tr->maxScroll > 0 && newContentAdded) {
+        tr->isAutoScrolling = true;
+        tr->targetScrollOffset = tr->maxScroll;
+    }
+    if (tr->isAutoScrolling) {
+        float diff = tr->targetScrollOffset - tr->scrollOffset;
+        if (std::abs(diff) > 0.5f) {
+            float dt = 1.0f / 60.0f;
+            float step = tr->scrollAnimationSpeed * tr->font.lineHeight * tr->style.textScale * dt;
+            if (diff > 0.0f) {
+                tr->scrollOffset += std::min(diff, step);
+            } else {
+                tr->scrollOffset -= std::min(std::abs(diff), step);
+            }
+        } else {
+            tr->scrollOffset = tr->targetScrollOffset;
+            tr->isAutoScrolling = false;
+        }
+    }
+
     tr->vertexCount = static_cast<uint32_t>(tr->vertices.size());
-    
-    // Upload vertices to GPU if we have a buffer
     if (tr->vertexBuffer && tr->vertexCount > 0 && tr->queue) {
-        tr->queue.WriteBuffer(tr->vertexBuffer, 0, tr->vertices.data(), 
+        tr->queue.WriteBuffer(tr->vertexBuffer, 0, tr->vertices.data(),
                               tr->vertexCount * sizeof(TextVertex));
     }
 }
@@ -683,7 +835,6 @@ inline void update_mouse_position(float x, float y) {
     if (!tr) return;
     tr->mouseX = x;
     tr->mouseY = y;
-    // TODO: Update hovered choice based on position
 }
 
 inline int get_hovered_choice() {
@@ -692,7 +843,20 @@ inline int get_hovered_choice() {
 }
 
 inline int get_clicked_choice() {
-    // TODO: Check if mouse was clicked on a choice
+    auto* tr = get_text_renderer();
+    if (!tr) return -1;
+
+    float panelX = tr->screenWidth * tr->style.panelX;
+    float panelW = tr->screenWidth * tr->style.panelWidth;
+    if (tr->mouseX < panelX || tr->mouseX > panelX + panelW) {
+        return -1;
+    }
+
+    for (const auto& bounds : tr->choiceBounds) {
+        if (tr->mouseY >= bounds.y0 && tr->mouseY < bounds.y1) {
+            return bounds.index;
+        }
+    }
     return -1;
 }
 
@@ -864,8 +1028,23 @@ inline EM_BOOL key_callback(int eventType, const EmscriptenKeyboardEvent* e, voi
 }
 
 inline EM_BOOL mouse_callback(int eventType, const EmscriptenMouseEvent* e, void* userData) {
-    float x = (float)e->targetX;
-    float y = (float)e->targetY;
+    // Convert CSS-space event coordinates into canvas backing-pixel space.
+    // This keeps hit testing correct when devicePixelRatio != 1.
+    float x = static_cast<float>(e->targetX);
+    float y = static_cast<float>(e->targetY);
+    auto* eng = get_engine();
+    if (eng) {
+        double cssW = 0.0, cssH = 0.0;
+        emscripten_get_element_css_size("#canvas", &cssW, &cssH);
+        if (cssW > 0.0) {
+            x = x * static_cast<float>(eng->canvasWidth / cssW);
+        }
+        if (cssH > 0.0) {
+            y = y * static_cast<float>(eng->canvasHeight / cssH);
+        }
+        x = std::max(0.0f, std::min(x, static_cast<float>(eng->canvasWidth)));
+        y = std::max(0.0f, std::min(y, static_cast<float>(eng->canvasHeight)));
+    }
     if (eventType == EMSCRIPTEN_EVENT_MOUSEMOVE) {
         get_event_queue().push_back({4, 0, 0, x, y, 0});
     } else if (eventType == EMSCRIPTEN_EVENT_MOUSEDOWN) {
@@ -972,11 +1151,20 @@ inline bool init(const char* title) {
     get_engine() = new Engine();
     auto* e = get_engine();
     
-    // Get canvas size
+    // Get canvas size in device pixels for crisp text (retina aware).
     double cssWidth, cssHeight;
     emscripten_get_element_css_size("#canvas", &cssWidth, &cssHeight);
-    e->canvasWidth = (uint32_t)cssWidth;
-    e->canvasHeight = (uint32_t)cssHeight;
+    double pixelRatio = emscripten_get_device_pixel_ratio();
+    if (pixelRatio <= 0.0) pixelRatio = 1.0;
+
+    e->canvasWidth = static_cast<uint32_t>(cssWidth * pixelRatio);
+    e->canvasHeight = static_cast<uint32_t>(cssHeight * pixelRatio);
+    if (e->canvasWidth == 0) e->canvasWidth = 1280;
+    if (e->canvasHeight == 0) e->canvasHeight = 720;
+
+    emscripten_set_canvas_element_size("#canvas",
+                                       static_cast<int>(e->canvasWidth),
+                                       static_cast<int>(e->canvasHeight));
     
     std::cout << "[fiction-wasm] Canvas size: " << e->canvasWidth << "x" << e->canvasHeight << std::endl;
     
@@ -1254,8 +1442,8 @@ inline bool init_text_renderer_simple_impl(float screenWidth, float screenHeight
         return false;
     }
     
-    // Calculate font metrics
-    float fontSize = 24.0f;
+    // Match Vulkan font sizing for better readability/crispness.
+    float fontSize = 32.0f;
     tr->font.scale = stbtt_ScaleForPixelHeight(&tr->font.fontInfo, fontSize);
     
     int ascent, descent, lineGap;
@@ -1272,62 +1460,93 @@ inline bool init_text_renderer_simple_impl(float screenWidth, float screenHeight
     const uint32_t atlasW = tr->font.atlasWidth;
     const uint32_t atlasH = tr->font.atlasHeight;
     std::vector<uint8_t> atlasBitmap(atlasW * atlasH, 0);
-    
-    // Pack glyphs into atlas
-    int penX = 1, penY = 1, rowHeight = 0;
+
+    // Reserve a small solid white block at top-left for rectangle rendering.
+    for (uint32_t py = 0; py < 32 && py < atlasH; py++) {
+        for (uint32_t px = 0; px < 32 && px < atlasW; px++) {
+            atlasBitmap[py * atlasW + px] = 255;
+        }
+    }
+
+    // Pack required glyphs into atlas.
+    int penX = 32;
+    int penY = 0;
+    int rowHeight = 0;
+    const int padding = 2;
     int glyphsRendered = 0;
-    
-    for (int c = 32; c < 127; c++) {
-        int gw, gh, xoff, yoff;
-        unsigned char* bitmap = stbtt_GetCodepointBitmap(&tr->font.fontInfo, 
-            tr->font.scale, tr->font.scale, c, &gw, &gh, &xoff, &yoff);
-        
-        if (!bitmap) continue;
-        
-        // Check if glyph fits on current row
-        if (penX + gw + 1 >= (int)atlasW) {
-            penX = 1;
-            penY += rowHeight + 1;
+
+    const auto codepoints = get_required_codepoints();
+    for (int32_t cp : codepoints) {
+        if (cp == ' ') {
+            GlyphInfo info{};
+            info.u0 = 0.0f; info.v0 = 0.0f; info.u1 = 0.01f; info.v1 = 0.01f;
+            info.width = 0.0f;
+            info.height = 0.0f;
+            info.advance = tr->font.spaceWidth;
+            info.xoffset = 0.0f;
+            info.yoffset = 0.0f;
+            tr->font.glyphs[cp] = info;
+            continue;
+        }
+
+        int glyphIndex = stbtt_FindGlyphIndex(&tr->font.fontInfo, cp);
+        if (glyphIndex == 0 && cp != 0) {
+            continue;
+        }
+
+        int advanceWidth = 0, lsb = 0;
+        stbtt_GetCodepointHMetrics(&tr->font.fontInfo, cp, &advanceWidth, &lsb);
+
+        int x0, y0, x1, y1;
+        stbtt_GetCodepointBitmapBox(&tr->font.fontInfo, cp, tr->font.scale, tr->font.scale,
+                                    &x0, &y0, &x1, &y1);
+        int gw = x1 - x0;
+        int gh = y1 - y0;
+
+        if (gw <= 0 || gh <= 0) {
+            GlyphInfo info{};
+            info.u0 = 0.0f; info.v0 = 0.0f; info.u1 = 0.0f; info.v1 = 0.0f;
+            info.width = 0.0f;
+            info.height = 0.0f;
+            info.advance = advanceWidth * tr->font.scale;
+            info.xoffset = 0.0f;
+            info.yoffset = 0.0f;
+            tr->font.glyphs[cp] = info;
+            continue;
+        }
+
+        if (penX + gw + padding > static_cast<int>(atlasW)) {
+            penX = 0;
+            penY += rowHeight + padding;
             rowHeight = 0;
         }
-        
-        // Check if we ran out of space
-        if (penY + gh + 1 >= (int)atlasH) {
-            stbtt_FreeBitmap(bitmap, nullptr);
+        if (penY + gh > static_cast<int>(atlasH)) {
+            std::cerr << "[fiction-wasm] Font atlas full at codepoint " << cp << std::endl;
             break;
         }
-        
-        // Copy glyph to atlas
-        for (int y = 0; y < gh; y++) {
-            for (int x = 0; x < gw; x++) {
-                atlasBitmap[(penY + y) * atlasW + (penX + x)] = bitmap[y * gw + x];
-            }
-        }
-        
-        // Get advance width
-        int advanceWidth, leftSideBearing;
-        stbtt_GetCodepointHMetrics(&tr->font.fontInfo, c, &advanceWidth, &leftSideBearing);
-        
-        // Store glyph info
-        GlyphInfo info;
-        info.u0 = (float)penX / atlasW;
-        info.v0 = (float)penY / atlasH;
-        info.u1 = (float)(penX + gw) / atlasW;
-        info.v1 = (float)(penY + gh) / atlasH;
-        info.width = (float)gw;
-        info.height = (float)gh;
+
+        stbtt_MakeCodepointBitmap(&tr->font.fontInfo,
+                                  atlasBitmap.data() + penY * atlasW + penX,
+                                  gw, gh,
+                                  atlasW,
+                                  tr->font.scale, tr->font.scale,
+                                  cp);
+
+        GlyphInfo info{};
+        info.u0 = static_cast<float>(penX) / atlasW;
+        info.v0 = static_cast<float>(penY) / atlasH;
+        info.u1 = static_cast<float>(penX + gw) / atlasW;
+        info.v1 = static_cast<float>(penY + gh) / atlasH;
+        info.width = static_cast<float>(gw);
+        info.height = static_cast<float>(gh);
         info.advance = advanceWidth * tr->font.scale;
-        info.xoffset = (float)xoff;
-        info.yoffset = (float)yoff;
-        
-        tr->font.glyphs[c] = info;
-        
-        // Update pen position
-        penX += gw + 1;
+        info.xoffset = static_cast<float>(x0);
+        info.yoffset = static_cast<float>(y0) + tr->font.ascent;
+        tr->font.glyphs[cp] = info;
+
+        penX += gw + padding;
         rowHeight = std::max(rowHeight, gh);
         glyphsRendered++;
-        
-        stbtt_FreeBitmap(bitmap, nullptr);
     }
     
     // Estimate space width
