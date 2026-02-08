@@ -67,6 +67,7 @@ float get_pixel_scale() { return 1.0f; }
 
 // Event queue
 int get_event_count() { return 0; }
+void clear_events() {}
 int get_event_type(int) { return 0; }
 int get_event_scancode(int) { return 0; }
 float get_event_scroll_y(int) { return 0.0f; }

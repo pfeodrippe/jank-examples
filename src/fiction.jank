@@ -127,7 +127,10 @@
                                  (engine/get_event_mouse_button (cpp/int. i)))
 
           ;; Key up (type 2), mouse up (type 6) - ignore for now
-          :else nil)))))
+          :else nil)))
+    ;; Drain queue only after processing to avoid dropping events that arrive
+    ;; between frames.
+    (engine/clear_events)))
 
 ;; =============================================================================
 ;; Initialization

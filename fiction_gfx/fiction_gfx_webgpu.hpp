@@ -860,10 +860,233 @@ inline int get_clicked_choice() {
     return -1;
 }
 
+inline void cleanup_background_renderer() {
+    auto* bg = get_bg_renderer();
+    if (!bg) return;
+    delete bg;
+    get_bg_renderer() = nullptr;
+}
+
+// Helper to create shader module from WGSL (definition below).
+inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const char* code);
+
 inline bool load_background_image_simple(const char* filepath, const std::string& shaderDir) {
-    // TODO: Implement WebGPU background loading
-    std::cout << "[fiction-wasm] Background loading not yet implemented: " << filepath << std::endl;
-    return false;
+    (void)shaderDir; // WebGPU backend uses embedded WGSL shaders.
+
+    auto* tr = get_text_renderer();
+    if (!tr || !tr->initialized || !tr->device || !tr->queue) {
+        std::cerr << "[fiction-wasm] Background load requires initialized text renderer" << std::endl;
+        return false;
+    }
+
+    // Replace any previous background.
+    cleanup_background_renderer();
+
+    // Resolve paths robustly for Emscripten FS.
+    std::vector<std::string> candidates;
+    if (filepath && filepath[0] != '\0') {
+        candidates.emplace_back(filepath);
+        if (filepath[0] != '/') {
+            candidates.emplace_back(std::string("/") + filepath);
+        }
+        std::string fp(filepath);
+        const size_t lastSlash = fp.find_last_of('/');
+        if (lastSlash != std::string::npos) {
+            const std::string base = fp.substr(lastSlash + 1);
+            candidates.emplace_back(std::string("/resources/fiction/") + base);
+            candidates.emplace_back(std::string("resources/fiction/") + base);
+        }
+    }
+
+    int w = 0, h = 0, channels = 0;
+    unsigned char* pixels = nullptr;
+    std::string loadedPath;
+    for (const auto& candidate : candidates) {
+        pixels = stbi_load(candidate.c_str(), &w, &h, &channels, 4); // Force RGBA
+        if (pixels) {
+            loadedPath = candidate;
+            break;
+        }
+    }
+
+    if (!pixels) {
+        std::cerr << "[fiction-wasm] Failed to load background image: "
+                  << (filepath ? filepath : "(null)") << std::endl;
+        return false;
+    }
+
+    auto* bg = new BackgroundRenderer();
+    get_bg_renderer() = bg;
+    bg->imgWidth = w;
+    bg->imgHeight = h;
+
+    // Create texture.
+    wgpu::TextureDescriptor texDesc{};
+    texDesc.size.width = static_cast<uint32_t>(w);
+    texDesc.size.height = static_cast<uint32_t>(h);
+    texDesc.size.depthOrArrayLayers = 1;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount = 1;
+    texDesc.dimension = wgpu::TextureDimension::e2D;
+    texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+    texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    bg->texture = tr->device.CreateTexture(&texDesc);
+
+    wgpu::TexelCopyTextureInfo destination{};
+    destination.texture = bg->texture;
+    destination.mipLevel = 0;
+    destination.origin = {0, 0, 0};
+
+    wgpu::TexelCopyBufferLayout layout{};
+    layout.offset = 0;
+    layout.bytesPerRow = static_cast<uint32_t>(w * 4);
+    layout.rowsPerImage = static_cast<uint32_t>(h);
+
+    wgpu::Extent3D writeSize{};
+    writeSize.width = static_cast<uint32_t>(w);
+    writeSize.height = static_cast<uint32_t>(h);
+    writeSize.depthOrArrayLayers = 1;
+
+    tr->queue.WriteTexture(&destination, pixels, static_cast<size_t>(w * h * 4), &layout, &writeSize);
+    stbi_image_free(pixels);
+
+    wgpu::TextureViewDescriptor texViewDesc{};
+    bg->textureView = bg->texture.CreateView(&texViewDesc);
+
+    wgpu::SamplerDescriptor samplerDesc{};
+    samplerDesc.minFilter = wgpu::FilterMode::Linear;
+    samplerDesc.magFilter = wgpu::FilterMode::Linear;
+    samplerDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
+    samplerDesc.addressModeV = wgpu::AddressMode::ClampToEdge;
+    bg->sampler = tr->device.CreateSampler(&samplerDesc);
+
+    // Uniform buffer (screen size).
+    wgpu::BufferDescriptor uniformBufDesc{};
+    uniformBufDesc.size = 16;
+    uniformBufDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    bg->uniformBuffer = tr->device.CreateBuffer(&uniformBufDesc);
+    float uniformData[4] = {tr->screenWidth, tr->screenHeight, 0.0f, 0.0f};
+    tr->queue.WriteBuffer(bg->uniformBuffer, 0, uniformData, sizeof(uniformData));
+
+    // Full-screen quad vertices.
+    const float sw = tr->screenWidth;
+    const float sh = tr->screenHeight;
+    TextVertex quad[6] = {
+        {0.0f, 0.0f, 0.0f, 0.0f, 1, 1, 1, 1},
+        {sw,   0.0f, 1.0f, 0.0f, 1, 1, 1, 1},
+        {0.0f, sh,   0.0f, 1.0f, 1, 1, 1, 1},
+        {sw,   0.0f, 1.0f, 0.0f, 1, 1, 1, 1},
+        {sw,   sh,   1.0f, 1.0f, 1, 1, 1, 1},
+        {0.0f, sh,   0.0f, 1.0f, 1, 1, 1, 1},
+    };
+
+    wgpu::BufferDescriptor vertexBufDesc{};
+    vertexBufDesc.size = sizeof(quad);
+    vertexBufDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+    bg->vertexBuffer = tr->device.CreateBuffer(&vertexBufDesc);
+    tr->queue.WriteBuffer(bg->vertexBuffer, 0, quad, sizeof(quad));
+
+    // Bind group layout.
+    std::array<wgpu::BindGroupLayoutEntry, 3> layoutEntries{};
+    layoutEntries[0].binding = 0;
+    layoutEntries[0].visibility = wgpu::ShaderStage::Vertex;
+    layoutEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+
+    layoutEntries[1].binding = 1;
+    layoutEntries[1].visibility = wgpu::ShaderStage::Fragment;
+    layoutEntries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+    layoutEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+
+    layoutEntries[2].binding = 2;
+    layoutEntries[2].visibility = wgpu::ShaderStage::Fragment;
+    layoutEntries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
+
+    wgpu::BindGroupLayoutDescriptor layoutDesc{};
+    layoutDesc.entryCount = layoutEntries.size();
+    layoutDesc.entries = layoutEntries.data();
+    bg->bindGroupLayout = tr->device.CreateBindGroupLayout(&layoutDesc);
+
+    // Bind group.
+    std::array<wgpu::BindGroupEntry, 3> bindGroupEntries{};
+    bindGroupEntries[0].binding = 0;
+    bindGroupEntries[0].buffer = bg->uniformBuffer;
+    bindGroupEntries[0].offset = 0;
+    bindGroupEntries[0].size = 16;
+    bindGroupEntries[1].binding = 1;
+    bindGroupEntries[1].textureView = bg->textureView;
+    bindGroupEntries[2].binding = 2;
+    bindGroupEntries[2].sampler = bg->sampler;
+
+    wgpu::BindGroupDescriptor bgDesc{};
+    bgDesc.layout = bg->bindGroupLayout;
+    bgDesc.entryCount = bindGroupEntries.size();
+    bgDesc.entries = bindGroupEntries.data();
+    bg->bindGroup = tr->device.CreateBindGroup(&bgDesc);
+
+    wgpu::ShaderModule shaderModule = createShaderModule(tr->device, BG_SHADER_WGSL);
+    if (!shaderModule) {
+        std::cerr << "[fiction-wasm] Failed to create background shader module" << std::endl;
+        cleanup_background_renderer();
+        return false;
+    }
+
+    // Pipeline layout.
+    wgpu::PipelineLayoutDescriptor pipelineLayoutDesc{};
+    pipelineLayoutDesc.bindGroupLayoutCount = 1;
+    pipelineLayoutDesc.bindGroupLayouts = &bg->bindGroupLayout;
+    wgpu::PipelineLayout pipelineLayout = tr->device.CreatePipelineLayout(&pipelineLayoutDesc);
+
+    // Vertex layout (same as text).
+    std::array<wgpu::VertexAttribute, 3> vertexAttrs{};
+    vertexAttrs[0].format = wgpu::VertexFormat::Float32x2;
+    vertexAttrs[0].offset = 0;
+    vertexAttrs[0].shaderLocation = 0;
+    vertexAttrs[1].format = wgpu::VertexFormat::Float32x2;
+    vertexAttrs[1].offset = 8;
+    vertexAttrs[1].shaderLocation = 1;
+    vertexAttrs[2].format = wgpu::VertexFormat::Float32x4;
+    vertexAttrs[2].offset = 16;
+    vertexAttrs[2].shaderLocation = 2;
+
+    wgpu::VertexBufferLayout vertexBufferLayout{};
+    vertexBufferLayout.arrayStride = sizeof(TextVertex);
+    vertexBufferLayout.stepMode = wgpu::VertexStepMode::Vertex;
+    vertexBufferLayout.attributeCount = vertexAttrs.size();
+    vertexBufferLayout.attributes = vertexAttrs.data();
+
+    wgpu::ColorTargetState colorTarget{};
+    colorTarget.format = wgpu::TextureFormat::BGRA8Unorm;
+    colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+    wgpu::FragmentState fragmentState{};
+    fragmentState.module = shaderModule;
+    fragmentState.entryPoint = {"fs_main", strlen("fs_main")};
+    fragmentState.targetCount = 1;
+    fragmentState.targets = &colorTarget;
+
+    wgpu::RenderPipelineDescriptor pipelineDesc{};
+    pipelineDesc.layout = pipelineLayout;
+    pipelineDesc.vertex.module = shaderModule;
+    pipelineDesc.vertex.entryPoint = {"vs_main", strlen("vs_main")};
+    pipelineDesc.vertex.bufferCount = 1;
+    pipelineDesc.vertex.buffers = &vertexBufferLayout;
+    pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    pipelineDesc.primitive.frontFace = wgpu::FrontFace::CCW;
+    pipelineDesc.primitive.cullMode = wgpu::CullMode::None;
+    pipelineDesc.fragment = &fragmentState;
+    pipelineDesc.multisample.count = 1;
+    pipelineDesc.multisample.mask = 0xFFFFFFFF;
+
+    bg->pipeline = tr->device.CreateRenderPipeline(&pipelineDesc);
+    if (!bg->pipeline) {
+        std::cerr << "[fiction-wasm] Failed to create background pipeline" << std::endl;
+        cleanup_background_renderer();
+        return false;
+    }
+
+    bg->initialized = true;
+    std::cout << "[fiction-wasm] Background loaded: " << loadedPath << " (" << w << "x" << h << ")" << std::endl;
+    return true;
 }
 
 // Helper to create shader module from WGSL
@@ -888,7 +1111,7 @@ inline void cleanup_text_renderer() {
     auto* tr = get_text_renderer();
     if (!tr) return;
     
-    // TODO: Cleanup WebGPU resources
+    cleanup_background_renderer();
     
     delete tr;
     get_text_renderer() = nullptr;
@@ -977,6 +1200,10 @@ inline int get_event_count() {
     return static_cast<int>(get_event_queue().size());
 }
 
+inline void clear_events() {
+    get_event_queue().clear();
+}
+
 inline int get_event_type(int index) {
     auto& q = get_event_queue();
     if (index < 0 || index >= (int)q.size()) return 0;
@@ -1014,15 +1241,52 @@ inline int get_event_mouse_button(int index) {
 }
 
 // Emscripten callbacks
+inline int translate_web_key_to_scancode(const EmscriptenKeyboardEvent* e) {
+    if (!e) return 0;
+
+    // Match SDL scancodes used by fiction.jank:
+    // 1..9 -> 30..38, Up -> 82, Down -> 81, Escape -> 41
+    if (strcmp(e->code, "Digit1") == 0) return 30;
+    if (strcmp(e->code, "Digit2") == 0) return 31;
+    if (strcmp(e->code, "Digit3") == 0) return 32;
+    if (strcmp(e->code, "Digit4") == 0) return 33;
+    if (strcmp(e->code, "Digit5") == 0) return 34;
+    if (strcmp(e->code, "Digit6") == 0) return 35;
+    if (strcmp(e->code, "Digit7") == 0) return 36;
+    if (strcmp(e->code, "Digit8") == 0) return 37;
+    if (strcmp(e->code, "Digit9") == 0) return 38;
+    if (strcmp(e->code, "Numpad1") == 0) return 30;
+    if (strcmp(e->code, "Numpad2") == 0) return 31;
+    if (strcmp(e->code, "Numpad3") == 0) return 32;
+    if (strcmp(e->code, "Numpad4") == 0) return 33;
+    if (strcmp(e->code, "Numpad5") == 0) return 34;
+    if (strcmp(e->code, "Numpad6") == 0) return 35;
+    if (strcmp(e->code, "Numpad7") == 0) return 36;
+    if (strcmp(e->code, "Numpad8") == 0) return 37;
+    if (strcmp(e->code, "Numpad9") == 0) return 38;
+    if (strcmp(e->code, "ArrowUp") == 0) return 82;
+    if (strcmp(e->code, "ArrowDown") == 0) return 81;
+    if (strcmp(e->code, "Escape") == 0) return 41;
+
+    // Fallback by legacy keyCode.
+    if (e->keyCode >= 49 && e->keyCode <= 57) return 30 + (e->keyCode - 49);
+    if (e->keyCode == 38) return 82;
+    if (e->keyCode == 40) return 81;
+    if (e->keyCode == 27) return 41;
+
+    return static_cast<int>(e->keyCode);
+}
+
 inline EM_BOOL key_callback(int eventType, const EmscriptenKeyboardEvent* e, void* userData) {
+    const int scancode = translate_web_key_to_scancode(e);
     if (eventType == EMSCRIPTEN_EVENT_KEYDOWN) {
-        get_event_queue().push_back({1, (int)e->keyCode, 0, 0, 0, 0});
-        if (e->keyCode == 27) { // ESC
+        get_event_queue().push_back({1, scancode, 0, 0, 0, 0});
+        if (scancode == 41 || e->keyCode == 27) { // ESC
             auto* eng = get_engine();
             if (eng) eng->running = false;
         }
     } else if (eventType == EMSCRIPTEN_EVENT_KEYUP) {
-        get_event_queue().push_back({2, (int)e->keyCode, 0, 0, 0, 0});
+        get_event_queue().push_back({2, scancode, 0, 0, 0, 0});
     }
     return EM_TRUE;
 }
@@ -1056,7 +1320,9 @@ inline EM_BOOL mouse_callback(int eventType, const EmscriptenMouseEvent* e, void
 }
 
 inline EM_BOOL wheel_callback(int eventType, const EmscriptenWheelEvent* e, void* userData) {
-    get_event_queue().push_back({3, 0, (float)e->deltaY, 0, 0, 0});
+    // Match the desktop input convention used by fiction.jank:
+    // positive scroll event should move content down.
+    get_event_queue().push_back({3, 0, static_cast<float>(-e->deltaY), 0, 0, 0});
     return EM_TRUE;
 }
 
@@ -1273,9 +1539,10 @@ inline bool should_close() {
 }
 
 inline void poll_events() {
-    get_event_queue().clear();
-    // Events are handled asynchronously via callbacks
-    
+    // Events are handled asynchronously via callbacks.
+    // Do not clear here: clearing at poll time can drop events that arrived
+    // between frames before jank processes the queue.
+
     // Yield to browser event loop - needed for async WebGPU callbacks
     // and to prevent the page from becoming unresponsive
     emscripten_sleep(0);
@@ -1312,8 +1579,17 @@ inline void draw_frame() {
     passDesc.colorAttachments = &colorAttachment;
     
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
-    
-    // Render text if we have a text renderer with vertices
+
+    // Render background first.
+    auto* bg = fiction::get_bg_renderer();
+    if (bg && bg->initialized && bg->pipeline) {
+        pass.SetPipeline(bg->pipeline);
+        pass.SetBindGroup(0, bg->bindGroup);
+        pass.SetVertexBuffer(0, bg->vertexBuffer, 0, 6 * sizeof(fiction::TextVertex));
+        pass.Draw(6);
+    }
+
+    // Render text on top.
     auto* tr = fiction::get_text_renderer();
     if (tr && tr->textPipeline && tr->vertexCount > 0) {
         pass.SetPipeline(tr->textPipeline);

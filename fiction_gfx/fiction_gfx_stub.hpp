@@ -168,6 +168,7 @@ float get_pixel_scale();
 
 // Event queue
 int get_event_count();
+void clear_events();
 int get_event_type(int index);
 int get_event_scancode(int index);
 float get_event_scroll_y(int index);
