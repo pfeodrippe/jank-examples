@@ -19,6 +19,17 @@
 (defonce ^:private *missing-warned (atom #{}))
 ;; Entries waiting for playback (used for wasm unlock / transient failures).
 (defonce ^:private *pending (atom []))
+;; Currently playing managed sound (single-active policy).
+(defonce ^:private *current-sound (atom false))
+
+(defn- stop-current-sound!
+  "Stop and destroy currently playing sound, if any."
+  []
+  (let [snd @*current-sound]
+    (when snd
+      (audio/sound-stop! snd)
+      (audio/sound-destroy! snd)
+      (reset! *current-sound false))))
 
 (defn- normalized-locale
   "Resolve locale from metadata, falling back to default."
@@ -50,9 +61,12 @@
                             mock-voice-path])))))
 
 (defn- play-entry!
-  "Play voice for a dialogue entry, trying fallbacks in order."
+  "Play voice for a dialogue entry, trying fallbacks in order.
+   Single-active policy: stop previous clip before starting a new one."
   [entry]
   (let [paths (candidate-paths entry)]
+    ;; New entry always interrupts the currently playing clip.
+    (stop-current-sound!)
     (loop [remaining paths]
       (if (empty? remaining)
         (let [warn-key (or (:id entry) (str "speaker-" (:speaker entry)) "unknown")]
@@ -62,11 +76,17 @@
                      (or (:id entry) "<nil>")
                      "speaker=" (or (:speaker entry) "<nil>")))
           false)
-        (let [path (first remaining)]
-          (if (audio/play! path)
-            (do
-              (println "[voiceover] playing:" path)
-              true)
+        (let [path (first remaining)
+              snd (audio/sound path)]
+          (if snd
+            (if (audio/sound-start! snd)
+              (do
+                (reset! *current-sound snd)
+                (println "[voiceover] playing:" path)
+                true)
+              (do
+                (audio/sound-destroy! snd)
+                (recur (rest remaining))))
             (recur (rest remaining))))))))
 
 (defn- speakable-entry?
@@ -87,6 +107,7 @@
   (reset! *last-history-count (count (state/get-history)))
   (reset! *missing-warned #{})
   (reset! *pending [])
+  (reset! *current-sound false)
   (if (audio/init!)
     (do
       (audio/set-volume! 1.0)
@@ -101,17 +122,19 @@
 (defn shutdown!
   "Shutdown voice-over playback engine."
   []
+  (stop-current-sound!)
   (when (audio/initialized?)
     (audio/uninit!))
   (reset! *enabled false)
   (reset! *last-history-count 0)
-  (reset! *pending []))
+  (reset! *pending [])
+  (reset! *current-sound false))
 
 (defn update!
-  "Process newly appended history entries and trigger VO once per update.
+  "Process newly appended history entries and trigger VO.
 
-   If multiple entries were appended in one frame, the newest dialogue entry
-   is used to avoid overlapping one-shot clips."
+   If multiple entries were appended in one frame, keep only the newest
+   speakable entry. This prevents backlog/overlap when advancing quickly."
   []
   (let [history (state/get-history)
         total (count history)
@@ -131,9 +154,9 @@
                             (recur (inc i) (conj out entry))
                             (recur (inc i) out)))))]
           (when (not (empty? fresh))
-            (swap! *pending into fresh)))))
+            (reset! *pending [(last fresh)])))))
     ;; Attempt one pending playback per frame; retry on failure.
     (when (and @*enabled (not (empty? @*pending)))
       (let [entry (first @*pending)]
         (when (play-entry! entry)
-          (swap! *pending subvec 1))))))
+          (reset! *pending []))))))
