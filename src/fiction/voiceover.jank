@@ -5,7 +5,8 @@
    dialogue history entries appear, independent from Vulkan/WebGPU renderers."
   (:require
    [fiction.state :as state]
-   [vybe.audio :as audio]))
+   [vybe.audio :as audio]
+   ["fiction_gfx/fiction_gfx.hpp" :as engine :scope "fiction_engine"]))
 
 ;; Root folder for dialogue voice assets.
 (def ^:private voice-root "resources/fiction/voice")
@@ -21,6 +22,17 @@
 (defonce ^:private *pending (atom []))
 ;; Currently playing managed sound (single-active policy).
 (defonce ^:private *current-sound (atom false))
+;; Current voice context for hot-reload polling.
+(defonce ^:private *current-entry (atom false))
+(defonce ^:private *current-candidates (atom []))
+(defonce ^:private *current-candidate-mod-times (atom {}))
+
+(defn- clear-current-watch!
+  "Clear tracked voice context used by hot-reload polling."
+  []
+  (reset! *current-entry false)
+  (reset! *current-candidates [])
+  (reset! *current-candidate-mod-times {}))
 
 (defn- stop-current-sound!
   "Stop and destroy currently playing sound, if any."
@@ -30,6 +42,32 @@
       (audio/sound-stop! snd)
       (audio/sound-destroy! snd)
       (reset! *current-sound false))))
+
+(defn- snapshot-mod-times
+  "Snapshot file modification times for candidate paths."
+  [paths]
+  (loop [remaining paths
+         out {}]
+    (if (empty? remaining)
+      out
+      (let [path (first remaining)
+            mtime (engine/get_file_mod_time path)]
+        (recur (rest remaining) (assoc out path mtime))))))
+
+(defn- current-candidates-changed?
+  "Check whether any tracked candidate file changed on disk."
+  []
+  (let [entry @*current-entry
+        paths @*current-candidates]
+    (if (or (not entry) (empty? paths))
+      false
+      (let [old-snapshot @*current-candidate-mod-times
+            new-snapshot (snapshot-mod-times paths)]
+        (if (not= old-snapshot new-snapshot)
+          (do
+            (reset! *current-candidate-mod-times new-snapshot)
+            true)
+          false)))))
 
 (defn- normalized-locale
   "Resolve locale from metadata, falling back to default."
@@ -75,13 +113,17 @@
             (println "[voiceover] no playable asset for entry id="
                      (or (:id entry) "<nil>")
                      "speaker=" (or (:speaker entry) "<nil>")))
+          (clear-current-watch!)
           false)
         (let [path (first remaining)
-              snd (audio/sound path)]
+              snd (audio/sound-stream path)]
           (if snd
             (if (audio/sound-start! snd)
               (do
                 (reset! *current-sound snd)
+                (reset! *current-entry entry)
+                (reset! *current-candidates paths)
+                (reset! *current-candidate-mod-times (snapshot-mod-times paths))
                 (println "[voiceover] playing:" path)
                 true)
               (do
@@ -92,12 +134,19 @@
 (defn- speakable-entry?
   [entry]
   ;; VO trigger policy:
-  ;; - dialogue/choice always trigger
+  ;; - dialogue always trigger
+  ;; - choice entries are never voiced
   ;; - narration triggers only when it has explicit [id:...] in story
   ;;   (plain continuation narration should not start a new clip)
-  (or (contains? #{:dialogue :choice} (:type entry))
+  (or (= :dialogue (:type entry))
       (and (= :narration (:type entry))
            (:explicit-id? entry))))
+
+(defn- pick-entry-to-play
+  "Pick one entry from a batch of fresh speakable entries.
+   Keep only the newest to avoid backlog."
+  [fresh]
+  (last fresh))
 
 (defn init!
   "Initialize voice-over playback engine."
@@ -108,6 +157,7 @@
   (reset! *missing-warned #{})
   (reset! *pending [])
   (reset! *current-sound false)
+  (clear-current-watch!)
   (if (audio/init!)
     (do
       (audio/set-volume! 1.0)
@@ -128,7 +178,8 @@
   (reset! *enabled false)
   (reset! *last-history-count 0)
   (reset! *pending [])
-  (reset! *current-sound false))
+  (reset! *current-sound false)
+  (clear-current-watch!))
 
 (defn update!
   "Process newly appended history entries and trigger VO.
@@ -154,7 +205,15 @@
                             (recur (inc i) (conj out entry))
                             (recur (inc i) out)))))]
           (when (not (empty? fresh))
-            (reset! *pending [(last fresh)])))))
+            (reset! *pending [(pick-entry-to-play fresh)])))))
+    ;; Hot-reload watcher: detect changed candidate files, but do not auto-play.
+    ;; New content is picked up on the next normal line trigger.
+    (when (and @*enabled
+               (current-candidates-changed?)
+               @*current-entry)
+      (println "[voiceover] hot reload detected for id="
+               (or (:id @*current-entry) "<nil>")
+               "(waiting for next trigger)"))
     ;; Attempt one pending playback per frame; retry on failure.
     (when (and @*enabled (not (empty? @*pending)))
       (let [entry (first @*pending)]

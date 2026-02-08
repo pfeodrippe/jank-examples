@@ -137,6 +137,23 @@
             (cpp/delete snd)
             nil))))))
 
+(defn sound-stream
+  "Create a streamed sound from a file path.
+   Useful when you want to avoid path-based decoded-buffer reuse."
+  [file-path]
+  (let* [engine (get-engine)]
+    (if (cpp/! engine)
+      nil
+      (let* [snd (cpp/new cpp/ma_sound)
+             result (ma/ma_sound_init_from_file engine file-path
+                                                (cpp/ma_uint32. ma/MA_SOUND_FLAG_STREAM)
+                                                cpp/nullptr cpp/nullptr snd)]
+        (if (cpp/== result ma/MA_SUCCESS)
+          (cpp/box snd)
+          (do
+            (cpp/delete snd)
+            nil))))))
+
 (defn sound-destroy!
   "Destroy a sound object"
   [snd-box]
