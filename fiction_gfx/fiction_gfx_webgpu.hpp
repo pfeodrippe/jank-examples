@@ -223,7 +223,8 @@ inline ParticleRenderer*& get_particle_renderer() {
 // =============================================================================
 
 inline std::string& get_font_path() {
-    static std::string path = "fonts/NotoSans-Regular.ttf";
+    // Keep just the filename; runtime resolution tries /fonts and relative fallbacks.
+    static std::string path = "CrimsonPro-Regular.ttf";
     return path;
 }
 
@@ -451,8 +452,222 @@ inline void add_choice_entry(const char* text) {
 }
 
 inline void build_dialogue_from_pending() {
-    // TODO: Build vertex buffer from pending entries
-    // For now just mark as having been called
+    auto* tr = get_text_renderer();
+    if (!tr) return;
+    
+    // Clear previous vertices
+    tr->vertices.clear();
+    tr->choiceBounds.clear();
+    tr->vertexCount = 0;
+    
+    // Get layout parameters
+    float panelX = tr->style.panelX * tr->screenWidth;
+    float panelWidth = tr->style.panelWidth * tr->screenWidth;
+    float padding = tr->style.panelPadding;
+    float bottomMargin = tr->style.bottomMargin;
+    float lineHeight = tr->font.lineHeight * tr->style.textScale;
+    float entrySpacing = tr->style.entrySpacing;
+    
+    float x = panelX + padding;
+    float y = tr->screenHeight - bottomMargin;
+    float maxWidth = panelWidth - padding * 2;
+    
+    // For each pending history entry, generate text quads
+    for (const auto& entry : get_pending_history()) {
+        float r, g, b;
+        
+        switch (entry.type) {
+            case EntryType::Dialogue:
+                r = tr->style.textR;
+                g = tr->style.textG;
+                b = tr->style.textB;
+                break;
+            case EntryType::Narration:
+                r = tr->style.narrationR;
+                g = tr->style.narrationG;
+                b = tr->style.narrationB;
+                break;
+            default:
+                r = tr->style.textR;
+                g = tr->style.textG;
+                b = tr->style.textB;
+                break;
+        }
+        
+        // Add speaker name if present
+        if (!entry.speaker.empty()) {
+            // Use speaker color
+            float sr = entry.speakerR;
+            float sg = entry.speakerG;
+            float sb = entry.speakerB;
+            
+            // Generate vertices for speaker name
+            float cx = x;
+            for (char c : entry.speaker) {
+                if (c == ' ') {
+                    cx += tr->font.spaceWidth * tr->style.speakerScale;
+                    continue;
+                }
+                
+                auto it = tr->font.glyphs.find(static_cast<int32_t>(c));
+                if (it == tr->font.glyphs.end()) continue;
+                
+                const GlyphInfo& g_info = it->second;
+                float scale = tr->style.speakerScale;
+                float gw = g_info.width * scale;
+                float gh = g_info.height * scale;
+                float gx = cx + g_info.xoffset * scale;
+                float gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
+                
+                // Generate quad (6 vertices for 2 triangles)
+                TextVertex v;
+                v.r = sr; v.g = sg; v.b = sb; v.a = 1.0f;
+                
+                // Triangle 1
+                v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
+                tr->vertices.push_back(v);
+                v.x = gx + gw; v.y = gy; v.u = g_info.u1; v.v = g_info.v0;
+                tr->vertices.push_back(v);
+                v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
+                tr->vertices.push_back(v);
+                
+                // Triangle 2
+                v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
+                tr->vertices.push_back(v);
+                v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
+                tr->vertices.push_back(v);
+                v.x = gx; v.y = gy + gh; v.u = g_info.u0; v.v = g_info.v1;
+                tr->vertices.push_back(v);
+                
+                cx += g_info.advance * scale;
+            }
+            y -= lineHeight * tr->style.speakerScale;
+        }
+        
+        // Generate vertices for main text
+        float cx = x;
+        for (char c : entry.text) {
+            if (c == ' ') {
+                cx += tr->font.spaceWidth * tr->style.textScale;
+                continue;
+            }
+            if (c == '\n') {
+                cx = x;
+                y -= lineHeight;
+                continue;
+            }
+            
+            auto it = tr->font.glyphs.find(static_cast<int32_t>(c));
+            if (it == tr->font.glyphs.end()) continue;
+            
+            const GlyphInfo& g_info = it->second;
+            float scale = tr->style.textScale;
+            float gw = g_info.width * scale;
+            float gh = g_info.height * scale;
+            float gx = cx + g_info.xoffset * scale;
+            float gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
+            
+            // Word wrap
+            if (cx + gw > panelX + panelWidth - padding) {
+                cx = x;
+                y -= lineHeight;
+                gx = cx + g_info.xoffset * scale;
+                gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
+            }
+            
+            // Generate quad
+            TextVertex v;
+            v.r = r; v.g = g; v.b = b; v.a = 1.0f;
+            
+            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
+            tr->vertices.push_back(v);
+            v.x = gx + gw; v.y = gy; v.u = g_info.u1; v.v = g_info.v0;
+            tr->vertices.push_back(v);
+            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
+            tr->vertices.push_back(v);
+            
+            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
+            tr->vertices.push_back(v);
+            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
+            tr->vertices.push_back(v);
+            v.x = gx; v.y = gy + gh; v.u = g_info.u0; v.v = g_info.v1;
+            tr->vertices.push_back(v);
+            
+            cx += g_info.advance * scale;
+        }
+        
+        y -= lineHeight + entrySpacing;
+    }
+    
+    // Process choices
+    int choiceIndex = 0;
+    for (const auto& entry : get_pending_choices()) {
+        float choiceY0 = y;
+        
+        float r, g, b;
+        if (entry.selected) {
+            r = tr->style.choiceSelectedR;
+            g = tr->style.choiceSelectedG;
+            b = tr->style.choiceSelectedB;
+        } else {
+            r = tr->style.choiceR;
+            g = tr->style.choiceG;
+            b = tr->style.choiceB;
+        }
+        
+        float cx = x + tr->style.choiceIndent;
+        for (char c : entry.text) {
+            if (c == ' ') {
+                cx += tr->font.spaceWidth * tr->style.textScale;
+                continue;
+            }
+            
+            auto it = tr->font.glyphs.find(static_cast<int32_t>(c));
+            if (it == tr->font.glyphs.end()) continue;
+            
+            const GlyphInfo& g_info = it->second;
+            float scale = tr->style.textScale;
+            float gw = g_info.width * scale;
+            float gh = g_info.height * scale;
+            float gx = cx + g_info.xoffset * scale;
+            float gy = y - tr->font.ascent * scale + g_info.yoffset * scale;
+            
+            TextVertex v;
+            v.r = r; v.g = g; v.b = b; v.a = 1.0f;
+            
+            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
+            tr->vertices.push_back(v);
+            v.x = gx + gw; v.y = gy; v.u = g_info.u1; v.v = g_info.v0;
+            tr->vertices.push_back(v);
+            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
+            tr->vertices.push_back(v);
+            
+            v.x = gx; v.y = gy; v.u = g_info.u0; v.v = g_info.v0;
+            tr->vertices.push_back(v);
+            v.x = gx + gw; v.y = gy + gh; v.u = g_info.u1; v.v = g_info.v1;
+            tr->vertices.push_back(v);
+            v.x = gx; v.y = gy + gh; v.u = g_info.u0; v.v = g_info.v1;
+            tr->vertices.push_back(v);
+            
+            cx += g_info.advance * scale;
+        }
+        
+        y -= lineHeight + entrySpacing;
+        
+        ChoiceBounds bounds;
+        bounds.y0 = choiceY0;
+        bounds.y1 = y;
+        bounds.index = choiceIndex++;
+        tr->choiceBounds.push_back(bounds);
+    }
+    
+    tr->vertexCount = static_cast<uint32_t>(tr->vertices.size());
+    
+    // Upload vertices to GPU if we have a buffer
+    if (tr->vertexBuffer && tr->vertexCount > 0 && tr->queue) {
+        tr->queue.WriteBuffer(tr->vertexBuffer, 0, tr->vertices.data(), 
+                              tr->vertexCount * sizeof(TextVertex));
+    }
 }
 
 inline int get_pending_history_count() {
@@ -487,17 +702,22 @@ inline bool load_background_image_simple(const char* filepath, const std::string
     return false;
 }
 
+// Helper to create shader module from WGSL
+inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const char* code) {
+    wgpu::ShaderSourceWGSL wgslDesc{};
+    wgslDesc.code = {code, strlen(code)};
+    
+    wgpu::ShaderModuleDescriptor desc{};
+    desc.nextInChain = &wgslDesc;
+    
+    return device.CreateShaderModule(&desc);
+}
+
+// Forward declaration - implementation after Engine is defined
+bool init_text_renderer_simple_impl(float screenWidth, float screenHeight, const std::string& shaderDir);
+
 inline bool init_text_renderer_simple(float screenWidth, float screenHeight, const std::string& shaderDir) {
-    // TODO: Initialize WebGPU text rendering
-    std::cout << "[fiction-wasm] Text renderer init: " << screenWidth << "x" << screenHeight << std::endl;
-    
-    auto* tr = new TextRenderer();
-    get_text_renderer() = tr;
-    tr->screenWidth = screenWidth;
-    tr->screenHeight = screenHeight;
-    tr->initialized = true;  // Mark as initialized even though not fully working
-    
-    return true;
+    return init_text_renderer_simple_impl(screenWidth, screenHeight, shaderDir);
 }
 
 inline void cleanup_text_renderer() {
@@ -905,10 +1125,14 @@ inline void draw_frame() {
     
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
     
-    // TODO: Call render callback to draw text, background, etc.
-    // if (get_render_callback()) {
-    //     get_render_callback()(pass);
-    // }
+    // Render text if we have a text renderer with vertices
+    auto* tr = fiction::get_text_renderer();
+    if (tr && tr->textPipeline && tr->vertexCount > 0) {
+        pass.SetPipeline(tr->textPipeline);
+        pass.SetBindGroup(0, tr->textBindGroup);
+        pass.SetVertexBuffer(0, tr->vertexBuffer, 0, tr->vertexCount * sizeof(fiction::TextVertex));
+        pass.Draw(tr->vertexCount);
+    }
     
     pass.End();
     
@@ -960,5 +1184,363 @@ inline int64_t get_file_mod_time(const char* path) {
 }
 
 } // namespace fiction_engine
+
+// =============================================================================
+// Implementation of init_text_renderer_simple_impl (needs access to Engine)
+// =============================================================================
+
+namespace fiction {
+
+inline bool init_text_renderer_simple_impl(float screenWidth, float screenHeight, const std::string& shaderDir) {
+    auto* e = fiction_engine::get_engine();
+    if (!e || !e->deviceReady) {
+        std::cerr << "[fiction-wasm] Cannot init text renderer: device not ready" << std::endl;
+        return false;
+    }
+    
+    // Create text renderer
+    auto* tr = new TextRenderer();
+    get_text_renderer() = tr;
+    
+    tr->device = e->device;
+    tr->queue = e->queue;
+    tr->screenWidth = screenWidth;
+    tr->screenHeight = screenHeight;
+    
+    std::cout << "[fiction-wasm] Initializing text renderer: " << screenWidth << "x" << screenHeight << std::endl;
+    
+    // Load font file from embedded FS. Try a few deterministic candidates.
+    const std::string configuredFont = get_font_path();
+    std::string baseName = configuredFont;
+    const size_t lastSlash = baseName.find_last_of('/');
+    if (lastSlash != std::string::npos) {
+        baseName = baseName.substr(lastSlash + 1);
+    }
+
+    std::vector<std::string> fontCandidates;
+    fontCandidates.push_back("/fonts/" + baseName);
+    fontCandidates.push_back("/fonts/" + configuredFont);
+    fontCandidates.push_back(configuredFont);
+    fontCandidates.push_back("fonts/" + baseName);
+
+    FILE* f = nullptr;
+    std::string fontPath;
+    for (const auto& candidate : fontCandidates) {
+        f = fopen(candidate.c_str(), "rb");
+        if (f) {
+            fontPath = candidate;
+            break;
+        }
+    }
+
+    if (!f) {
+        std::cerr << "[fiction-wasm] Failed to load font. Configured: " << configuredFont << std::endl;
+        return false;
+    }
+    
+    fseek(f, 0, SEEK_END);
+    size_t fontFileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    
+    tr->font.fontData.resize(fontFileSize);
+    fread(tr->font.fontData.data(), 1, fontFileSize, f);
+    fclose(f);
+    
+    std::cout << "[fiction-wasm] Font loaded: " << fontFileSize << " bytes" << std::endl;
+    
+    // Initialize stb_truetype
+    if (!stbtt_InitFont(&tr->font.fontInfo, tr->font.fontData.data(), 0)) {
+        std::cerr << "[fiction-wasm] Failed to parse font" << std::endl;
+        return false;
+    }
+    
+    // Calculate font metrics
+    float fontSize = 24.0f;
+    tr->font.scale = stbtt_ScaleForPixelHeight(&tr->font.fontInfo, fontSize);
+    
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(&tr->font.fontInfo, &ascent, &descent, &lineGap);
+    tr->font.ascent = ascent * tr->font.scale;
+    tr->font.descent = descent * tr->font.scale;
+    tr->font.lineHeight = (ascent - descent + lineGap) * tr->font.scale;
+    
+    std::cout << "[fiction-wasm] Font metrics: ascent=" << tr->font.ascent 
+              << " descent=" << tr->font.descent 
+              << " lineHeight=" << tr->font.lineHeight << std::endl;
+    
+    // Create font atlas bitmap
+    const uint32_t atlasW = tr->font.atlasWidth;
+    const uint32_t atlasH = tr->font.atlasHeight;
+    std::vector<uint8_t> atlasBitmap(atlasW * atlasH, 0);
+    
+    // Pack glyphs into atlas
+    int penX = 1, penY = 1, rowHeight = 0;
+    int glyphsRendered = 0;
+    
+    for (int c = 32; c < 127; c++) {
+        int gw, gh, xoff, yoff;
+        unsigned char* bitmap = stbtt_GetCodepointBitmap(&tr->font.fontInfo, 
+            tr->font.scale, tr->font.scale, c, &gw, &gh, &xoff, &yoff);
+        
+        if (!bitmap) continue;
+        
+        // Check if glyph fits on current row
+        if (penX + gw + 1 >= (int)atlasW) {
+            penX = 1;
+            penY += rowHeight + 1;
+            rowHeight = 0;
+        }
+        
+        // Check if we ran out of space
+        if (penY + gh + 1 >= (int)atlasH) {
+            stbtt_FreeBitmap(bitmap, nullptr);
+            break;
+        }
+        
+        // Copy glyph to atlas
+        for (int y = 0; y < gh; y++) {
+            for (int x = 0; x < gw; x++) {
+                atlasBitmap[(penY + y) * atlasW + (penX + x)] = bitmap[y * gw + x];
+            }
+        }
+        
+        // Get advance width
+        int advanceWidth, leftSideBearing;
+        stbtt_GetCodepointHMetrics(&tr->font.fontInfo, c, &advanceWidth, &leftSideBearing);
+        
+        // Store glyph info
+        GlyphInfo info;
+        info.u0 = (float)penX / atlasW;
+        info.v0 = (float)penY / atlasH;
+        info.u1 = (float)(penX + gw) / atlasW;
+        info.v1 = (float)(penY + gh) / atlasH;
+        info.width = (float)gw;
+        info.height = (float)gh;
+        info.advance = advanceWidth * tr->font.scale;
+        info.xoffset = (float)xoff;
+        info.yoffset = (float)yoff;
+        
+        tr->font.glyphs[c] = info;
+        
+        // Update pen position
+        penX += gw + 1;
+        rowHeight = std::max(rowHeight, gh);
+        glyphsRendered++;
+        
+        stbtt_FreeBitmap(bitmap, nullptr);
+    }
+    
+    // Estimate space width
+    int spaceAdvance, dummy;
+    stbtt_GetCodepointHMetrics(&tr->font.fontInfo, ' ', &spaceAdvance, &dummy);
+    tr->font.spaceWidth = spaceAdvance * tr->font.scale;
+    
+    std::cout << "[fiction-wasm] Packed " << glyphsRendered << " glyphs into " 
+              << atlasW << "x" << atlasH << " atlas" << std::endl;
+    
+    // Create WebGPU texture for font atlas
+    wgpu::TextureDescriptor texDesc{};
+    texDesc.size.width = atlasW;
+    texDesc.size.height = atlasH;
+    texDesc.size.depthOrArrayLayers = 1;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount = 1;
+    texDesc.dimension = wgpu::TextureDimension::e2D;
+    texDesc.format = wgpu::TextureFormat::R8Unorm;
+    texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    
+    tr->font.texture = e->device.CreateTexture(&texDesc);
+    
+    // Upload atlas to texture
+    wgpu::TexelCopyTextureInfo destination{};
+    destination.texture = tr->font.texture;
+    destination.mipLevel = 0;
+    destination.origin = {0, 0, 0};
+    
+    wgpu::TexelCopyBufferLayout layout{};
+    layout.offset = 0;
+    layout.bytesPerRow = atlasW;
+    layout.rowsPerImage = atlasH;
+    
+    wgpu::Extent3D writeSize = {atlasW, atlasH, 1};
+    
+    e->queue.WriteTexture(&destination, atlasBitmap.data(), atlasBitmap.size(), &layout, &writeSize);
+    
+    // Create texture view
+    wgpu::TextureViewDescriptor viewDesc{};
+    tr->font.textureView = tr->font.texture.CreateView(&viewDesc);
+    
+    // Create sampler
+    wgpu::SamplerDescriptor samplerDesc{};
+    samplerDesc.minFilter = wgpu::FilterMode::Linear;
+    samplerDesc.magFilter = wgpu::FilterMode::Linear;
+    samplerDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
+    samplerDesc.addressModeV = wgpu::AddressMode::ClampToEdge;
+    
+    tr->font.sampler = e->device.CreateSampler(&samplerDesc);
+    
+    std::cout << "[fiction-wasm] Font atlas texture created" << std::endl;
+    
+    // Create uniform buffer (for screen size)
+    wgpu::BufferDescriptor uniformBufDesc{};
+    uniformBufDesc.size = 16;  // vec2<f32> screenSize + padding
+    uniformBufDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    
+    tr->uniformBuffer = e->device.CreateBuffer(&uniformBufDesc);
+    
+    // Upload screen size
+    float uniformData[4] = {screenWidth, screenHeight, 0.0f, 0.0f};
+    e->queue.WriteBuffer(tr->uniformBuffer, 0, uniformData, sizeof(uniformData));
+    
+    // Create vertex buffer
+    wgpu::BufferDescriptor vertexBufDesc{};
+    vertexBufDesc.size = tr->maxVertices * sizeof(TextVertex);
+    vertexBufDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+    
+    tr->vertexBuffer = e->device.CreateBuffer(&vertexBufDesc);
+    
+    std::cout << "[fiction-wasm] Buffers created" << std::endl;
+    
+    // Create bind group layout
+    std::array<wgpu::BindGroupLayoutEntry, 3> layoutEntries{};
+    
+    // Uniform buffer
+    layoutEntries[0].binding = 0;
+    layoutEntries[0].visibility = wgpu::ShaderStage::Vertex;
+    layoutEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+    
+    // Texture
+    layoutEntries[1].binding = 1;
+    layoutEntries[1].visibility = wgpu::ShaderStage::Fragment;
+    layoutEntries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+    layoutEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    
+    // Sampler
+    layoutEntries[2].binding = 2;
+    layoutEntries[2].visibility = wgpu::ShaderStage::Fragment;
+    layoutEntries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
+    
+    wgpu::BindGroupLayoutDescriptor layoutDesc{};
+    layoutDesc.entryCount = layoutEntries.size();
+    layoutDesc.entries = layoutEntries.data();
+    
+    tr->textBindGroupLayout = e->device.CreateBindGroupLayout(&layoutDesc);
+    
+    // Create bind group
+    std::array<wgpu::BindGroupEntry, 3> bindGroupEntries{};
+    
+    bindGroupEntries[0].binding = 0;
+    bindGroupEntries[0].buffer = tr->uniformBuffer;
+    bindGroupEntries[0].offset = 0;
+    bindGroupEntries[0].size = 16;
+    
+    bindGroupEntries[1].binding = 1;
+    bindGroupEntries[1].textureView = tr->font.textureView;
+    
+    bindGroupEntries[2].binding = 2;
+    bindGroupEntries[2].sampler = tr->font.sampler;
+    
+    wgpu::BindGroupDescriptor bgDesc{};
+    bgDesc.layout = tr->textBindGroupLayout;
+    bgDesc.entryCount = bindGroupEntries.size();
+    bgDesc.entries = bindGroupEntries.data();
+    
+    tr->textBindGroup = e->device.CreateBindGroup(&bgDesc);
+    
+    std::cout << "[fiction-wasm] Bind group created" << std::endl;
+    
+    // Create shader module
+    wgpu::ShaderModule shaderModule = createShaderModule(e->device, TEXT_SHADER_WGSL);
+    if (!shaderModule) {
+        std::cerr << "[fiction-wasm] Failed to create shader module" << std::endl;
+        return false;
+    }
+    
+    // Create pipeline layout
+    wgpu::PipelineLayoutDescriptor pipelineLayoutDesc{};
+    pipelineLayoutDesc.bindGroupLayoutCount = 1;
+    pipelineLayoutDesc.bindGroupLayouts = &tr->textBindGroupLayout;
+    
+    wgpu::PipelineLayout pipelineLayout = e->device.CreatePipelineLayout(&pipelineLayoutDesc);
+    
+    // Vertex attributes
+    std::array<wgpu::VertexAttribute, 3> vertexAttrs{};
+    
+    // position: vec2<f32>
+    vertexAttrs[0].format = wgpu::VertexFormat::Float32x2;
+    vertexAttrs[0].offset = 0;
+    vertexAttrs[0].shaderLocation = 0;
+    
+    // texCoord: vec2<f32>
+    vertexAttrs[1].format = wgpu::VertexFormat::Float32x2;
+    vertexAttrs[1].offset = 8;
+    vertexAttrs[1].shaderLocation = 1;
+    
+    // color: vec4<f32>
+    vertexAttrs[2].format = wgpu::VertexFormat::Float32x4;
+    vertexAttrs[2].offset = 16;
+    vertexAttrs[2].shaderLocation = 2;
+    
+    wgpu::VertexBufferLayout vertexBufferLayout{};
+    vertexBufferLayout.arrayStride = sizeof(TextVertex);
+    vertexBufferLayout.stepMode = wgpu::VertexStepMode::Vertex;
+    vertexBufferLayout.attributeCount = vertexAttrs.size();
+    vertexBufferLayout.attributes = vertexAttrs.data();
+    
+    // Color target with alpha blending
+    wgpu::BlendComponent blendColor{};
+    blendColor.operation = wgpu::BlendOperation::Add;
+    blendColor.srcFactor = wgpu::BlendFactor::SrcAlpha;
+    blendColor.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    
+    wgpu::BlendComponent blendAlpha{};
+    blendAlpha.operation = wgpu::BlendOperation::Add;
+    blendAlpha.srcFactor = wgpu::BlendFactor::One;
+    blendAlpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+    
+    wgpu::BlendState blendState{};
+    blendState.color = blendColor;
+    blendState.alpha = blendAlpha;
+    
+    wgpu::ColorTargetState colorTarget{};
+    colorTarget.format = e->surfaceFormat;
+    colorTarget.blend = &blendState;
+    colorTarget.writeMask = wgpu::ColorWriteMask::All;
+    
+    // Fragment state
+    wgpu::FragmentState fragmentState{};
+    fragmentState.module = shaderModule;
+    fragmentState.entryPoint = {"fs_main", strlen("fs_main")};
+    fragmentState.targetCount = 1;
+    fragmentState.targets = &colorTarget;
+    
+    // Create render pipeline
+    wgpu::RenderPipelineDescriptor pipelineDesc{};
+    pipelineDesc.layout = pipelineLayout;
+    pipelineDesc.vertex.module = shaderModule;
+    pipelineDesc.vertex.entryPoint = {"vs_main", strlen("vs_main")};
+    pipelineDesc.vertex.bufferCount = 1;
+    pipelineDesc.vertex.buffers = &vertexBufferLayout;
+    pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    pipelineDesc.primitive.frontFace = wgpu::FrontFace::CCW;
+    pipelineDesc.primitive.cullMode = wgpu::CullMode::None;
+    pipelineDesc.fragment = &fragmentState;
+    pipelineDesc.multisample.count = 1;
+    pipelineDesc.multisample.mask = 0xFFFFFFFF;
+    
+    tr->textPipeline = e->device.CreateRenderPipeline(&pipelineDesc);
+    
+    if (!tr->textPipeline) {
+        std::cerr << "[fiction-wasm] Failed to create render pipeline" << std::endl;
+        return false;
+    }
+    
+    std::cout << "[fiction-wasm] Text render pipeline created" << std::endl;
+    
+    tr->initialized = true;
+    return true;
+}
+
+} // namespace fiction
 
 #endif // __EMSCRIPTEN__
