@@ -172,7 +172,7 @@
   "Parse YAML-like frontmatter into a map."
   [lines]
   (loop [remaining lines
-         result {:title nil :author nil :theme nil :colors {} :speakers {}}
+         result {:title nil :author nil :theme nil :locale nil :colors {} :speakers {}}
          current-section nil]
     (if (empty? remaining)
       result
@@ -188,6 +188,7 @@
               (= k "title") (recur (rest remaining) (assoc result :title v) nil)
               (= k "author") (recur (rest remaining) (assoc result :author v) nil)
               (= k "theme") (recur (rest remaining) (assoc result :theme v) nil)
+              (= k "locale") (recur (rest remaining) (assoc result :locale v) nil)
               (= k "colors") (recur (rest remaining) result :colors)
               (= k "speakers") (recur (rest remaining) result :speakers)
               ;; Handle nested keys (indented lines under colors/speakers)

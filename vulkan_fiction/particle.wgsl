@@ -62,7 +62,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let q = d - vec2<f32>(halfSize, halfSize) + vec2<f32>(r, r);
     let sdf = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
 
-    let shape = 1.0 - smoothstep(-0.02, 0.2, sdf);
+    let shape = 1.0 - smoothstep(-0.02, 0.6, sdf);
     let paint = 0.85 + 0.15 * sin(uv.x * 25.0 + seed * 50.0) * sin(uv.y * 23.0 + seed * 40.0);
 
     var color = in.color.rgb;

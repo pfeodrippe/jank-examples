@@ -57,7 +57,7 @@ CXXFLAGS = -fPIC -O2 -std=c++17
 
 .PHONY: clean clean-cache sdf integrated integrated_wasm imgui jolt test tests help \
         build-jolt build-imgui build-flecs build-flecs-wasm build-raylib build-deps \
-        build-sdf-deps build-shaders build-imgui-vulkan build-vybe-wasm \
+        build-sdf-deps build-shaders build-imgui-vulkan build-vybe-wasm build-miniaudio-wasm \
         fiction fiction-wasm build-fiction-shaders build-fiction-gfx-wasm build-fiction-gfx-native \
         clean-fiction-wasm-generated
 
@@ -262,6 +262,12 @@ build-shaders: $(SHADERS_SPV)
 vendor/vybe/miniaudio.o: vendor/vybe/miniaudio_impl.c vendor/miniaudio/miniaudio.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Miniaudio WASM object for browser builds
+vendor/vybe/miniaudio_wasm.o: vendor/vybe/miniaudio_impl.c vendor/miniaudio/miniaudio.h
+	emcc -c -O2 -fPIC -DJANK_TARGET_EMSCRIPTEN -DJANK_TARGET_WASM=1 -Ivendor $< -o $@
+
+build-miniaudio-wasm: vendor/vybe/miniaudio_wasm.o
+
 # Object files needed for JIT mode
 SDF_JIT_OBJS = $(IMGUI_VULKAN_OBJS) vulkan/stb_impl.o vendor/flecs/distr/flecs.o vendor/vybe/vybe_flecs_jank.o vendor/vybe/miniaudio.o
 
@@ -292,6 +298,9 @@ FICTION_SHADERS_GLSL_SPV = $(FICTION_SHADERS_GLSL_SRC:.vert=.vert.spv) $(FICTION
 FICTION_PARTICLE_WGSL = vulkan_fiction/particle.wgsl
 FICTION_PARTICLE_SPV = vulkan_fiction/particle.vert.spv vulkan_fiction/particle.frag.spv
 FICTION_SHADERS_SPV = $(FICTION_SHADERS_GLSL_SPV) $(FICTION_PARTICLE_SPV)
+FICTION_BG_BASE = resources/fiction/bg-1.png
+FICTION_LEFT_ANIM_SRC = resources/fiction/left_anim_01.png resources/fiction/left_anim_02.png resources/fiction/left_anim_03.png
+FICTION_LEFT_ANIM_BG = resources/fiction/bg-left-anim-01.png resources/fiction/bg-left-anim-02.png resources/fiction/bg-left-anim-03.png
 
 vulkan_fiction/%.vert.spv: vulkan_fiction/%.vert
 	glslc -fshader-stage=vert $< -o $@
@@ -320,8 +329,35 @@ vulkan_fiction/particle.frag.spv: $(FICTION_PARTICLE_WGSL) Makefile
 build-fiction-shaders: $(FICTION_SHADERS_SPV)
 	@echo "Fiction shaders compiled."
 
+# Build left-side animated composite frames from user-provided screenshots.
+.PHONY: prepare-fiction-left-anim
+prepare-fiction-left-anim:
+	@if [ ! -f "$(FICTION_BG_BASE)" ]; then \
+		echo "Skipping left animation prep: missing $(FICTION_BG_BASE)"; \
+		exit 0; \
+	fi
+	@if [ ! -f "resources/fiction/left_anim_01.png" ] || [ ! -f "resources/fiction/left_anim_02.png" ] || [ ! -f "resources/fiction/left_anim_03.png" ]; then \
+		echo "Skipping left animation prep: add resources/fiction/left_anim_01..03.png"; \
+		exit 0; \
+	fi
+	@if ! command -v ffmpeg >/dev/null 2>&1; then \
+		echo "Skipping left animation prep: ffmpeg not found"; \
+		exit 0; \
+	fi
+	@W=$$(sips -g pixelWidth "$(FICTION_BG_BASE)" | awk '/pixelWidth/{print $$2}'); \
+	H=$$(sips -g pixelHeight "$(FICTION_BG_BASE)" | awk '/pixelHeight/{print $$2}'); \
+	LW=$$((W * 60 / 100)); \
+	for i in 01 02 03; do \
+		SRC="resources/fiction/left_anim_$${i}.png"; \
+		OUT="resources/fiction/bg-left-anim-$${i}.png"; \
+		ffmpeg -y -loglevel error -i "$(FICTION_BG_BASE)" -i "$$SRC" \
+			-filter_complex "[1:v]scale=$$LW:$$H:force_original_aspect_ratio=increase,crop=$$LW:$$H[anim];[0:v][anim]overlay=0:0" \
+			-frames:v 1 "$$OUT"; \
+	done; \
+	echo "Prepared left-side animation frames: $(FICTION_LEFT_ANIM_BG)"
+
 # Run the fiction game
-fiction: build-fiction-shaders
+fiction: build-fiction-shaders prepare-fiction-left-anim
 	./bin/run_fiction.sh
 
 # ============================================================================
@@ -372,7 +408,7 @@ clean-fiction-wasm-generated:
 		$(JANK_SRC)/build-wasm/fiction.html
 
 # Build and run fiction for WASM (WebGPU)
-fiction-wasm: clean-fiction-wasm-generated build-flecs-wasm build-vybe-wasm build-fiction-gfx-wasm build-fiction-gfx-native
+fiction-wasm: clean-fiction-wasm-generated prepare-fiction-left-anim build-flecs-wasm build-vybe-wasm build-miniaudio-wasm vendor/vybe/miniaudio.o build-fiction-gfx-wasm build-fiction-gfx-native
 	./bin/run_fiction_wasm.sh
 
 # ============================================================================
@@ -395,6 +431,7 @@ clean: clean-cache
 	rm -rf vendor/vybe/vybe_flecs_jank.o
 	rm -rf vendor/flecs/distr/flecs.o
 	rm -rf vendor/vybe/miniaudio.o
+	rm -rf vendor/vybe/miniaudio_wasm.o
 	rm -rf vendor/jolt_wrapper.o
 	rm -rf vendor/JoltPhysics/build
 	rm -rf vendor/JoltPhysics/distr/objs

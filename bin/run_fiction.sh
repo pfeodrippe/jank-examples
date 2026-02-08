@@ -45,6 +45,7 @@ make build-sdf-deps JANK_SRC="$JANK_SRC"
 OBJ_FILES=(
     vendor/flecs/distr/flecs.o
     vendor/vybe/vybe_flecs_jank.o
+    vendor/vybe/miniaudio.o
     vulkan/stb_impl.o
 )
 

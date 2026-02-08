@@ -23,6 +23,16 @@ if [ ! -f "vendor/vybe/vybe_flecs_jank_wasm.o" ]; then
     make build-vybe-wasm
 fi
 
+# Build miniaudio objects for native JIT + WASM prelink if needed
+if [ ! -f "vendor/vybe/miniaudio.o" ]; then
+    echo "Building miniaudio native object..."
+    make vendor/vybe/miniaudio.o
+fi
+if [ ! -f "vendor/vybe/miniaudio_wasm.o" ]; then
+    echo "Building miniaudio WASM object..."
+    make build-miniaudio-wasm
+fi
+
 # Build fiction_gfx stub for native JIT symbol resolution
 echo "Building fiction_gfx native stub..."
 mkdir -p fiction_gfx/build
@@ -94,10 +104,12 @@ echo ""
 RELEASE=1 ./bin/emscripten-bundle -v \
     --native-obj "$SOMETHING_DIR/vendor/flecs/distr/flecs.o" \
     --native-obj "$SOMETHING_DIR/vendor/vybe/vybe_flecs_jank.o" \
+    --native-obj "$SOMETHING_DIR/vendor/vybe/miniaudio.o" \
     --native-lib "$SOMETHING_DIR/fiction_gfx/libfiction_gfx_stub.dylib" \
     --jit-define "FICTION_USE_STUB" \
     --prelink-lib "$SOMETHING_DIR/vendor/flecs/distr/flecs_wasm.o" \
     --prelink-lib "$SOMETHING_DIR/vendor/vybe/vybe_flecs_jank_wasm.o" \
+    --prelink-lib "$SOMETHING_DIR/vendor/vybe/miniaudio_wasm.o" \
     --prelink-lib "$SOMETHING_DIR/fiction_gfx/build-wasm/fiction_gfx_wasm.o" \
     -I "$SOMETHING_DIR/fiction_gfx" \
     -I "$SOMETHING_DIR/vulkan" \

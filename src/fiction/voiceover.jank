@@ -1,0 +1,114 @@
+(ns fiction.voiceover
+  "Voice-over playback for fiction dialogue.
+
+   Shared gameplay-level module (backend-agnostic): triggers VO when new
+   dialogue history entries appear, independent from Vulkan/WebGPU renderers."
+  (:require
+   [fiction.state :as state]
+   [vybe.audio :as audio]
+   ["fiction_gfx/fiction_gfx.hpp" :as engine :scope "fiction_engine"]))
+
+;; Root folder for dialogue voice assets.
+(def ^:private voice-root "resources/fiction/voice")
+(def ^:private fallback-locale "fr")
+(def ^:private mock-voice-path (str voice-root "/_mock/default.wav"))
+
+;; Runtime module state.
+(defonce ^:private *enabled (atom false))
+(defonce ^:private *last-history-count (atom 0))
+
+(defn- file-exists?
+  "Return true when a path exists in the current filesystem."
+  [path]
+  (not= 0 (engine/get_file_mod_time path)))
+
+(defn- normalized-locale
+  "Resolve locale from metadata, falling back to default."
+  []
+  (let [raw (:locale (state/get-metadata))]
+    (if (and (string? raw) (not (empty? raw)))
+      raw
+      fallback-locale)))
+
+(defn- candidate-paths
+  "Ordered candidate VO files for a dialogue entry."
+  [entry]
+  (let [locale (normalized-locale)
+        entry-id (:id entry)
+        speaker-id (:speaker entry)
+        locale-entry (when entry-id
+                       (str voice-root "/" locale "/" entry-id ".wav"))
+        locale-speaker (when speaker-id
+                         (str voice-root "/" locale "/speaker-" speaker-id ".wav"))
+        fallback-entry (when entry-id
+                         (str voice-root "/" fallback-locale "/" entry-id ".wav"))
+        fallback-speaker (when speaker-id
+                           (str voice-root "/" fallback-locale "/speaker-" speaker-id ".wav"))]
+    (vec (distinct (remove nil?
+                           [locale-entry
+                            locale-speaker
+                            fallback-entry
+                            fallback-speaker
+                            mock-voice-path])))))
+
+(defn- play-entry!
+  "Play voice for a dialogue entry, trying fallbacks in order."
+  [entry]
+  (loop [paths (candidate-paths entry)]
+    (if (empty? paths)
+      false
+      (let [path (first paths)]
+        (if (file-exists? path)
+          (if (audio/play! path)
+            true
+            (recur (rest paths)))
+          (recur (rest paths)))))))
+
+(defn init!
+  "Initialize voice-over playback engine."
+  []
+  (reset! *last-history-count 0)
+  (if (audio/init!)
+    (do
+      (audio/set-volume! 1.0)
+      (reset! *enabled true)
+      (println "Voiceover enabled.")
+      true)
+    (do
+      (reset! *enabled false)
+      (println "WARN: Voiceover disabled (audio init failed).")
+      false)))
+
+(defn shutdown!
+  "Shutdown voice-over playback engine."
+  []
+  (when (audio/initialized?)
+    (audio/uninit!))
+  (reset! *enabled false)
+  (reset! *last-history-count 0))
+
+(defn update!
+  "Process newly appended history entries and trigger VO once per update.
+
+   If multiple entries were appended in one frame, the newest dialogue entry
+   is used to avoid overlapping one-shot clips."
+  []
+  (let [history (state/get-history)
+        total (count history)
+        old-count @*last-history-count]
+    ;; Story reset/reload case.
+    (when (> old-count total)
+      (reset! *last-history-count 0))
+    (let [start @*last-history-count]
+      (when (< start total)
+        (reset! *last-history-count total)
+        (when @*enabled
+          (let [entry (loop [i (dec total)]
+                        (if (< i start)
+                          nil
+                          (let [candidate (nth history i)]
+                            (if (= (:type candidate) :dialogue)
+                              candidate
+                              (recur (dec i))))))]
+            (when entry
+              (play-entry! entry))))))))
