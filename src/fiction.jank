@@ -147,37 +147,38 @@
   (println "  ESC      = Quit")
   (println "")
 
-  ;; Initialize Vulkan engine
-  (when-not (engine/init "La Voiture")
-    (println "ERROR: Failed to initialize Vulkan")
-    false)
+  ;; Initialize graphics engine
+  (if-not (engine/init "La Voiture")
+    (do
+      (println "ERROR: Failed to initialize graphics backend")
+      false)
+    (do
+      ;; Initialize text renderer (uses fiction_engine handles internally)
+      (let [width (engine/get_screen_width)
+            height (engine/get_screen_height)]
+        (text-render/init! width height "vulkan_fiction"))
 
-  ;; Initialize text renderer (uses fiction_engine handles internally)
-  (let [width (engine/get_screen_width)
-        height (engine/get_screen_height)]
-    (text-render/init! width height "vulkan_fiction"))
+      ;; Load background image
+      (println "About to load background...")
+      (text-render/init-background! bg-image-path "vulkan_fiction")
+      (println "Background loaded.")
 
-  ;; Load background image
-  (println "About to load background...")
-  (text-render/init-background! bg-image-path "vulkan_fiction")
-  (println "Background loaded.")
+      ;; Load story from file
+      (load-story!)
 
-  ;; Load story from file
-  (load-story!)
+      ;; Initialize file watcher timestamp
+      (reset! *last-mod-time (engine/get_file_mod_time story-path))
 
-  ;; Initialize file watcher timestamp
-  (reset! *last-mod-time (engine/get_file_mod_time story-path))
+      ;; No panel background - let bg-1.png show through directly
+      (text-render/set-panel-colors! 0.0 0.0 0.0 0.0)
 
-  ;; No panel background - let bg-1.png show through directly
-  (text-render/set-panel-colors! 0.0 0.0 0.0 0.0)
+      ;; Position panel over the core black bar of bg-1.png (X: 60%-90%)
+      (text-render/set-panel-position! 0.61 0.26)
 
-  ;; Position panel over the core black bar of bg-1.png (X: 60%-90%)
-  (text-render/set-panel-position! 0.61 0.26)
-
-  (println "")
-  (println "Ready. Make your choice...")
-  (println "")
-  true)
+      (println "")
+      (println "Ready. Make your choice...")
+      (println "")
+      true)))
 
 ;; =============================================================================
 ;; Main Loop

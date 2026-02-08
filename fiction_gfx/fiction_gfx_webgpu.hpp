@@ -538,6 +538,7 @@ struct Engine {
     bool running = true;
     bool initialized = false;
     bool deviceReady = false;
+    bool initFailed = false;
     
     // Callback to run after device is ready
     std::function<void()> onReady;
@@ -678,6 +679,10 @@ inline void configure_surface() {
     std::cout << "[fiction-wasm] Surface configured: " << e->canvasWidth << "x" << e->canvasHeight << std::endl;
 }
 
+// Forward declarations for async WebGPU initialization
+inline bool is_device_ready();
+inline void wait_for_device();
+
 // Called after device request completes
 inline void on_device_ready() {
     auto* e = get_engine();
@@ -714,7 +719,7 @@ inline void on_adapter_ready() {
                       << std::string(message.data, message.length) << std::endl;
         });
     
-    e->adapter.RequestDevice(&deviceDesc, wgpu::CallbackMode::AllowSpontaneous,
+    e->adapter.RequestDevice(&deviceDesc, wgpu::CallbackMode::AllowProcessEvents,
         [](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message) {
             if (message.length) {
                 std::cout << "[fiction-wasm] RequestDevice: " 
@@ -723,6 +728,11 @@ inline void on_adapter_ready() {
             
             if (status != wgpu::RequestDeviceStatus::Success) {
                 std::cerr << "[fiction-wasm] Failed to get WebGPU device" << std::endl;
+                auto* e = get_engine();
+                if (e) {
+                    e->initFailed = true;
+                    e->running = false;
+                }
                 return;
             }
             
@@ -778,7 +788,7 @@ inline bool init(const char* title) {
     adapterOpts.powerPreference = wgpu::PowerPreference::HighPerformance;
     adapterOpts.compatibleSurface = e->surface;
     
-    get_instance().RequestAdapter(&adapterOpts, wgpu::CallbackMode::AllowSpontaneous,
+    get_instance().RequestAdapter(&adapterOpts, wgpu::CallbackMode::AllowProcessEvents,
         [](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message) {
             if (message.length) {
                 std::cout << "[fiction-wasm] RequestAdapter: " 
@@ -787,6 +797,11 @@ inline bool init(const char* title) {
             
             if (status != wgpu::RequestAdapterStatus::Success) {
                 std::cerr << "[fiction-wasm] Failed to get WebGPU adapter" << std::endl;
+                auto* e = get_engine();
+                if (e) {
+                    e->initFailed = true;
+                    e->running = false;
+                }
                 return;
             }
             
@@ -797,14 +812,35 @@ inline bool init(const char* title) {
             }
         });
     
-    // Note: init() returns before device is ready due to async nature
-    // Use wait_for_device() or check deviceReady flag
-    return true;
+    // Yield to let async callback fire
+    emscripten_sleep(0);
+    
+    // Wait for device to be ready (async callbacks need browser event loop)
+    wait_for_device();
+    
+    return is_device_ready();
 }
 
 inline bool is_device_ready() {
     auto* e = get_engine();
     return e && e->deviceReady;
+}
+
+inline void wait_for_device() {
+    // Wait for WebGPU device to be ready by polling callbacks
+    int maxWait = 1000;  // Max 1000 iterations (10 seconds at 10ms each)
+    while (!is_device_ready() && get_engine() && !get_engine()->initFailed && maxWait > 0) {
+        // CRITICAL: Must call ProcessEvents to pump the WebGPU callback queue!
+        // Without this, AllowSpontaneous/AllowProcessEvents callbacks never fire.
+        get_instance().ProcessEvents();
+        emscripten_sleep(10);
+        maxWait--;
+    }
+    if (get_engine() && get_engine()->initFailed) {
+        std::cerr << "[fiction-wasm] WebGPU initialization failed" << std::endl;
+    } else if (!is_device_ready()) {
+        std::cerr << "[fiction-wasm] Timeout waiting for WebGPU device" << std::endl;
+    }
 }
 
 inline void cleanup() {
@@ -831,6 +867,10 @@ inline bool should_close() {
 inline void poll_events() {
     get_event_queue().clear();
     // Events are handled asynchronously via callbacks
+    
+    // Yield to browser event loop - needed for async WebGPU callbacks
+    // and to prevent the page from becoming unresponsive
+    emscripten_sleep(0);
 }
 
 inline void draw_frame() {
@@ -875,8 +915,10 @@ inline void draw_frame() {
     wgpu::CommandBufferDescriptor cmdDesc{};
     wgpu::CommandBuffer commands = encoder.Finish(&cmdDesc);
     e->queue.Submit(1, &commands);
-    
-    e->surface.Present();
+
+    // Emscripten WebGPU canvas surfaces are presented by the browser.
+    // Calling Surface::Present aborts with:
+    // "wgpuSurfacePresent is unsupported (use requestAnimationFrame via html5.h instead)".
 }
 
 // File I/O - reads from Emscripten's virtual filesystem

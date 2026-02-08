@@ -36,7 +36,24 @@
         const canvas = document.getElementById('canvas');
         const status = document.getElementById('status');
         
-        status.textContent = 'Initializing WebGPU...';
+        status.textContent = 'Loading WASM runtime...';
+
+        function updateStatusFromRuntimeLine(line) {
+            if (line.includes('[fiction-wasm] Requesting WebGPU adapter')) {
+                status.textContent = 'Requesting WebGPU adapter...';
+            } else if (line.includes('[fiction-wasm] Adapter acquired')) {
+                status.textContent = 'Adapter acquired, requesting device...';
+            } else if (line.includes('[fiction-wasm] Device ready, engine initialized')) {
+                status.textContent = 'Running';
+            } else if (
+                line.includes('Failed to get WebGPU adapter') ||
+                line.includes('Failed to get WebGPU device') ||
+                line.includes('Timeout waiting for WebGPU device') ||
+                line.includes('WebGPU initialization failed')
+            ) {
+                status.textContent = 'WebGPU init failed. Check console logs.';
+            }
+        }
         
         fiction({
             canvas: canvas,
@@ -44,11 +61,21 @@
             locateFile: function(path) {
                 return './' + path;
             },
+            print: function(text) {
+                console.log(text);
+                updateStatusFromRuntimeLine(text);
+            },
+            printErr: function(text) {
+                console.error(text);
+                updateStatusFromRuntimeLine(text);
+            },
             onRuntimeInitialized: function() {
-                status.textContent = 'Ready';
+                status.textContent = 'Runtime initialized, starting game loop...';
             }
         }).then(module => {
-            status.textContent = 'Running...';
+            // The fiction main loop usually never returns.
+            status.textContent = 'Runtime exited';
+
             // Debug: list files in virtual filesystem (if FS is exported)
             if (module.FS && module.FS.readdir) {
                 console.log('[debug] FS root:', module.FS.readdir('/'));
