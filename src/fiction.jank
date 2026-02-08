@@ -9,8 +9,9 @@
    [fiction.state :as state]
    [fiction.render :as text-render]
    [vybe.flecs :as vf]
-   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]
-   [jank.nrepl-server.server :as server]))
+   ["fiction_gfx/fiction_gfx.hpp" :as engine :scope "fiction_engine"]
+   ;; TODO: Re-enable for native builds (not supported in WASM)
+   #_[jank.nrepl-server.server :as server]))
 
 ;; =============================================================================
 ;; Story Loading
@@ -212,5 +213,6 @@
     (println "Au revoir.")))
 
 (defn -main [& args]
-  (server/start-server {:port 5700})
+  ;; TODO: Re-enable for native builds (not supported in WASM)
+  #_(server/start-server {:port 5700})
   (run!))

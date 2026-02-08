@@ -5,8 +5,8 @@
    [fiction.state :as state]
    [clojure.string :as str]
    ;; fiction_engine must be loaded first to set up Vulkan/SDL includes
-   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]
-   ["vulkan/fiction_text.hpp" :as fiction :scope "fiction"]))
+   ["fiction_gfx/fiction_gfx.hpp" :as engine :scope "fiction_engine"]
+   ["fiction_gfx/fiction_gfx.hpp" :as fiction :scope "fiction"]))
 
 ;; =============================================================================
 ;; Style Configuration

@@ -9,7 +9,7 @@
    - Plain text without prefix is narration"
   (:require
    [clojure.string :as str]
-   ["vulkan/fiction_engine.hpp" :as engine :scope "fiction_engine"]))
+   ["fiction_gfx/fiction_gfx.hpp" :as engine :scope "fiction_engine"]))
 
 ;; =============================================================================
 ;; Line Classification

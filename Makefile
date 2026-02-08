@@ -57,7 +57,8 @@ CXXFLAGS = -fPIC -O2 -std=c++17
 
 .PHONY: clean clean-cache sdf integrated integrated_wasm imgui jolt test tests help \
         build-jolt build-imgui build-flecs build-flecs-wasm build-raylib build-deps \
-        build-sdf-deps build-shaders build-imgui-vulkan build-vybe-wasm
+        build-sdf-deps build-shaders build-imgui-vulkan build-vybe-wasm \
+        fiction fiction-wasm build-fiction-shaders build-fiction-gfx-wasm build-fiction-gfx-native
 
 # Default target
 help:
@@ -72,6 +73,8 @@ help:
 	@echo "  make drawing          - Run Drawing Canvas app (Looom-like)"
 	@echo "  make integrated       - Run integrated demo (Raylib+ImGui+Jolt+Flecs)"
 	@echo "  make integrated_wasm  - Build integrated demo for WASM (Web/Emscripten)"
+	@echo "  make fiction          - Run Fiction narrative game (Vulkan desktop)"
+	@echo "  make fiction-wasm     - Build Fiction for WASM (WebGPU browser)"
 	@echo "  make imgui            - Run ImGui demo"
 	@echo "  make jolt             - Run Jolt physics demo"
 	@echo "  make test             - Run tests"
@@ -298,6 +301,49 @@ build-fiction-shaders: $(FICTION_SHADERS_SPV)
 # Run the fiction game
 fiction: build-fiction-shaders
 	./bin/run_fiction.sh
+
+# ============================================================================
+# Fiction WASM (WebGPU browser build)
+# ============================================================================
+
+# Build fiction_gfx native stub for JIT symbol resolution
+fiction_gfx/build/fiction_gfx_stub.o: fiction_gfx/fiction_gfx_stub.cpp
+	@mkdir -p fiction_gfx/build
+	$(JANK_CXX) -std=c++20 -O2 -c -fPIC $(VYBE_FLECS_JANK_SYSROOT) \
+		-Ifiction_gfx -Ivendor -Ivendor/flecs/distr \
+		$< -o $@
+
+# Build fiction_gfx native dylib for JIT
+fiction_gfx/libfiction_gfx_stub.dylib: fiction_gfx/fiction_gfx_stub.cpp
+	$(JANK_CXX) -std=c++20 -O2 -dynamiclib -Wl,-undefined,dynamic_lookup $(VYBE_FLECS_JANK_SYSROOT) \
+		-Ifiction_gfx -Ivendor -Ivendor/flecs/distr \
+		$< -o $@
+
+# Build fiction_gfx WASM object
+fiction_gfx/build-wasm/fiction_gfx_wasm.o: fiction_gfx/fiction_gfx_webgpu.hpp
+	@mkdir -p fiction_gfx/build-wasm
+	@echo '#define FICTION_USE_WEBGPU' > fiction_gfx/fiction_gfx_webgpu.cpp
+	@echo '#include "fiction_gfx_webgpu.hpp"' >> fiction_gfx/fiction_gfx_webgpu.cpp
+	em++ -std=c++20 -O2 -c -fPIC \
+		--use-port=emdawnwebgpu \
+		-DFICTION_USE_WEBGPU -DJANK_TARGET_EMSCRIPTEN -DJANK_TARGET_WASM=1 \
+		-DSTBI_NO_THREAD_LOCALS \
+		$(VYBE_FLECS_JANK_INCLUDES) \
+		-Ifiction_gfx -Ivulkan -Ivendor -Ivendor/flecs/distr \
+		fiction_gfx/fiction_gfx_webgpu.cpp \
+		-o $@
+
+.PHONY: build-fiction-gfx-wasm build-fiction-gfx-native fiction-wasm
+
+build-fiction-gfx-native: fiction_gfx/build/fiction_gfx_stub.o fiction_gfx/libfiction_gfx_stub.dylib
+	@echo "Fiction graphics native stub built."
+
+build-fiction-gfx-wasm: fiction_gfx/build-wasm/fiction_gfx_wasm.o
+	@echo "Fiction graphics WASM object built."
+
+# Build and run fiction for WASM (WebGPU)
+fiction-wasm: build-flecs-wasm build-vybe-wasm build-fiction-gfx-wasm build-fiction-gfx-native
+	./bin/run_fiction_wasm.sh
 
 # ============================================================================
 # Clean targets
