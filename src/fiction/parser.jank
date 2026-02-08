@@ -133,9 +133,30 @@
   "Parse [r, g, b] color string to vector."
   [s]
   (when (and (str/starts-with? s "[") (str/ends-with? s "]"))
-    (let [inner (subs s 1 (dec (count s)))
-          parts (str/split inner #",\s*")]
-      (mapv #(read-string (str/trim %)) parts))))
+    (let [inner (subs s 1 (dec (count s)))]
+      ;; Manual comma split to avoid regex/string edge cases in jank.
+      (loop [i 0
+             start 0
+             parts []]
+        (if (>= i (count inner))
+          (let [final-part (str/trim (subs inner start))
+                all-parts (if (empty? final-part) parts (conj parts final-part))
+                nums (loop [remaining all-parts
+                            out []]
+                       (if (empty? remaining)
+                         out
+                         (let [p (first remaining)]
+                           (if (empty? p)
+                             (recur (rest remaining) out)
+                             (recur (rest remaining) (conj out (read-string p)))))))]
+            (if (>= (count nums) 3)
+              [(nth nums 0) (nth nums 1) (nth nums 2)]
+              nums))
+          (if (= (nth inner i) \,)
+            (let [part (str/trim (subs inner start i))
+                  next-parts (if (empty? part) parts (conj parts part))]
+              (recur (inc i) (inc i) next-parts))
+            (recur (inc i) start parts)))))))
 
 (defn- parse-frontmatter-line
   "Parse a single frontmatter line into [key value] or nil."

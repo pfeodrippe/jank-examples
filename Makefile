@@ -364,6 +364,9 @@ build-fiction-gfx-wasm: fiction_gfx/build-wasm/fiction_gfx_wasm.o
 # Remove stale emscripten-bundle outputs to avoid cached stale links.
 clean-fiction-wasm-generated:
 	rm -f $(JANK_SRC)/build-wasm/fiction_generated.o \
+		$(JANK_SRC)/build-wasm/fiction_generated.cpp \
+		$(JANK_SRC)/build-wasm/fiction_entry.o \
+		$(JANK_SRC)/build-wasm/fiction_entry.cpp \
 		$(JANK_SRC)/build-wasm/fiction.js \
 		$(JANK_SRC)/build-wasm/fiction.wasm \
 		$(JANK_SRC)/build-wasm/fiction.html

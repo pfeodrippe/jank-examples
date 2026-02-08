@@ -154,20 +154,20 @@ struct TextRenderer {
     bool initialized = false;
 };
 
-// Global accessors
+// Global accessors - defined once in fiction_gfx_webgpu.cpp to avoid ODR issues
+extern TextRenderer* g_text_renderer;
 inline TextRenderer*& get_text_renderer() {
-    static TextRenderer* ptr = nullptr;
-    return ptr;
+    return g_text_renderer;
 }
 
+extern std::vector<DialogueEntry> g_pending_history;
 inline std::vector<DialogueEntry>& get_pending_history() {
-    static std::vector<DialogueEntry> entries;
-    return entries;
+    return g_pending_history;
 }
 
+extern std::vector<DialogueEntry> g_pending_choices;
 inline std::vector<DialogueEntry>& get_pending_choices() {
-    static std::vector<DialogueEntry> entries;
-    return entries;
+    return g_pending_choices;
 }
 
 // =============================================================================
@@ -192,8 +192,8 @@ struct BackgroundRenderer {
 };
 
 inline BackgroundRenderer*& get_bg_renderer() {
-    static BackgroundRenderer* ptr = nullptr;
-    return ptr;
+    extern BackgroundRenderer* g_bg_renderer;
+    return g_bg_renderer;
 }
 
 // =============================================================================
@@ -222,8 +222,8 @@ struct ParticleRenderer {
 };
 
 inline ParticleRenderer*& get_particle_renderer() {
-    static ParticleRenderer* ptr = nullptr;
-    return ptr;
+    extern ParticleRenderer* g_particle_renderer;
+    return g_particle_renderer;
 }
 
 // =============================================================================
@@ -231,9 +231,8 @@ inline ParticleRenderer*& get_particle_renderer() {
 // =============================================================================
 
 inline std::string& get_font_path() {
-    // Keep just the filename; runtime resolution tries /fonts and relative fallbacks.
-    static std::string path = "CrimsonPro-Regular.ttf";
-    return path;
+    extern std::string g_font_path;
+    return g_font_path;
 }
 
 inline void set_font_path(const std::string& path) {
@@ -1237,10 +1236,10 @@ inline void cleanup_text_renderer() {
 
 namespace fiction_engine {
 
-// Global WebGPU instance (Dawn requires this)
+// Global WebGPU instance - defined once in fiction_gfx_webgpu.cpp
+extern wgpu::Instance g_instance;
 inline wgpu::Instance& get_instance() {
-    static wgpu::Instance instance = wgpuCreateInstance(nullptr);
-    return instance;
+    return g_instance;
 }
 
 struct Engine {
@@ -1263,17 +1262,19 @@ struct Engine {
     std::function<void()> onReady;
 };
 
+// Global engine pointer - defined once in fiction_gfx_webgpu.cpp
+extern Engine* g_engine_ptr;
 inline Engine*& get_engine() {
-    static Engine* ptr = nullptr;
-    return ptr;
+    return g_engine_ptr;
 }
 
 // Callback type
 typedef void (*RenderCallback)(void*);
 
+// Global render callback - defined once in fiction_gfx_webgpu.cpp
+extern RenderCallback g_render_callback;
 inline RenderCallback& get_render_callback() {
-    static RenderCallback cb = nullptr;
-    return cb;
+    return g_render_callback;
 }
 
 inline void set_render_callback(RenderCallback cb) {
@@ -1303,13 +1304,17 @@ struct InputEvent {
     int mouseButton;
 };
 
+// Global event queue - defined once in fiction_gfx_webgpu.cpp to avoid ODR issues
+// with multiple translation units getting separate static instances.
+extern std::vector<InputEvent> g_event_queue;
+
 inline std::vector<InputEvent>& get_event_queue() {
-    static std::vector<InputEvent> queue;
-    return queue;
+    return g_event_queue;
 }
 
 inline int get_event_count() {
-    return static_cast<int>(get_event_queue().size());
+    int count = static_cast<int>(get_event_queue().size());
+    return count;
 }
 
 inline void clear_events() {
@@ -1380,6 +1385,20 @@ inline int translate_web_key_to_scancode(const EmscriptenKeyboardEvent* e) {
     if (strcmp(e->code, "ArrowDown") == 0) return 81;
     if (strcmp(e->code, "Escape") == 0) return 41;
 
+    // Fallback by key value for layouts/browsers where `code` is missing.
+    if (strcmp(e->key, "1") == 0) return 30;
+    if (strcmp(e->key, "2") == 0) return 31;
+    if (strcmp(e->key, "3") == 0) return 32;
+    if (strcmp(e->key, "4") == 0) return 33;
+    if (strcmp(e->key, "5") == 0) return 34;
+    if (strcmp(e->key, "6") == 0) return 35;
+    if (strcmp(e->key, "7") == 0) return 36;
+    if (strcmp(e->key, "8") == 0) return 37;
+    if (strcmp(e->key, "9") == 0) return 38;
+    if (strcmp(e->key, "ArrowUp") == 0 || strcmp(e->key, "Up") == 0) return 82;
+    if (strcmp(e->key, "ArrowDown") == 0 || strcmp(e->key, "Down") == 0) return 81;
+    if (strcmp(e->key, "Escape") == 0 || strcmp(e->key, "Esc") == 0) return 41;
+
     // Fallback by legacy keyCode.
     if (e->keyCode >= 49 && e->keyCode <= 57) return 30 + (e->keyCode - 49);
     if (e->keyCode == 38) return 82;
@@ -1391,6 +1410,22 @@ inline int translate_web_key_to_scancode(const EmscriptenKeyboardEvent* e) {
 
 inline EM_BOOL key_callback(int eventType, const EmscriptenKeyboardEvent* e, void* userData) {
     const int scancode = translate_web_key_to_scancode(e);
+    
+    if (scancode == 0) return EM_FALSE;
+
+    // When keyboard callbacks are registered on multiple targets (window/document/canvas)
+    // the same DOM event can be delivered more than once. Drop near-identical duplicates.
+    static int lastType = -1;
+    static int lastScancode = -1;
+    static double lastTimeMs = 0.0;
+    const double nowMs = emscripten_get_now();
+    if (eventType == lastType && scancode == lastScancode && (nowMs - lastTimeMs) < 2.0) {
+        return EM_TRUE;
+    }
+    lastType = eventType;
+    lastScancode = scancode;
+    lastTimeMs = nowMs;
+
     if (eventType == EMSCRIPTEN_EVENT_KEYDOWN) {
         get_event_queue().push_back({1, scancode, 0, 0, 0, 0});
         if (scancode == 41 || e->keyCode == 27) { // ESC
@@ -1559,13 +1594,34 @@ inline bool init(const char* title) {
         return false;
     }
     
+    // Make canvas focusable so keyboard events are consistently delivered.
+    emscripten_run_script(
+        "(function(){"
+        "var c=document.getElementById('canvas');"
+        "if(!c) return;"
+        "c.tabIndex=0;"
+        "c.style.outline='none';"
+        "if(window && window.focus){ window.focus(); }"
+        "c.focus();"
+        "c.addEventListener('mousedown', function(){ c.focus(); });"
+        "c.addEventListener('wheel', function(){ c.focus(); }, {passive:true});"
+        "c.addEventListener('mousemove', function(){ c.focus(); });"
+        "})();");
+
     // Set up event handlers
+    // Keyboard: register on window + document + canvas for maximum browser compatibility.
+    emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, EM_TRUE, key_callback);
+    emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, EM_TRUE, key_callback);
     emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, nullptr, EM_TRUE, key_callback);
     emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, nullptr, EM_TRUE, key_callback);
+    emscripten_set_keydown_callback("#canvas", nullptr, EM_TRUE, key_callback);
+    emscripten_set_keyup_callback("#canvas", nullptr, EM_TRUE, key_callback);
     emscripten_set_mousemove_callback("#canvas", nullptr, EM_TRUE, mouse_callback);
     emscripten_set_mousedown_callback("#canvas", nullptr, EM_TRUE, mouse_callback);
     emscripten_set_mouseup_callback("#canvas", nullptr, EM_TRUE, mouse_callback);
     emscripten_set_wheel_callback("#canvas", nullptr, EM_TRUE, wheel_callback);
+    
+    std::cout << "[fiction-wasm] Event callbacks registered (keyboard on window/document/canvas)" << std::endl;
     
     // Request adapter (async)
     std::cout << "[fiction-wasm] Requesting WebGPU adapter..." << std::endl;

@@ -241,14 +241,41 @@
   [speaker]
   (let [metadata (state/get-metadata)
         colors (:colors metadata {})
+        speakers (:speakers metadata {})
         ;; Speaker ID is already uppercase single char like "V" or "M"
         speaker-key (when speaker
-                      (keyword speaker))]
-    (or (get colors speaker-key)
+                      (keyword speaker))
+        speaker-first-char (when (and speaker (> (count speaker) 0))
+                             (subs speaker 0 1))
+        speaker-first-key (when speaker-first-char
+                            (keyword speaker-first-char))
+        matched-speaker-id (when speaker
+                             (loop [entries (seq speakers)]
+                               (if (empty? entries)
+                                 nil
+                                 (let [entry (first entries)
+                                       k (key entry)
+                                       v (val entry)]
+                                   (if (= v speaker)
+                                     k
+                                     (recur (next entries)))))))]
+    (or
+        ;; Direct match by speaker token.
+        (get colors speaker-key)
         ;; Try lowercase version
         (when speaker
           (let [lower-key (keyword (simple-lowercase speaker))]
             (get colors lower-key)))
+        ;; If token is a full speaker name, try first letter token.
+        (get colors speaker-first-key)
+        (when speaker-first-char
+          (let [first-lower-key (keyword (simple-lowercase speaker-first-char))]
+            (get colors first-lower-key)))
+        ;; Reverse lookup by metadata speaker display name.
+        (when matched-speaker-id
+          (or (get colors matched-speaker-id)
+              (let [id-name (name matched-speaker-id)]
+                (get colors (keyword (simple-lowercase id-name))))))
         [180 180 180])))  ;; Default grey
 
 (defn- get-speaker-name

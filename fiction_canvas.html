@@ -17,6 +17,10 @@
         #canvas {
             width: 1280px;
             height: 720px;
+            outline: none; /* Remove focus outline */
+        }
+        #canvas:focus {
+            box-shadow: 0 0 0 2px rgba(100, 150, 255, 0.5);
         }
         #status {
             color: #888;
@@ -27,7 +31,7 @@
 </head>
 <body>
     <div>
-        <canvas id="canvas" width="1280" height="720"></canvas>
+        <canvas id="canvas" width="1280" height="720" tabindex="0"></canvas>
         <div id="status">Loading...</div>
     </div>
     <script type="module">
@@ -35,6 +39,11 @@
         
         const canvas = document.getElementById('canvas');
         const status = document.getElementById('status');
+        
+        // Focus canvas on click so it receives keyboard events
+        canvas.addEventListener('click', () => canvas.focus());
+        // Auto-focus on page load
+        canvas.focus();
         
         status.textContent = 'Loading WASM runtime...';
 
