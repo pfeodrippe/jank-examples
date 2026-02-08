@@ -179,6 +179,7 @@
              :speaker (:speaker node)
              :text (:text node)
              :id (:id node)
+             :explicit-id? (:explicit-id? node)
              :selected? (or selected? false))))
 
 (defn- add-node-to-history!

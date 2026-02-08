@@ -14,15 +14,15 @@ colors:
   accent: [180, 80, 70]
 ---
 
-#∆V Une voiture avec ses feux rouges attend quelqu’un, il a air d’être là il y a plusieurs heures. Le brouillard est épais, vous ne voyez rien d’autre que cette machine.
-Vous sentez un souffle chaud derrière vous.
-:: Se retourner.
-	#∆M Il n’existent que des manguiers aux alentours.
-:: Inspecter la voiture.
-	#∆V À la porte du conducteur, l’odeur de cigarette à l’orange envahit le silence. Le terrain de mangrove recouvre vos semelles, c’est inconfortable, même si vous y êtes déjà venu de nombreuses fois.
-	:: Ouvrir la poignée.
-		#∆V La poignée est froide et humide et en quelque sorte, vous entendez un clic, elle s’ouvre.
+#∆V [id:intro_car_waiting] Une voiture avec ses feux rouges attend quelqu’un, il a air d’être là il y a plusieurs heures. Le brouillard est épais, vous ne voyez rien d’autre que cette machine.
+[id:intro_warm_breath] Vous sentez un souffle chaud derrière vous.
+:: [id:choice_turn_around] Se retourner.
+	#∆M [id:reply_only_manguiers] Il n’existent que des manguiers aux alentours.
+:: [id:choice_inspect_car] Inspecter la voiture.
+	#∆V [id:inspect_driver_door_smell] À la porte du conducteur, l’odeur de cigarette à l’orange envahit le silence. Le terrain de mangrove recouvre vos semelles, c’est inconfortable, même si vous y êtes déjà venu de nombreuses fois.
+	:: [id:choice_open_handle] Ouvrir la poignée.
+		#∆V [id:handle_clicks_open] La poignée est froide et humide et en quelque sorte, vous entendez un clic, elle s’ouvre.
 		Dans l’intérieur, il existe un dossier épais sur le siège passager avec un petit autocollant à l’avant.
-		:: Lire le l’autocollant.
-			« Maman… »
-	:: Frapper à la porte.
+		:: [id:choice_read_sticker] Lire le l’autocollant.
+			[id:sticker_maman] « Maman… »
+	:: [id:choice_knock_door] Frapper à la porte.

@@ -71,7 +71,13 @@
 
 (defn- speakable-entry?
   [entry]
-  (contains? #{:dialogue :narration :choice} (:type entry)))
+  ;; VO trigger policy:
+  ;; - dialogue/choice always trigger
+  ;; - narration triggers only when it has explicit [id:...] in story
+  ;;   (plain continuation narration should not start a new clip)
+  (or (contains? #{:dialogue :choice} (:type entry))
+      (and (= :narration (:type entry))
+           (:explicit-id? entry))))
 
 (defn init!
   "Initialize voice-over playback engine."

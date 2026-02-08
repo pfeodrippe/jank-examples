@@ -83,10 +83,25 @@
     (when (str/starts-with? trimmed "::")
       (str/trim (subs trimmed 2)))))
 
+(defn- split-inline-id
+  "Parse optional leading [id:...] token.
+   Returns [id-or-nil text-without-token explicit-id?]."
+  [text]
+  (let [s (str/trim (or text ""))]
+    (if (str/starts-with? s "[id:")
+      (let [close-idx (str/index-of s "]")]
+        (if (and close-idx (> close-idx 4))
+          [(str/trim (subs s 4 close-idx))
+           (str/trim (subs s (inc close-idx)))
+           true]
+          [nil s false]))
+      [nil s false])))
+
 (defn- classify-line
   "Classify a line and extract its content.
    Returns {:type :dialogue|:choice|:narration|:frontmatter|:empty
             :depth <indent-level>
+            :id <explicit-id or nil>
             :speaker <char-id or nil>
             :text <content>
             :raw <original line>}"
@@ -104,26 +119,35 @@
       
       ;; Character dialogue with speaker prefix
       (str/starts-with? trimmed "#∆")
-      (let [[speaker text] (parse-character-prefix line)]
+      (let [[speaker raw-text] (parse-character-prefix line)
+            [explicit-id text explicit-id?] (split-inline-id raw-text)]
         {:type :dialogue
          :depth depth
+         :id explicit-id
+         :explicit-id? explicit-id?
          :speaker speaker
          :text text
          :raw line})
       
       ;; Player choice: :: text
       (str/starts-with? trimmed "::")
-      {:type :choice
-       :depth depth
-       :text (parse-choice-prefix line)
-       :raw line}
+      (let [[explicit-id text explicit-id?] (split-inline-id (parse-choice-prefix line))]
+        {:type :choice
+         :depth depth
+         :id explicit-id
+         :explicit-id? explicit-id?
+         :text text
+         :raw line})
       
       ;; Plain narration or continuation
       :else
-      {:type :narration
-       :depth depth
-       :text trimmed
-       :raw line})))
+      (let [[explicit-id text explicit-id?] (split-inline-id trimmed)]
+        {:type :narration
+         :depth depth
+         :id explicit-id
+         :explicit-id? explicit-id?
+         :text text
+         :raw line}))))
 
 ;; =============================================================================
 ;; YAML-like Frontmatter Parsing (simplified)
@@ -213,15 +237,28 @@
 ;; Tree Building
 ;; =============================================================================
 
+(defonce ^:private *node-id-counter (atom 0))
+
+(defn- reset-node-id-counter!
+  "Reset deterministic node id generation for each parse."
+  []
+  (reset! *node-id-counter 0))
+
+(defn- next-node-id
+  "Generate deterministic node ids in parse order."
+  []
+  (str "node-" (swap! *node-id-counter inc)))
+
 (defn- make-node
   "Create a dialogue tree node.
-   Args: type, opts-map with :speaker :text :children"
+   Args: type, opts-map with :id :explicit-id? :speaker :text :children"
   ([type]
    (make-node type {}))
-  ([type {:keys [speaker text children]}]
+  ([type {:keys [id explicit-id? speaker text children]}]
    ;; Build map using hash-map function to avoid jank map literal issues
    (hash-map :type type
-             :id (str (gensym "node-"))
+             :id (or id (next-node-id))
+             :explicit-id? (or explicit-id? false)
              :speaker speaker
              :text (or text "")
              :children (or children [])
@@ -241,18 +278,18 @@
                                     (not= (:type %) :frontmatter-marker))
                               classified-lines)]
     (loop [lines content-lines
-           stack [{:node (make-node :root {:text "root"}) :depth -1}]
+           stack [{:node (make-node :root {:id "root" :text "root"}) :depth -1}]
            result-children []]
       (if (empty? lines)
         ;; Return the root node with all top-level children
-        (make-node :root {:children result-children})
+        (make-node :root {:id "root" :children result-children})
         (let [line (first lines)
-              {:keys [type depth speaker text]} line
+              {:keys [type depth id explicit-id? speaker text]} line
               ;; Create node based on line type
               new-node (case type
-                         :dialogue (make-node :dialogue {:speaker speaker :text text})
-                         :choice (make-node :choice {:text text})
-                         :narration (make-node :narration {:text text})
+                         :dialogue (make-node :dialogue {:id id :explicit-id? explicit-id? :speaker speaker :text text})
+                         :choice (make-node :choice {:id id :explicit-id? explicit-id? :text text})
+                         :narration (make-node :narration {:id id :explicit-id? explicit-id? :text text})
                          nil)]
           (if (nil? new-node)
             (recur (rest lines) stack result-children)
@@ -293,15 +330,15 @@
                 (if (empty? remaining)
                   [nodes []]
                   (let [line (first remaining)
-                        {:keys [type depth speaker text]} line]
+                        {:keys [type depth id explicit-id? speaker text]} line]
                     (if (< depth min-depth)
                       ;; This line belongs to a shallower level
                       [nodes remaining]
                       ;; This line is at our level or deeper
                       (let [node (case type
-                                   :dialogue (make-node :dialogue {:speaker speaker :text text})
-                                   :choice (make-node :choice {:text text})
-                                   :narration (make-node :narration {:text text})
+                                   :dialogue (make-node :dialogue {:id id :explicit-id? explicit-id? :speaker speaker :text text})
+                                   :choice (make-node :choice {:id id :explicit-id? explicit-id? :text text})
+                                   :narration (make-node :narration {:id id :explicit-id? explicit-id? :text text})
                                    nil)]
                         (if (nil? node)
                           (recur (rest remaining) nodes)
@@ -310,7 +347,7 @@
                                 node-with-children (assoc node :children children)]
                             (recur rest-lines (conj nodes node-with-children))))))))))]
       (let [[top-nodes _] (parse-at-depth content-lines 0)]
-        (make-node :root {:children top-nodes})))))
+        (make-node :root {:id "root" :children top-nodes})))))
 
 ;; =============================================================================
 ;; Main Parser API
@@ -337,6 +374,7 @@
         metadata (if frontmatter-lines
                    (parse-frontmatter frontmatter-lines)
                    {})
+        _ (reset-node-id-counter!)
         classified (map classify-line content-lines)
         tree (build-nested-tree classified)]
     {:metadata metadata
@@ -379,6 +417,7 @@
             metadata (if frontmatter-lines
                        (parse-frontmatter frontmatter-lines)
                        {})
+            _ (reset-node-id-counter!)
             classified (map classify-line content-lines)
             tree (build-nested-tree classified)]
         {:metadata metadata

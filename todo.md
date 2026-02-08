@@ -53,8 +53,12 @@
 - [ ] simple game
   - [x] ui
   - [x] bg
-  - [ ] wasm
-  - [ ] audio
+  - [x] wasm
+  - [x] audio
+  - [ ] voiceover
+    - [ ] record in bitwig 2 lines
+      - [ ] save track when saving the project
+    - [ ] check hot reload
   - [ ] anims
   - [ ] visuals
     - [ ] text bg should move with it (e.g. scrolling)
