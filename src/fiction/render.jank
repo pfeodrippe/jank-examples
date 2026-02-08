@@ -272,7 +272,11 @@
         speaker-id (:speaker entry)
         speaker-name (get-speaker-name speaker-id)
         text (or (:text entry) "")
-        [r g b] (get-speaker-color speaker-id)
+        color (get-speaker-color speaker-id)
+        ;; Defensive: ensure we have valid color values
+        r (or (nth color 0 nil) 180)
+        g (or (nth color 1 nil) 180)
+        b (or (nth color 2 nil) 180)
         selected (:selected? entry false)]
     (fiction/add_history_entry
      type-int

@@ -40,11 +40,24 @@
         
         fiction({
             canvas: canvas,
+            // Help emscripten find the .data file with preloaded assets
+            locateFile: function(path) {
+                return './' + path;
+            },
             onRuntimeInitialized: function() {
                 status.textContent = 'Ready';
             }
         }).then(module => {
             status.textContent = 'Running...';
+            // Debug: list files in virtual filesystem (if FS is exported)
+            if (module.FS && module.FS.readdir) {
+                console.log('[debug] FS root:', module.FS.readdir('/'));
+                if (module.FS.analyzePath('/stories').exists) {
+                    console.log('[debug] /stories:', module.FS.readdir('/stories'));
+                }
+            } else {
+                console.log('[debug] FS not exported, skipping filesystem debug');
+            }
         }).catch(err => {
             status.textContent = 'Error: ' + err.message;
             console.error(err);
