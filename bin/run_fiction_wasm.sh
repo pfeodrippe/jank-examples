@@ -101,6 +101,34 @@ echo ""
 echo "Running emscripten-bundle..."
 echo ""
 
+# Stage fiction resources for WASM embed without WAV files.
+# Runtime will prefer WAV first, then fallback to MP3, so excluding WAV
+# keeps bundles smaller while preserving playback via MP3 assets.
+EMBED_RES_DIR="$JANK_DIR/build-wasm/embed_resources"
+EMBED_FICTION_DIR="$EMBED_RES_DIR/fiction"
+rm -rf "$EMBED_FICTION_DIR"
+mkdir -p "$EMBED_RES_DIR"
+cp -R "$SOMETHING_DIR/resources/fiction" "$EMBED_FICTION_DIR"
+
+# Ensure MP3 voice assets exist for WASM by transcoding source WAV files.
+# Existing MP3 files are kept; WAV files are removed before embedding.
+if command -v ffmpeg >/dev/null 2>&1; then
+    while IFS= read -r src_wav; do
+        rel_path="${src_wav#"$SOMETHING_DIR/resources/fiction/"}"
+        rel_no_ext="${rel_path%.*}"
+        dst_mp3="$EMBED_FICTION_DIR/$rel_no_ext.mp3"
+        mkdir -p "$(dirname "$dst_mp3")"
+        if [ ! -f "$dst_mp3" ] || [ "$src_wav" -nt "$dst_mp3" ]; then
+            ffmpeg -hide_banner -loglevel error -y -i "$src_wav" \
+                -ac 1 -ar 48000 -codec:a libmp3lame -q:a 4 "$dst_mp3"
+        fi
+    done < <(find "$SOMETHING_DIR/resources/fiction" -type f -iname '*.wav')
+else
+    echo "WARN: ffmpeg not found; WAV voice assets will not be transcoded to MP3 for WASM."
+fi
+
+find "$EMBED_FICTION_DIR" -type f -iname '*.wav' -delete
+
 RELEASE=1 ./bin/emscripten-bundle -v \
     --native-obj "$SOMETHING_DIR/vendor/flecs/distr/flecs.o" \
     --native-obj "$SOMETHING_DIR/vendor/vybe/vybe_flecs_jank.o" \
@@ -125,7 +153,7 @@ RELEASE=1 ./bin/emscripten-bundle -v \
     --em-flag "-sINITIAL_MEMORY=67108864" \
     --em-flag "--embed-file $SOMETHING_DIR/fonts@/fonts" \
     --em-flag "--embed-file $SOMETHING_DIR/stories@/stories" \
-    --em-flag "--embed-file $SOMETHING_DIR/resources/fiction@/resources/fiction" \
+    --em-flag "--embed-file $EMBED_FICTION_DIR@/resources/fiction" \
     --em-flag "--embed-file $SOMETHING_DIR/vulkan_fiction/particle.wgsl@/vulkan_fiction/particle.wgsl" \
     "$SOMETHING_DIR/src/fiction.jank"
 

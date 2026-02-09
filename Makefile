@@ -31,9 +31,9 @@ ifeq ($(UNAME_S),Darwin)
     GLSLC := $(shell command -v glslangValidator 2>/dev/null || command -v glslc 2>/dev/null)
     ifeq ($(findstring glslangValidator,$(GLSLC)),glslangValidator)
         # -V = Vulkan SPIR-V, -I = include path for #include directives
-        GLSLC_FLAGS = -V -I vulkan_kim
+        GLSLC_FLAGS = -V -Ivulkan_kim
     else
-        GLSLC_FLAGS = -I vulkan_kim
+        GLSLC_FLAGS = -Ivulkan_kim
     endif
 else
     SHARED_LIB_EXT = so
@@ -45,9 +45,9 @@ else
     GLSLC := $(shell command -v glslangValidator 2>/dev/null || command -v glslc 2>/dev/null)
     ifeq ($(findstring glslangValidator,$(GLSLC)),glslangValidator)
         # -V = Vulkan SPIR-V, -I = include path for #include directives
-        GLSLC_FLAGS = -V -I vulkan_kim
+        GLSLC_FLAGS = -V -Ivulkan_kim
     else
-        GLSLC_FLAGS = -I vulkan_kim
+        GLSLC_FLAGS = -Ivulkan_kim
     endif
 endif
 

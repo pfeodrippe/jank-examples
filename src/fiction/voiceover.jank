@@ -12,6 +12,8 @@
 (def ^:private voice-root "resources/fiction/voice")
 (def ^:private fallback-locale "fr")
 (def ^:private mock-voice-path (str voice-root "/_mock/default.wav"))
+(def ^:private mock-voice-path-mp3 (str voice-root "/_mock/default.mp3"))
+(def ^:private supported-extensions [".wav" ".mp3"])
 
 ;; Runtime module state.
 (defonce ^:private *enabled (atom false))
@@ -83,20 +85,31 @@
   (let [locale (normalized-locale)
         entry-id (:id entry)
         speaker-id (:speaker entry)
-        locale-entry (when entry-id
-                       (str voice-root "/" locale "/" entry-id ".wav"))
-        locale-speaker (when speaker-id
-                         (str voice-root "/" locale "/speaker-" speaker-id ".wav"))
-        fallback-entry (when entry-id
-                         (str voice-root "/" fallback-locale "/" entry-id ".wav"))
-        fallback-speaker (when speaker-id
-                           (str voice-root "/" fallback-locale "/speaker-" speaker-id ".wav"))]
-    (vec (distinct (remove nil?
-                           [locale-entry
-                            locale-speaker
-                            fallback-entry
-                            fallback-speaker
-                            mock-voice-path])))))
+        with-exts (fn [base]
+                    (when base
+                      (loop [remaining supported-extensions
+                             out []]
+                        (if (empty? remaining)
+                          out
+                          (recur (rest remaining)
+                                 (conj out (str base (first remaining))))))))
+        locale-entry (with-exts (when entry-id
+                                  (str voice-root "/" locale "/" entry-id)))
+        locale-speaker (with-exts (when speaker-id
+                                    (str voice-root "/" locale "/speaker-" speaker-id)))
+        fallback-entry (with-exts (when entry-id
+                                    (str voice-root "/" fallback-locale "/" entry-id)))
+        fallback-speaker (with-exts (when speaker-id
+                                      (str voice-root "/" fallback-locale "/speaker-" speaker-id)))]
+    (->> (concat locale-entry
+                 locale-speaker
+                 fallback-entry
+                 fallback-speaker
+                 [mock-voice-path
+                  mock-voice-path-mp3])
+         (remove nil?)
+         distinct
+         vec)))
 
 (defn- play-entry!
   "Play voice for a dialogue entry, trying fallbacks in order.
