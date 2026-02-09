@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jank WASM - fiction_wasm_minimal</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 {
+            color: #4fc3f7;
+            border-bottom: 2px solid #4fc3f7;
+            padding-bottom: 10px;
+        }
+        #status {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+            background: #2d2d2d;
+            border-left: 4px solid #4fc3f7;
+        }
+        #output {
+            background: #0d0d0d;
+            border: 1px solid #3d3d3d;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 20px 0;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            min-height: 200px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .success { color: #4caf50; }
+        .error { color: #f44336; }
+        .info { color: #2196f3; }
+        #controls {
+            margin: 20px 0;
+        }
+        button {
+            background: #4fc3f7;
+            color: #1e1e1e;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #29b6f6;
+        }
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #3d3d3d;
+        }
+        .input-group label {
+            color: #9e9e9e;
+        }
+        .input-group input {
+            background: #0d0d0d;
+            border: 1px solid #3d3d3d;
+            border-radius: 5px;
+            padding: 8px 12px;
+            color: #d4d4d4;
+            font-size: 14px;
+            width: 120px;
+        }
+        .input-group input:focus {
+            outline: none;
+            border-color: #4fc3f7;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 Jank WASM Runtime</h1>
+    <div id="status">
+        <strong>Status:</strong> <span id="status-text">Initializing...</span>
+    </div>
+
+    <div id="controls">
+        <button id="run-btn" disabled>Run Program</button>
+        <button id="clear-btn">Clear Output</button>
+        <div class="input-group">
+            <label for="fn-name">Function:</label>
+            <input type="text" id="fn-name" placeholder="my-func" value="">
+            <label for="fn-arg">Arg:</label>
+            <input type="number" id="fn-arg" placeholder="42" value="42">
+            <button id="call-btn" disabled>Call Function</button>
+        </div>
+    </div>
+
+    <h2>Output</h2>
+    <div id="output"></div>
+
+    <script type="module">
+        const statusText = document.getElementById('status-text');
+        const outputDiv = document.getElementById('output');
+        const runBtn = document.getElementById('run-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const callBtn = document.getElementById('call-btn');
+        const fnNameInput = document.getElementById('fn-name');
+        const fnArgInput = document.getElementById('fn-arg');
+
+        let moduleInstance = null;
+        let hasRun = false;
+
+        // Capture console output
+        const originalLog = console.log;
+        const originalError = console.error;
+
+        function appendOutput(text, type = 'info') {
+            const line = document.createElement('div');
+            line.className = type;
+            line.textContent = text;
+            outputDiv.appendChild(line);
+            outputDiv.scrollTop = outputDiv.scrollHeight;
+        }
+
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            appendOutput(args.join(' '), 'info');
+        };
+
+        console.error = function(...args) {
+            originalError.apply(console, args);
+            appendOutput('ERROR: ' + args.join(' '), 'error');
+        };
+
+        // Load the WASM module
+        statusText.textContent = 'Loading WASM module...';
+        appendOutput('Loading Jank WASM module...', 'info');
+
+        // Import the generated JS file (which loads the WASM)
+        import('./fiction_wasm_minimal.js')
+            .then(Module => {
+                statusText.textContent = 'Initializing module...';
+                appendOutput('Module loaded, initializing...', 'success');
+
+                // Initialize the module (Module.default for ES modules, Module for direct export)
+                const initFn = Module.default || Module;
+                return initFn({
+                    print: (text) => {
+                        originalLog(text);
+                        appendOutput(text, 'info');
+                    },
+                    printErr: (text) => {
+                        originalError(text);
+                        appendOutput('ERROR: ' + text, 'error');
+                    }
+                });
+            })
+            .then(instance => {
+                moduleInstance = instance;
+                statusText.textContent = 'Ready! Click "Run Program" to execute.';
+                appendOutput('Module initialized successfully!', 'success');
+                appendOutput('Click "Run Program" to execute the jank code.', 'info');
+                appendOutput('Use "Call Function" to invoke a specific function with a number argument.', 'info');
+                runBtn.disabled = false;
+                callBtn.disabled = false;
+            })
+            .catch(err => {
+                statusText.textContent = 'Error loading module';
+                appendOutput('Failed to load module: ' + err.message, 'error');
+                console.error('Module loading error:', err);
+            });
+
+        runBtn.addEventListener('click', () => {
+            if (!moduleInstance) return;
+
+            if (hasRun) {
+                appendOutput('\n--- Running again ---\n', 'info');
+            }
+
+            statusText.textContent = 'Running...';
+            runBtn.disabled = true;
+
+            try {
+                // Call the main function (if it exists and hasn't run yet)
+                if (moduleInstance._main && typeof moduleInstance._main === 'function') {
+                    appendOutput('Calling main()...', 'info');
+                    const result = moduleInstance._main();
+                    appendOutput(`Program exited with code: ${result}`, result === 0 ? 'success' : 'error');
+                } else {
+                    appendOutput('No main() function found in module', 'error');
+                }
+
+                statusText.textContent = 'Execution complete';
+                hasRun = true;
+            } catch (err) {
+                statusText.textContent = 'Execution error';
+                appendOutput('Runtime error: ' + err.message, 'error');
+                console.error('Runtime error:', err);
+            } finally {
+                runBtn.disabled = false;
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            outputDiv.innerHTML = '';
+            appendOutput('Output cleared', 'info');
+        });
+
+        callBtn.addEventListener('click', () => {
+            if (!moduleInstance) return;
+
+            const fnName = fnNameInput.value.trim();
+            const argValue = parseFloat(fnArgInput.value);
+
+            if (!fnName) {
+                appendOutput('Please enter a function name', 'error');
+                return;
+            }
+
+            if (isNaN(argValue)) {
+                appendOutput('Please enter a valid number', 'error');
+                return;
+            }
+
+            appendOutput(`\n--- Calling ${fnName}(${argValue}) ---`, 'info');
+            statusText.textContent = 'Calling function...';
+            callBtn.disabled = true;
+
+            try {
+                // Convert jank function name to C symbol name
+                // jank uses munged names: - becomes _, ? becomes _QMARK_, etc.
+                let cFnName = fnName
+                    .replace(/-/g, '_')
+                    .replace(/\?/g, '_QMARK_')
+                    .replace(/!/g, '_BANG_')
+                    .replace(/\*/g, '_STAR_')
+                    .replace(/\+/g, '_PLUS_')
+                    .replace(/</g, '_LT_')
+                    .replace(/>/g, '_GT_')
+                    .replace(/=/g, '_EQ_');
+
+                // Try different function name patterns
+                const patterns = [
+                    `_jank_user_${cFnName}`,           // User namespace function
+                    `_jank_export_${cFnName}`,        
+                    `jank_export_${cFnName}`,          
+                    `_jank_call_${cFnName}`,           // Call wrapper
+                    `_${cFnName}`,                      // Direct C name
+                    `jank_user_${cFnName}`,            // Without underscore prefix
+                    `jank_call_${cFnName}`,
+                    cFnName
+                ];
+
+                let called = false;
+                for (const pattern of patterns) {
+                    const fn = moduleInstance[pattern];
+                    if (typeof fn === 'function') {
+                        appendOutput(`Found function: ${pattern}`, 'info');
+                        const result = fn(argValue);
+                        appendOutput(`Result: ${result}`, 'success');
+                        called = true;
+                        break;
+                    }
+                }
+
+                if (!called) {
+                    // Try using ccall if available
+                    if (moduleInstance.ccall) {
+                        appendOutput('Trying ccall...', 'info');
+                        try {
+                            const result = moduleInstance.ccall(
+                                `jank_user_${cFnName}`,
+                                'number',
+                                ['number'],
+                                [argValue]
+                            );
+                            appendOutput(`Result (via ccall): ${result}`, 'success');
+                            called = true;
+                        } catch (ccallErr) {
+                            appendOutput(`ccall failed: ${ccallErr.message}`, 'error');
+                        }
+                    }
+                }
+
+                if (!called) {
+                    appendOutput(`Function '${fnName}' not found. Available exports:`, 'error');
+                    const exports = Object.keys(moduleInstance).filter(k => 
+                        typeof moduleInstance[k] === 'function' && 
+                        !k.startsWith('_') || k.includes('jank')
+                    ).slice(0, 20);
+                    appendOutput(exports.join(', ') || '(none)', 'info');
+                }
+
+                statusText.textContent = 'Function call complete';
+            } catch (err) {
+                statusText.textContent = 'Function call error';
+                appendOutput(`Error calling ${fnName}: ${err.message}`, 'error');
+                console.error('Function call error:', err);
+            } finally {
+                callBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

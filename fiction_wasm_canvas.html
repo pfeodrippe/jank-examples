@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Voiture - Interactive Fiction (WebGPU)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0a0a0c;
+            color: #ccc;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-size: 18px;
+        }
+        #error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #ff6b6b;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="loading">Loading La Voiture...</div>
+    <div id="error">
+        <h2>WebGPU Not Supported</h2>
+        <p>This game requires WebGPU, which is not available in your browser.</p>
+        <p>Please use Chrome 113+, Edge 113+, or Safari 17+.</p>
+    </div>
+
+    <script type="module">
+        // Check for WebGPU support
+        if (!navigator.gpu) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('error').style.display = 'block';
+            throw new Error('WebGPU not supported');
+        }
+
+        // Import the WASM module
+        import init from './fiction_wasm_minimal.js';
+        
+        async function run() {
+            try {
+                const module = await init();
+                console.log('WASM module loaded:', module);
+                document.getElementById('loading').style.display = 'none';
+            } catch (err) {
+                console.error('Failed to load WASM:', err);
+                document.getElementById('loading').textContent = 'Error: ' + err.message;
+            }
+        }
+        
+        run();
+    </script>
+</body>
+</html>

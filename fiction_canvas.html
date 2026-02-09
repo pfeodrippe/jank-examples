@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>La Voiture - Interactive Fiction</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0d0d0f;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: sans-serif;
+        }
+        #canvas {
+            width: 1280px;
+            height: 720px;
+            outline: none; /* Remove focus outline */
+        }
+        #canvas:focus {
+            box-shadow: 0 0 0 2px rgba(100, 150, 255, 0.5);
+        }
+        #status {
+            color: #888;
+            text-align: center;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <canvas id="canvas" width="1280" height="720" tabindex="0"></canvas>
+        <div id="status">Loading...</div>
+    </div>
+    <script type="module">
+        const canvas = document.getElementById('canvas');
+        const status = document.getElementById('status');
+        const params = new URLSearchParams(window.location.search);
+        const forcedBuildId = params.get('v');
+        const configuredBuildId = (window.FICTION_BUILD_ID || '').trim();
+        const cacheBust = forcedBuildId || configuredBuildId || String(Date.now());
+        const fictionModulePath = `./fiction.js?v=${encodeURIComponent(cacheBust)}`;
+
+        // WebAudio unlock: browsers often suspend audio contexts created before
+        // user interaction. Resume all known contexts on first input events.
+        const knownAudioContexts = new Set();
+        const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
+        if (NativeAudioContext) {
+            const WrappedAudioContext = function(...args) {
+                const ctx = new NativeAudioContext(...args);
+                knownAudioContexts.add(ctx);
+                return ctx;
+            };
+            WrappedAudioContext.prototype = NativeAudioContext.prototype;
+            Object.setPrototypeOf(WrappedAudioContext, NativeAudioContext);
+            window.AudioContext = WrappedAudioContext;
+            if (window.webkitAudioContext) {
+                window.webkitAudioContext = WrappedAudioContext;
+            }
+        }
+
+        async function resumeKnownAudioContexts() {
+            for (const ctx of knownAudioContexts) {
+                if (ctx && ctx.state === 'suspended') {
+                    try {
+                        await ctx.resume();
+                    } catch (_err) {
+                        // Ignore; next gesture will retry.
+                    }
+                }
+            }
+        }
+        
+        // Focus canvas on click so it receives keyboard events
+        canvas.addEventListener('click', () => {
+            canvas.focus();
+            void resumeKnownAudioContexts();
+        });
+        window.addEventListener('pointerdown', () => {
+            void resumeKnownAudioContexts();
+        }, { passive: true });
+        window.addEventListener('keydown', () => {
+            void resumeKnownAudioContexts();
+        }, { passive: true });
+        window.addEventListener('touchstart', () => {
+            void resumeKnownAudioContexts();
+        }, { passive: true });
+        // Auto-focus on page load
+        canvas.focus();
+        
+        status.textContent = 'Loading WASM runtime...';
+
+        function updateStatusFromRuntimeLine(line) {
+            if (line.includes('[fiction-wasm] Requesting WebGPU adapter')) {
+                status.textContent = 'Requesting WebGPU adapter...';
+            } else if (line.includes('[fiction-wasm] Adapter acquired')) {
+                status.textContent = 'Adapter acquired, requesting device...';
+            } else if (line.includes('[fiction-wasm] Device ready, engine initialized')) {
+                status.textContent = 'Running';
+            } else if (
+                line.includes('Failed to get WebGPU adapter') ||
+                line.includes('Failed to get WebGPU device') ||
+                line.includes('Timeout waiting for WebGPU device') ||
+                line.includes('WebGPU initialization failed')
+            ) {
+                status.textContent = 'WebGPU init failed. Check console logs.';
+            }
+        }
+        
+        import(fictionModulePath).then(({ default: fiction }) => {
+            fiction({
+                canvas: canvas,
+                // Help emscripten find generated assets and force cache busting.
+                locateFile: function(path) {
+                    return `./${path}?v=${encodeURIComponent(cacheBust)}`;
+                },
+                print: function(text) {
+                    console.log(text);
+                    updateStatusFromRuntimeLine(text);
+                },
+                printErr: function(text) {
+                    console.error(text);
+                    updateStatusFromRuntimeLine(text);
+                },
+                onRuntimeInitialized: function() {
+                    status.textContent = 'Runtime initialized, starting game loop...';
+                }
+            }).then(module => {
+                // The fiction main loop usually never returns.
+                status.textContent = 'Runtime exited';
+
+                // Debug: list files in virtual filesystem (if FS is exported)
+                if (module.FS && module.FS.readdir) {
+                    console.log('[debug] FS root:', module.FS.readdir('/'));
+                    if (module.FS.analyzePath('/stories').exists) {
+                        console.log('[debug] /stories:', module.FS.readdir('/stories'));
+                    }
+                } else {
+                    console.log('[debug] FS not exported, skipping filesystem debug');
+                }
+            }).catch(err => {
+                status.textContent = 'Error: ' + err.message;
+                console.error(err);
+            });
+        }).catch(err => {
+            status.textContent = 'Error: ' + err.message;
+            console.error(err);
+        });
+    </script>
+</body>
+</html>
