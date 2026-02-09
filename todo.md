@@ -55,13 +55,14 @@
   - [x] bg
   - [x] wasm
   - [x] audio
+  - [x] publish wasm
   - [ ] voiceover
     - [ ] record in bitwig 2 lines
       - [ ] save track when saving the project
     - [ ] check hot reload
   - [ ] anims
   - [ ] visuals
-    - [ ] text bg should move with it (e.g. scrolling)
+    - [ ] text bg should move with it (e.g. scrolling) (?)
 - [ ] ipad simple animation app
   - [x] gpu brush drawing
     - [x] draw

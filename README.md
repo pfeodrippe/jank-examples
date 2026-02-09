@@ -106,7 +106,8 @@ Examples:
 ```
 
 Rule:
-- `:dialogue` and `:choice` lines trigger VO.
+- `:dialogue` lines trigger VO.
+- `:choice` lines do not trigger VO.
 - Narration triggers VO only when it has explicit `[id:...]`.
 - Plain continuation narration (no `[id:...]`) does not start a new clip.
 
@@ -153,3 +154,26 @@ resources/fiction/voice/fr/handle_clicks_open.wav
 2. Record/save in Bitwig.
 3. Watcher logs `publish_ok`.
 4. Trigger that line in `fiction`; newest audio plays.
+
+### 6) Publish a new WASM version to GitHub Release + Pages
+
+Use the one-command script:
+
+```bash
+/Users/pfeodrippe/dev/something/bin/publish_fiction_release.sh v0.1.1
+```
+
+What it does:
+
+1. Builds `fiction-wasm` (unless `--skip-build`).
+2. Creates or updates the GitHub release tag with `fiction*.html/js/wasm/data` artifacts.
+3. Triggers the `Fiction Pages From Release` workflow.
+4. Waits for deploy and prints release + Pages URLs.
+
+Useful variants:
+
+```bash
+/Users/pfeodrippe/dev/something/bin/publish_fiction_release.sh v0.1.1 --skip-build
+/Users/pfeodrippe/dev/something/bin/publish_fiction_release.sh v0.1.1 --no-wait
+/Users/pfeodrippe/dev/something/bin/publish_fiction_release.sh v0.1.1 --repo pfeodrippe/jank-examples
+```
