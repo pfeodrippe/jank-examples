@@ -110,22 +110,89 @@ rm -rf "$EMBED_FICTION_DIR"
 mkdir -p "$EMBED_RES_DIR"
 cp -R "$SOMETHING_DIR/resources/fiction" "$EMBED_FICTION_DIR"
 
-# Ensure MP3 voice assets exist for WASM by transcoding source WAV files.
-# Existing MP3 files are kept; WAV files are removed before embedding.
-if command -v ffmpeg >/dev/null 2>&1; then
-    while IFS= read -r src_wav; do
-        rel_path="${src_wav#"$SOMETHING_DIR/resources/fiction/"}"
-        rel_no_ext="${rel_path%.*}"
-        dst_mp3="$EMBED_FICTION_DIR/$rel_no_ext.mp3"
-        mkdir -p "$(dirname "$dst_mp3")"
-        if [ ! -f "$dst_mp3" ] || [ "$src_wav" -nt "$dst_mp3" ]; then
-            ffmpeg -hide_banner -loglevel error -y -i "$src_wav" \
-                -ac 1 -ar 48000 -codec:a libmp3lame -q:a 4 "$dst_mp3"
+# Normalize Bitwig-style prefixed voice file names in staged resources:
+#   "03 inspect_driver_door_smell.wav" -> "inspect_driver_door_smell.wav"
+# If both prefixed and canonical exist, keep the newest by mtime.
+normalized_count=0
+if [ -d "$EMBED_FICTION_DIR/voice" ]; then
+    while IFS= read -r -d '' staged_file; do
+        staged_dir="$(dirname "$staged_file")"
+        staged_base="$(basename "$staged_file")"
+        if [[ "$staged_base" =~ ^[0-9]+[[:space:]]+(.+)$ ]]; then
+            tail="${BASH_REMATCH[1]}"
+            dst="$staged_dir/$tail"
+            if [ "$staged_file" != "$dst" ]; then
+                if [ -e "$dst" ]; then
+                    if [ "$staged_file" -nt "$dst" ]; then
+                        mv -f "$staged_file" "$dst"
+                    else
+                        rm -f "$staged_file"
+                    fi
+                else
+                    mv "$staged_file" "$dst"
+                fi
+                normalized_count=$((normalized_count + 1))
+            fi
         fi
-    done < <(find "$SOMETHING_DIR/resources/fiction" -type f -iname '*.wav')
-else
-    echo "WARN: ffmpeg not found; WAV voice assets will not be transcoded to MP3 for WASM."
+    done < <(find "$EMBED_FICTION_DIR/voice" -type f \( -iname '*.wav' -o -iname '*.mp3' \) -print0)
 fi
+if [ "$normalized_count" -gt 0 ]; then
+    echo "Normalized prefixed staged voice files: $normalized_count"
+fi
+
+# Always regenerate staged voice MP3 files from WAV inputs on every build.
+# This avoids stale/cached audio carrying across releases.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "ERROR: ffmpeg not found; cannot regenerate voice MP3 files for WASM." >&2
+    exit 1
+fi
+
+if [ -d "$EMBED_FICTION_DIR/voice" ]; then
+    find "$EMBED_FICTION_DIR/voice" -type f -iname '*.mp3' -delete
+fi
+
+# Diagnose near-silent source WAV files for story ids.
+# Desktop uses WAV-first playback; WASM uses MP3 generated from these WAVs.
+# If a source WAV is near-silent, WASM will also sound silent for that line.
+VOICE_LOCALE="${VOICE_LOCALE:-fr}"
+STORY_FILE="$SOMETHING_DIR/stories/la_voiture.md"
+silent_story_voice_count=0
+if [ -f "$STORY_FILE" ]; then
+    while IFS= read -r story_id; do
+        [ -z "$story_id" ] && continue
+        src_wav="$SOMETHING_DIR/resources/fiction/voice/$VOICE_LOCALE/$story_id.wav"
+        if [ ! -f "$src_wav" ]; then
+            echo "WARN: Missing story voice WAV for id '$story_id': $src_wav"
+            continue
+        fi
+        max_db="$(ffmpeg -hide_banner -nostats -i "$src_wav" -af volumedetect -f null - 2>&1 \
+            | sed -n 's/.*max_volume: \([^ ]*\) dB/\1/p' | tail -n1)"
+        if [ -z "$max_db" ]; then
+            echo "WARN: Could not measure volume for '$src_wav'"
+            continue
+        fi
+        if awk -v v="$max_db" 'BEGIN { exit !(v <= -50.0) }'; then
+            echo "WARN: Near-silent story voice '$story_id' (max_volume=${max_db} dB): $src_wav"
+            silent_story_voice_count=$((silent_story_voice_count + 1))
+        fi
+    done < <(grep -o '\[id:[^]]\+\]' "$STORY_FILE" | sed -E 's/\[id:([^]]+)\]/\1/' | sort -u)
+fi
+if [ "$silent_story_voice_count" -gt 0 ]; then
+    echo "WARN: Detected $silent_story_voice_count near-silent story voice WAV file(s)."
+fi
+
+voice_wav_count=0
+while IFS= read -r staged_wav; do
+    rel_path="${staged_wav#"$EMBED_FICTION_DIR/"}"
+    rel_no_ext="${rel_path%.*}"
+    dst_mp3="$EMBED_FICTION_DIR/$rel_no_ext.mp3"
+    mkdir -p "$(dirname "$dst_mp3")"
+    ffmpeg -hide_banner -loglevel error -y -i "$staged_wav" \
+        -ar 48000 -codec:a libmp3lame -q:a 4 "$dst_mp3"
+    voice_wav_count=$((voice_wav_count + 1))
+done < <(find "$EMBED_FICTION_DIR/voice" -type f -iname '*.wav')
+
+echo "Regenerated MP3 files from WAV: $voice_wav_count"
 
 find "$EMBED_FICTION_DIR" -type f -iname '*.wav' -delete
 
