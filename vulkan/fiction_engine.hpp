@@ -16,6 +16,8 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <filesystem>
+#include <cctype>
 #include <sys/stat.h>
 
 namespace fiction_engine {
@@ -752,6 +754,165 @@ inline int64_t get_file_mod_time(const char* path) {
         return static_cast<int64_t>(st.st_mtime);
     }
     return 0;
+}
+
+// Normalize Bitwig-style exports like:
+//   "02 reply_only_manguiers.wav" -> "reply_only_manguiers.wav"
+// Returns 1 if a file was renamed, 0 otherwise.
+inline int normalize_voice_prefixed_file(const char* locale_dir, const char* line_id, const char* extension) {
+    if (!locale_dir || !line_id || !extension) {
+        return 0;
+    }
+
+    namespace fs = std::filesystem;
+
+    fs::path dir(locale_dir);
+    if (!fs::exists(dir) || !fs::is_directory(dir)) {
+        return 0;
+    }
+
+    std::string suffix = std::string(line_id) + extension;
+    fs::path canonical = dir / suffix;
+    bool canonical_exists = fs::exists(canonical);
+    fs::file_time_type canonical_time{};
+    if (canonical_exists) {
+        canonical_time = fs::last_write_time(canonical);
+    }
+
+    bool found = false;
+    fs::path best_src;
+    fs::file_time_type best_time{};
+
+    try {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+
+            std::string name = entry.path().filename().string();
+            size_t i = 0;
+            while (i < name.size() && std::isdigit(static_cast<unsigned char>(name[i]))) {
+                ++i;
+            }
+            if (i == 0) {
+                continue;
+            }
+
+            size_t j = i;
+            while (j < name.size() && std::isspace(static_cast<unsigned char>(name[j]))) {
+                ++j;
+            }
+            if (j == i) {
+                continue;
+            }
+
+            std::string tail = name.substr(j);
+            if (tail != suffix) {
+                continue;
+            }
+
+            fs::file_time_type candidate_time = fs::last_write_time(entry.path());
+            if (!found || candidate_time > best_time) {
+                best_src = entry.path();
+                best_time = candidate_time;
+                found = true;
+            }
+        }
+
+        if (!found) {
+            return 0;
+        }
+
+        // Avoid replacing canonical with an older stale prefixed export.
+        if (canonical_exists && !(best_time > canonical_time)) {
+            return 0;
+        }
+
+        fs::rename(best_src, canonical);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+
+    return 0;
+}
+
+// Normalize all Bitwig-style prefixed files in a locale directory:
+//   "03 inspect_driver_door_smell.wav" -> "inspect_driver_door_smell.wav"
+// Returns number of files normalized.
+inline int normalize_voice_prefixed_files(const char* locale_dir) {
+    if (!locale_dir) {
+        return 0;
+    }
+
+    namespace fs = std::filesystem;
+
+    fs::path dir(locale_dir);
+    if (!fs::exists(dir) || !fs::is_directory(dir)) {
+        return 0;
+    }
+
+    int renamed_count = 0;
+
+    auto is_supported_audio_ext = [](const fs::path& p) {
+        std::string ext = p.extension().string();
+        for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return ext == ".wav" || ext == ".mp3";
+    };
+
+    try {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            if (!is_supported_audio_ext(entry.path())) {
+                continue;
+            }
+
+            std::string name = entry.path().filename().string();
+            size_t i = 0;
+            while (i < name.size() && std::isdigit(static_cast<unsigned char>(name[i]))) {
+                ++i;
+            }
+            if (i == 0) {
+                continue;
+            }
+
+            size_t j = i;
+            while (j < name.size() && std::isspace(static_cast<unsigned char>(name[j]))) {
+                ++j;
+            }
+            if (j == i || j >= name.size()) {
+                continue;
+            }
+
+            std::string tail = name.substr(j);
+            fs::path dst = dir / tail;
+            if (dst == entry.path()) {
+                continue;
+            }
+
+            fs::file_time_type src_time = fs::last_write_time(entry.path());
+            if (fs::exists(dst)) {
+                fs::file_time_type dst_time = fs::last_write_time(dst);
+                if (src_time > dst_time) {
+                    fs::rename(entry.path(), dst);
+                    ++renamed_count;
+                } else {
+                    // Drop stale prefixed duplicate.
+                    fs::remove(entry.path());
+                    ++renamed_count;
+                }
+            } else {
+                fs::rename(entry.path(), dst);
+                ++renamed_count;
+            }
+        }
+    } catch (...) {
+        return renamed_count;
+    }
+
+    return renamed_count;
 }
 
 } // namespace fiction_engine

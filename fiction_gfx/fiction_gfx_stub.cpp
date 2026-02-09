@@ -79,5 +79,7 @@ int get_event_mouse_button(int) { return 0; }
 int read_file_lines(const char*) { return 0; }
 const char* get_file_line(int) { return ""; }
 int64_t get_file_mod_time(const char*) { return 0; }
+int normalize_voice_prefixed_file(const char*, const char*, const char*) { return 0; }
+int normalize_voice_prefixed_files(const char*) { return 0; }
 
 } // namespace fiction_engine

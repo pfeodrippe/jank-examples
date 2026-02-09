@@ -180,5 +180,7 @@ int get_event_mouse_button(int index);
 int read_file_lines(const char* path);
 const char* get_file_line(int index);
 int64_t get_file_mod_time(const char* path);
+int normalize_voice_prefixed_file(const char* locale_dir, const char* line_id, const char* extension);
+int normalize_voice_prefixed_files(const char* locale_dir);
 
 } // namespace fiction_engine

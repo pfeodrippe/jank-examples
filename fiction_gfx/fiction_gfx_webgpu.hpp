@@ -1834,6 +1834,20 @@ inline int64_t get_file_mod_time(const char* path) {
     return 0;
 }
 
+inline int normalize_voice_prefixed_file(const char* locale_dir, const char* line_id, const char* extension) {
+    // WASM embedded filesystem is immutable at runtime.
+    (void)locale_dir;
+    (void)line_id;
+    (void)extension;
+    return 0;
+}
+
+inline int normalize_voice_prefixed_files(const char* locale_dir) {
+    // WASM embedded filesystem is immutable at runtime.
+    (void)locale_dir;
+    return 0;
+}
+
 } // namespace fiction_engine
 
 // =============================================================================

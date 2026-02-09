@@ -79,12 +79,50 @@
       raw
       fallback-locale)))
 
+(defn- normalize-prefixed-assets!
+  "Rename Bitwig-style prefixed files (e.g. `02 id.wav`) to canonical `id.wav`."
+  [locale entry-id]
+  (when (and locale entry-id)
+    (let [dir (str voice-root "/" locale)]
+      (loop [remaining supported-extensions]
+        (when (not (empty? remaining))
+          (let [ext (first remaining)
+                renamed? (engine/normalize_voice_prefixed_file dir entry-id ext)]
+            (when (= renamed? 1)
+              (println "[voiceover] normalized filename:"
+                       dir "/" entry-id ext))
+            (recur (rest remaining))))))))
+
+(defn- normalize-prefixed-assets-for-entry!
+  "Normalize prefixed assets for an entry id in active locale and fallback locale."
+  [entry-id]
+  (when entry-id
+    (let [locale (normalized-locale)]
+      (normalize-prefixed-assets! locale entry-id)
+      (when (not= locale fallback-locale)
+        (normalize-prefixed-assets! fallback-locale entry-id)))))
+
+(defn- normalize-prefixed-assets-in-locale!
+  "Normalize any Bitwig prefixed files in active/fallback locale dirs."
+  []
+  (let [locale (normalized-locale)
+        locale-dir (str voice-root "/" locale)
+        fallback-dir (str voice-root "/" fallback-locale)
+        locale-count (engine/normalize_voice_prefixed_files locale-dir)
+        fallback-count (if (not= locale fallback-locale)
+                         (engine/normalize_voice_prefixed_files fallback-dir)
+                         0)
+        total (+ locale-count fallback-count)]
+    (when (> total 0)
+      (println "[voiceover] normalized prefixed files:" total))))
+
 (defn- candidate-paths
   "Ordered candidate VO files for a dialogue entry."
   [entry]
   (let [locale (normalized-locale)
         entry-id (:id entry)
         speaker-id (:speaker entry)
+        _ (normalize-prefixed-assets-for-entry! entry-id)
         with-exts (fn [base]
                     (when base
                       (loop [remaining supported-extensions
@@ -203,6 +241,9 @@
   (let [history (state/get-history)
         total (count history)
         old-count @*last-history-count]
+    ;; Always normalize new Bitwig exports like "03 id.wav" -> "id.wav".
+    ;; This keeps desktop hot-reload working without manual renames.
+    (normalize-prefixed-assets-in-locale!)
     ;; Story reset/reload case.
     (when (> old-count total)
       (reset! *last-history-count 0))
@@ -219,6 +260,10 @@
                             (recur (inc i) out)))))]
           (when (not (empty? fresh))
             (reset! *pending [(pick-entry-to-play fresh)])))))
+    ;; If a currently relevant file was exported with Bitwig numeric prefix,
+    ;; normalize it to canonical id filename first.
+    (when-let [entry @*current-entry]
+      (normalize-prefixed-assets-for-entry! (:id entry)))
     ;; Hot-reload watcher: detect changed candidate files, but do not auto-play.
     ;; New content is picked up on the next normal line trigger.
     (when (and @*enabled
