@@ -329,9 +329,19 @@ vulkan_fiction/particle.frag.spv: $(FICTION_PARTICLE_WGSL) Makefile
 build-fiction-shaders: $(FICTION_SHADERS_SPV)
 	@echo "Fiction shaders compiled."
 
-# Run the fiction game
+# Run the fiction game (desktop dev mode):
+# - starts RoughAnimator sync/publish watcher in background
+# - runs desktop fiction
+# - stops watcher on exit
 fiction: build-fiction-shaders
-	./bin/run_fiction.sh
+	@set -e; \
+	python3 ./bin/roughanimator_auto_publish.py --sync-device > /tmp/fiction-anim-watch.log 2>&1 & \
+	WATCH_PID=$$!; \
+	echo "[fiction] animation watcher started (pid=$$WATCH_PID, log=/tmp/fiction-anim-watch.log)"; \
+	trap 'kill $$WATCH_PID 2>/dev/null || true' EXIT INT TERM; \
+	./bin/run_fiction.sh; \
+	kill $$WATCH_PID 2>/dev/null || true; \
+	wait $$WATCH_PID 2>/dev/null || true
 
 # Publish animation frames from RoughAnimator voiture.ra once.
 fiction-anim-publish:

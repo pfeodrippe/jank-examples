@@ -288,6 +288,42 @@ inline BackgroundRenderer*& get_bg_renderer() {
     return g_bg_renderer;
 }
 
+struct OverlayRenderer {
+    struct FrameTexture {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+        VkImageView imageView = VK_NULL_HANDLE;
+        int width = 0;
+        int height = 0;
+    };
+
+    VkSampler sampler = VK_NULL_HANDLE;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+
+    std::unordered_map<std::string, FrameTexture> frames;
+    std::string activePath;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+
+    bool initialized = false;
+};
+
+inline OverlayRenderer* g_overlay_renderer = nullptr;
+
+inline OverlayRenderer*& get_overlay_renderer() {
+    return g_overlay_renderer;
+}
+
 // Forward declaration for SPIRV loading
 inline std::vector<uint32_t> load_text_spirv(const std::string& path);
 
@@ -304,6 +340,7 @@ inline void watch_shader(const std::string& name, bool alphaBlend,
                           VkPipeline* pipeline, VkPipelineLayout* pipelineLayout,
                           const char* vertEntry = "main", const char* fragEntry = "main");
 inline void cleanup_bg_renderer();
+inline void cleanup_overlay_renderer();
 
 inline bool load_background_image(const char* filepath,
                                    VkDevice device,
@@ -713,6 +750,463 @@ inline void cleanup_bg_renderer() {
     
     delete bg;
     get_bg_renderer() = nullptr;
+}
+
+inline bool load_overlay_image(const char* filepath,
+                               VkDevice device,
+                               VkPhysicalDevice physicalDevice,
+                               VkQueue graphicsQueue,
+                               VkCommandPool commandPool,
+                               VkRenderPass renderPass,
+                               float screenWidth,
+                               float screenHeight,
+                               float x,
+                               float y,
+                               float width,
+                               float height,
+                               const std::string& shaderDir) {
+    (void)screenWidth;
+    (void)screenHeight;
+
+    if (!filepath || filepath[0] == '\0') {
+        std::cerr << "[fiction] Overlay path is empty" << std::endl;
+        return false;
+    }
+    if (width <= 0.0f || height <= 0.0f) {
+        std::cerr << "[fiction] Invalid overlay rect: " << width << "x" << height << std::endl;
+        return false;
+    }
+
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+
+    auto upload_pixels_to_image = [&](VkImage image,
+                                      int texW,
+                                      int texH,
+                                      const unsigned char* pixelBytes,
+                                      VkImageLayout oldLayout) -> bool {
+        VkDeviceSize imageSize = static_cast<VkDeviceSize>(texW) * static_cast<VkDeviceSize>(texH) * 4;
+
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+
+        VkBufferCreateInfo bufInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufInfo.size = imageSize;
+        bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer) != VK_SUCCESS) {
+            return false;
+        }
+
+        VkMemoryRequirements stagingReq;
+        vkGetBufferMemoryRequirements(device, stagingBuffer, &stagingReq);
+
+        uint32_t stagingMemType = 0;
+        bool foundStagingType = false;
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((stagingReq.memoryTypeBits & (1 << i)) &&
+                (memProps.memoryTypes[i].propertyFlags &
+                 (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                stagingMemType = i;
+                foundStagingType = true;
+                break;
+            }
+        }
+        if (!foundStagingType) {
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            return false;
+        }
+
+        VkMemoryAllocateInfo stagingAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        stagingAllocInfo.allocationSize = stagingReq.size;
+        stagingAllocInfo.memoryTypeIndex = stagingMemType;
+        if (vkAllocateMemory(device, &stagingAllocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            return false;
+        }
+        vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+
+        void* data = nullptr;
+        vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
+        memcpy(data, pixelBytes, static_cast<size_t>(imageSize));
+        vkUnmapMemory(device, stagingMemory);
+
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cmdInfo.commandPool = commandPool;
+        cmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdInfo.commandBufferCount = 1;
+        vkAllocateCommandBuffers(device, &cmdInfo, &cmd);
+
+        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &beginInfo);
+
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        } else {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = {(uint32_t)texW, (uint32_t)texH, 1};
+        vkCmdCopyBufferToImage(cmd, stagingBuffer, image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmd;
+        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(graphicsQueue);
+
+        vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingMemory, nullptr);
+        return true;
+    };
+
+    auto update_overlay_vertices = [&](OverlayRenderer* ov,
+                                       float xPx,
+                                       float yPx,
+                                       float wPx,
+                                       float hPx) -> bool {
+        if (!ov || !ov->vertexMemory) {
+            return false;
+        }
+
+        const VkDeviceSize vbSize = 6 * sizeof(TextVertex);
+        void* vbData = nullptr;
+        if (vkMapMemory(device, ov->vertexMemory, 0, vbSize, 0, &vbData) != VK_SUCCESS) {
+            return false;
+        }
+
+        TextVertex* verts = static_cast<TextVertex*>(vbData);
+        const float x0 = xPx;
+        const float y0 = yPx;
+        const float x1 = xPx + wPx;
+        const float y1 = yPx + hPx;
+
+        verts[0] = {x0, y0, 0.0f, 0.0f, 1, 1, 1, 1};
+        verts[1] = {x1, y0, 1.0f, 0.0f, 1, 1, 1, 1};
+        verts[2] = {x0, y1, 0.0f, 1.0f, 1, 1, 1, 1};
+        verts[3] = {x1, y0, 1.0f, 0.0f, 1, 1, 1, 1};
+        verts[4] = {x1, y1, 1.0f, 1.0f, 1, 1, 1, 1};
+        verts[5] = {x0, y1, 0.0f, 1.0f, 1, 1, 1, 1};
+
+        vkUnmapMemory(device, ov->vertexMemory);
+        ov->x = xPx;
+        ov->y = yPx;
+        ov->width = wPx;
+        ov->height = hPx;
+        return true;
+    };
+
+    auto* ov = get_overlay_renderer();
+    if (!ov) {
+        ov = new OverlayRenderer();
+        get_overlay_renderer() = ov;
+    }
+
+    if (!ov->initialized) {
+        VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        vkCreateSampler(device, &samplerInfo, nullptr, &ov->sampler);
+
+        VkDescriptorSetLayoutBinding samplerBinding{};
+        samplerBinding.binding = 0;
+        samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerBinding.descriptorCount = 1;
+        samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &samplerBinding;
+        vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &ov->descriptorSetLayout);
+
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = 1;
+
+        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        vkCreateDescriptorPool(device, &poolInfo, nullptr, &ov->descriptorPool);
+
+        VkDescriptorSetAllocateInfo dsAllocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        dsAllocInfo.descriptorPool = ov->descriptorPool;
+        dsAllocInfo.descriptorSetCount = 1;
+        dsAllocInfo.pSetLayouts = &ov->descriptorSetLayout;
+        vkAllocateDescriptorSets(device, &dsAllocInfo, &ov->descriptorSet);
+
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pushRange.offset = 0;
+        pushRange.size = sizeof(float) * 2;
+
+        VkPipelineLayoutCreateInfo plInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        plInfo.setLayoutCount = 1;
+        plInfo.pSetLayouts = &ov->descriptorSetLayout;
+        plInfo.pushConstantRangeCount = 1;
+        plInfo.pPushConstantRanges = &pushRange;
+        vkCreatePipelineLayout(device, &plInfo, nullptr, &ov->pipelineLayout);
+
+        ov->pipeline = create_pipeline(device, shaderDir, "bg",
+                                       ov->pipelineLayout, renderPass, true);
+        if (ov->pipeline == VK_NULL_HANDLE) {
+            cleanup_overlay_renderer();
+            return false;
+        }
+
+        VkDeviceSize vbSize = 6 * sizeof(TextVertex);
+        VkBufferCreateInfo vbInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        vbInfo.size = vbSize;
+        vbInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        vbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(device, &vbInfo, nullptr, &ov->vertexBuffer);
+
+        VkMemoryRequirements vbMemReq;
+        vkGetBufferMemoryRequirements(device, ov->vertexBuffer, &vbMemReq);
+
+        uint32_t vbMemType = 0;
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((vbMemReq.memoryTypeBits & (1 << i)) &&
+                (memProps.memoryTypes[i].propertyFlags &
+                 (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                vbMemType = i;
+                break;
+            }
+        }
+
+        VkMemoryAllocateInfo vbAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        vbAllocInfo.allocationSize = vbMemReq.size;
+        vbAllocInfo.memoryTypeIndex = vbMemType;
+        vkAllocateMemory(device, &vbAllocInfo, nullptr, &ov->vertexMemory);
+        vkBindBufferMemory(device, ov->vertexBuffer, ov->vertexMemory, 0);
+        ov->initialized = true;
+    }
+
+    const std::string pathKey(filepath);
+    auto frameIt = ov->frames.find(pathKey);
+    if (frameIt == ov->frames.end()) {
+        int w = 0, h = 0, channels = 0;
+        unsigned char* pixels = stbi_load(filepath, &w, &h, &channels, 4);
+        if (!pixels) {
+            std::cerr << "[fiction] Failed to load overlay: " << filepath << std::endl;
+            return false;
+        }
+
+        OverlayRenderer::FrameTexture frame{};
+        frame.width = w;
+        frame.height = h;
+
+        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.extent = {(uint32_t)w, (uint32_t)h, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        vkCreateImage(device, &imageInfo, nullptr, &frame.image);
+
+        VkMemoryRequirements memReq;
+        vkGetImageMemoryRequirements(device, frame.image, &memReq);
+
+        uint32_t memTypeIdx = 0;
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((memReq.memoryTypeBits & (1 << i)) &&
+                (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                memTypeIdx = i;
+                break;
+            }
+        }
+
+        VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = memTypeIdx;
+        vkAllocateMemory(device, &allocInfo, nullptr, &frame.imageMemory);
+        vkBindImageMemory(device, frame.image, frame.imageMemory, 0);
+
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = frame.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+        vkCreateImageView(device, &viewInfo, nullptr, &frame.imageView);
+
+        bool uploadOk = upload_pixels_to_image(frame.image, w, h, pixels, VK_IMAGE_LAYOUT_UNDEFINED);
+        stbi_image_free(pixels);
+        if (!uploadOk) {
+            if (frame.imageView) { vkDestroyImageView(device, frame.imageView, nullptr); }
+            if (frame.image) { vkDestroyImage(device, frame.image, nullptr); }
+            if (frame.imageMemory) { vkFreeMemory(device, frame.imageMemory, nullptr); }
+            return false;
+        }
+
+        auto insertResult = ov->frames.emplace(pathKey, frame);
+        frameIt = insertResult.first;
+        std::cout << "[fiction] Overlay frame cached: " << filepath
+                  << " (" << w << "x" << h << ")" << std::endl;
+    }
+
+    const float epsilon = 0.01f;
+    if (std::fabs(ov->x - x) > epsilon ||
+        std::fabs(ov->y - y) > epsilon ||
+        std::fabs(ov->width - width) > epsilon ||
+        std::fabs(ov->height - height) > epsilon) {
+        if (!update_overlay_vertices(ov, x, y, width, height)) {
+            return false;
+        }
+    }
+
+    if (ov->activePath != pathKey) {
+        VkDescriptorImageInfo descImageInfo{};
+        descImageInfo.sampler = ov->sampler;
+        descImageInfo.imageView = frameIt->second.imageView;
+        descImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = ov->descriptorSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &descImageInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        ov->activePath = pathKey;
+    }
+
+    return true;
+}
+
+inline bool load_overlay_image_simple(const char* filepath,
+                                      const std::string& shaderDir,
+                                      float x,
+                                      float y,
+                                      float width,
+                                      float height) {
+    auto* tr = get_text_renderer();
+    if (!tr) {
+        std::cerr << "[fiction] Text renderer must be initialized before overlay" << std::endl;
+        return false;
+    }
+    return load_overlay_image(
+        filepath,
+        fiction_engine::get_device(),
+        fiction_engine::get_physical_device(),
+        fiction_engine::get_graphics_queue(),
+        fiction_engine::get_command_pool(),
+        fiction_engine::get_render_pass(),
+        tr->screenWidth,
+        tr->screenHeight,
+        x,
+        y,
+        width,
+        height,
+        shaderDir
+    );
+}
+
+inline void record_overlay_commands(VkCommandBuffer cmd) {
+    auto* ov = get_overlay_renderer();
+    auto* tr = get_text_renderer();
+    if (!ov || !ov->initialized || !tr || ov->activePath.empty()) return;
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ov->pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ov->pipelineLayout,
+                            0, 1, &ov->descriptorSet, 0, nullptr);
+
+    float screenSize[2] = {tr->screenWidth, tr->screenHeight};
+    vkCmdPushConstants(cmd, ov->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                       0, sizeof(screenSize), screenSize);
+
+    VkViewport viewport{};
+    viewport.width = tr->screenWidth;
+    viewport.height = tr->screenHeight;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.extent = {(uint32_t)tr->screenWidth, (uint32_t)tr->screenHeight};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &ov->vertexBuffer, &offset);
+    vkCmdDraw(cmd, 6, 1, 0, 0);
+}
+
+inline void cleanup_overlay_renderer() {
+    auto* ov = get_overlay_renderer();
+    if (!ov) return;
+
+    auto device = fiction_engine::get_device();
+    if (ov->vertexBuffer) { vkDestroyBuffer(device, ov->vertexBuffer, nullptr); }
+    if (ov->vertexMemory) { vkFreeMemory(device, ov->vertexMemory, nullptr); }
+    if (ov->pipeline) { vkDestroyPipeline(device, ov->pipeline, nullptr); }
+    if (ov->pipelineLayout) { vkDestroyPipelineLayout(device, ov->pipelineLayout, nullptr); }
+    if (ov->descriptorPool) { vkDestroyDescriptorPool(device, ov->descriptorPool, nullptr); }
+    if (ov->descriptorSetLayout) { vkDestroyDescriptorSetLayout(device, ov->descriptorSetLayout, nullptr); }
+    if (ov->sampler) { vkDestroySampler(device, ov->sampler, nullptr); }
+    for (auto& kv : ov->frames) {
+        auto& frame = kv.second;
+        if (frame.imageView) { vkDestroyImageView(device, frame.imageView, nullptr); }
+        if (frame.image) { vkDestroyImage(device, frame.image, nullptr); }
+        if (frame.imageMemory) { vkFreeMemory(device, frame.imageMemory, nullptr); }
+    }
+
+    delete ov;
+    get_overlay_renderer() = nullptr;
+}
+
+inline void clear_overlay_image() {
+    cleanup_overlay_renderer();
 }
 
 // =============================================================================
@@ -2301,6 +2795,9 @@ inline void record_text_commands(VkCommandBuffer cmd) {
     
     // Draw background first (behind everything)
     record_bg_commands(cmd);
+
+    // Draw left animation overlay above the static background.
+    record_overlay_commands(cmd);
     
     // Draw particles (between bg and text)
     record_particle_commands(cmd);
@@ -2430,6 +2927,7 @@ inline void cleanup_text_renderer() {
     // Clean up sub-renderers and hot reload first
     cleanup_particle_renderer();
     cleanup_shader_hot_reload();
+    cleanup_overlay_renderer();
     cleanup_bg_renderer();
     
     TextRenderer* tr = get_text_renderer();

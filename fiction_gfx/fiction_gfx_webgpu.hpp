@@ -196,6 +196,37 @@ inline BackgroundRenderer*& get_bg_renderer() {
     return g_bg_renderer;
 }
 
+struct OverlayRenderer {
+    struct FrameTexture {
+        wgpu::Texture texture = nullptr;
+        wgpu::TextureView textureView = nullptr;
+        int width = 0;
+        int height = 0;
+    };
+
+    wgpu::Sampler sampler = nullptr;
+
+    wgpu::RenderPipeline pipeline = nullptr;
+    wgpu::BindGroup bindGroup = nullptr;
+    wgpu::BindGroupLayout bindGroupLayout = nullptr;
+    wgpu::Buffer uniformBuffer = nullptr;
+    wgpu::Buffer vertexBuffer = nullptr;
+
+    std::unordered_map<std::string, FrameTexture> frames;
+    std::string activePath;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+
+    bool initialized = false;
+};
+
+inline OverlayRenderer*& get_overlay_renderer() {
+    extern OverlayRenderer* g_overlay_renderer;
+    return g_overlay_renderer;
+}
+
 // =============================================================================
 // Particle Renderer (for speaker name effects)
 // =============================================================================
@@ -957,6 +988,13 @@ inline void cleanup_background_renderer() {
     get_bg_renderer() = nullptr;
 }
 
+inline void cleanup_overlay_renderer() {
+    auto* ov = get_overlay_renderer();
+    if (!ov) return;
+    delete ov;
+    get_overlay_renderer() = nullptr;
+}
+
 // Helper to create shader module from WGSL (definition below).
 inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const char* code);
 inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const std::string& code);
@@ -1206,6 +1244,270 @@ inline bool load_background_image_simple(const char* filepath, const std::string
     return true;
 }
 
+inline bool load_overlay_image_simple(const char* filepath,
+                                      const std::string& shaderDir,
+                                      float x,
+                                      float y,
+                                      float width,
+                                      float height) {
+    (void)shaderDir; // WebGPU backend uses embedded WGSL shaders.
+
+    auto* tr = get_text_renderer();
+    if (!tr || !tr->initialized || !tr->device || !tr->queue) {
+        std::cerr << "[fiction-wasm] Overlay load requires initialized text renderer" << std::endl;
+        return false;
+    }
+    if (!filepath || filepath[0] == '\0') {
+        std::cerr << "[fiction-wasm] Overlay path is empty" << std::endl;
+        return false;
+    }
+    if (width <= 0.0f || height <= 0.0f) {
+        std::cerr << "[fiction-wasm] Invalid overlay rect: " << width << "x" << height << std::endl;
+        return false;
+    }
+
+    auto update_overlay_vertices = [&](OverlayRenderer* ov,
+                                       float vx,
+                                       float vy,
+                                       float vw,
+                                       float vh) {
+        TextVertex quad[6] = {
+            {vx,      vy,      0.0f, 0.0f, 1, 1, 1, 1},
+            {vx + vw, vy,      1.0f, 0.0f, 1, 1, 1, 1},
+            {vx,      vy + vh, 0.0f, 1.0f, 1, 1, 1, 1},
+            {vx + vw, vy,      1.0f, 0.0f, 1, 1, 1, 1},
+            {vx + vw, vy + vh, 1.0f, 1.0f, 1, 1, 1, 1},
+            {vx,      vy + vh, 0.0f, 1.0f, 1, 1, 1, 1},
+        };
+        tr->queue.WriteBuffer(ov->vertexBuffer, 0, quad, sizeof(quad));
+        ov->x = vx;
+        ov->y = vy;
+        ov->width = vw;
+        ov->height = vh;
+    };
+
+    auto* ov = get_overlay_renderer();
+    if (!ov) {
+        ov = new OverlayRenderer();
+        get_overlay_renderer() = ov;
+    }
+
+    if (!ov->initialized) {
+        wgpu::SamplerDescriptor samplerDesc{};
+        samplerDesc.minFilter = wgpu::FilterMode::Linear;
+        samplerDesc.magFilter = wgpu::FilterMode::Linear;
+        samplerDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
+        samplerDesc.addressModeV = wgpu::AddressMode::ClampToEdge;
+        ov->sampler = tr->device.CreateSampler(&samplerDesc);
+
+        wgpu::BufferDescriptor uniformBufDesc{};
+        uniformBufDesc.size = 16;
+        uniformBufDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        ov->uniformBuffer = tr->device.CreateBuffer(&uniformBufDesc);
+        float uniformData[4] = {tr->screenWidth, tr->screenHeight, 0.0f, 0.0f};
+        tr->queue.WriteBuffer(ov->uniformBuffer, 0, uniformData, sizeof(uniformData));
+
+        wgpu::BufferDescriptor vertexBufDesc{};
+        vertexBufDesc.size = 6 * sizeof(TextVertex);
+        vertexBufDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        ov->vertexBuffer = tr->device.CreateBuffer(&vertexBufDesc);
+
+        std::array<wgpu::BindGroupLayoutEntry, 3> layoutEntries{};
+        layoutEntries[0].binding = 0;
+        layoutEntries[0].visibility = wgpu::ShaderStage::Vertex;
+        layoutEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+
+        layoutEntries[1].binding = 1;
+        layoutEntries[1].visibility = wgpu::ShaderStage::Fragment;
+        layoutEntries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+        layoutEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+
+        layoutEntries[2].binding = 2;
+        layoutEntries[2].visibility = wgpu::ShaderStage::Fragment;
+        layoutEntries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
+
+        wgpu::BindGroupLayoutDescriptor layoutDesc{};
+        layoutDesc.entryCount = layoutEntries.size();
+        layoutDesc.entries = layoutEntries.data();
+        ov->bindGroupLayout = tr->device.CreateBindGroupLayout(&layoutDesc);
+
+        wgpu::ShaderModule shaderModule = createShaderModule(tr->device, BG_SHADER_WGSL);
+        if (!shaderModule) {
+            std::cerr << "[fiction-wasm] Failed to create overlay shader module" << std::endl;
+            cleanup_overlay_renderer();
+            return false;
+        }
+
+        wgpu::PipelineLayoutDescriptor pipelineLayoutDesc{};
+        pipelineLayoutDesc.bindGroupLayoutCount = 1;
+        pipelineLayoutDesc.bindGroupLayouts = &ov->bindGroupLayout;
+        wgpu::PipelineLayout pipelineLayout = tr->device.CreatePipelineLayout(&pipelineLayoutDesc);
+
+        std::array<wgpu::VertexAttribute, 3> vertexAttrs{};
+        vertexAttrs[0].format = wgpu::VertexFormat::Float32x2;
+        vertexAttrs[0].offset = 0;
+        vertexAttrs[0].shaderLocation = 0;
+        vertexAttrs[1].format = wgpu::VertexFormat::Float32x2;
+        vertexAttrs[1].offset = 8;
+        vertexAttrs[1].shaderLocation = 1;
+        vertexAttrs[2].format = wgpu::VertexFormat::Float32x4;
+        vertexAttrs[2].offset = 16;
+        vertexAttrs[2].shaderLocation = 2;
+
+        wgpu::VertexBufferLayout vertexBufferLayout{};
+        vertexBufferLayout.arrayStride = sizeof(TextVertex);
+        vertexBufferLayout.stepMode = wgpu::VertexStepMode::Vertex;
+        vertexBufferLayout.attributeCount = vertexAttrs.size();
+        vertexBufferLayout.attributes = vertexAttrs.data();
+
+        wgpu::BlendState alphaBlend{};
+        alphaBlend.color.operation = wgpu::BlendOperation::Add;
+        alphaBlend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+        alphaBlend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+        alphaBlend.alpha.operation = wgpu::BlendOperation::Add;
+        alphaBlend.alpha.srcFactor = wgpu::BlendFactor::One;
+        alphaBlend.alpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+
+        wgpu::ColorTargetState colorTarget{};
+        colorTarget.format = wgpu::TextureFormat::BGRA8Unorm;
+        colorTarget.blend = &alphaBlend;
+        colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+        wgpu::FragmentState fragmentState{};
+        fragmentState.module = shaderModule;
+        fragmentState.entryPoint = {"fs_main", strlen("fs_main")};
+        fragmentState.targetCount = 1;
+        fragmentState.targets = &colorTarget;
+
+        wgpu::RenderPipelineDescriptor pipelineDesc{};
+        pipelineDesc.layout = pipelineLayout;
+        pipelineDesc.vertex.module = shaderModule;
+        pipelineDesc.vertex.entryPoint = {"vs_main", strlen("vs_main")};
+        pipelineDesc.vertex.bufferCount = 1;
+        pipelineDesc.vertex.buffers = &vertexBufferLayout;
+        pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        pipelineDesc.primitive.frontFace = wgpu::FrontFace::CCW;
+        pipelineDesc.primitive.cullMode = wgpu::CullMode::None;
+        pipelineDesc.fragment = &fragmentState;
+        pipelineDesc.multisample.count = 1;
+        pipelineDesc.multisample.mask = 0xFFFFFFFF;
+
+        ov->pipeline = tr->device.CreateRenderPipeline(&pipelineDesc);
+        if (!ov->pipeline) {
+            std::cerr << "[fiction-wasm] Failed to create overlay pipeline" << std::endl;
+            cleanup_overlay_renderer();
+            return false;
+        }
+        ov->initialized = true;
+    }
+
+    std::vector<std::string> candidates;
+    candidates.emplace_back(filepath);
+    if (filepath[0] != '/') {
+        candidates.emplace_back(std::string("/") + filepath);
+    }
+    std::string fp(filepath);
+    const size_t lastSlash = fp.find_last_of('/');
+    if (lastSlash != std::string::npos) {
+        const std::string base = fp.substr(lastSlash + 1);
+        candidates.emplace_back(std::string("/resources/fiction/anim/voiture/") + base);
+        candidates.emplace_back(std::string("resources/fiction/anim/voiture/") + base);
+    }
+
+    const std::string pathKey(filepath);
+    auto frameIt = ov->frames.find(pathKey);
+    if (frameIt == ov->frames.end()) {
+        int w = 0, h = 0, channels = 0;
+        unsigned char* pixels = nullptr;
+        std::string loadedPath;
+        for (const auto& candidate : candidates) {
+            pixels = stbi_load(candidate.c_str(), &w, &h, &channels, 4);
+            if (pixels) {
+                loadedPath = candidate;
+                break;
+            }
+        }
+        if (!pixels) {
+            std::cerr << "[fiction-wasm] Failed to load overlay image: " << filepath << std::endl;
+            return false;
+        }
+
+        OverlayRenderer::FrameTexture frame{};
+        frame.width = w;
+        frame.height = h;
+
+        wgpu::TextureDescriptor texDesc{};
+        texDesc.size.width = static_cast<uint32_t>(w);
+        texDesc.size.height = static_cast<uint32_t>(h);
+        texDesc.size.depthOrArrayLayers = 1;
+        texDesc.mipLevelCount = 1;
+        texDesc.sampleCount = 1;
+        texDesc.dimension = wgpu::TextureDimension::e2D;
+        texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+        texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+        frame.texture = tr->device.CreateTexture(&texDesc);
+
+        wgpu::TexelCopyTextureInfo destination{};
+        destination.texture = frame.texture;
+        destination.mipLevel = 0;
+        destination.origin = {0, 0, 0};
+
+        wgpu::TexelCopyBufferLayout layout{};
+        layout.offset = 0;
+        layout.bytesPerRow = static_cast<uint32_t>(w * 4);
+        layout.rowsPerImage = static_cast<uint32_t>(h);
+
+        wgpu::Extent3D writeSize{};
+        writeSize.width = static_cast<uint32_t>(w);
+        writeSize.height = static_cast<uint32_t>(h);
+        writeSize.depthOrArrayLayers = 1;
+
+        tr->queue.WriteTexture(&destination, pixels, static_cast<size_t>(w * h * 4), &layout, &writeSize);
+        stbi_image_free(pixels);
+
+        wgpu::TextureViewDescriptor texViewDesc{};
+        frame.textureView = frame.texture.CreateView(&texViewDesc);
+
+        auto inserted = ov->frames.emplace(pathKey, frame);
+        frameIt = inserted.first;
+        std::cout << "[fiction-wasm] Overlay frame cached: " << loadedPath
+                  << " (" << w << "x" << h << ")" << std::endl;
+    }
+
+    const float eps = 0.01f;
+    if (std::fabs(ov->x - x) > eps ||
+        std::fabs(ov->y - y) > eps ||
+        std::fabs(ov->width - width) > eps ||
+        std::fabs(ov->height - height) > eps) {
+        update_overlay_vertices(ov, x, y, width, height);
+    }
+
+    if (ov->activePath != pathKey) {
+        std::array<wgpu::BindGroupEntry, 3> bindGroupEntries{};
+        bindGroupEntries[0].binding = 0;
+        bindGroupEntries[0].buffer = ov->uniformBuffer;
+        bindGroupEntries[0].offset = 0;
+        bindGroupEntries[0].size = 16;
+        bindGroupEntries[1].binding = 1;
+        bindGroupEntries[1].textureView = frameIt->second.textureView;
+        bindGroupEntries[2].binding = 2;
+        bindGroupEntries[2].sampler = ov->sampler;
+
+        wgpu::BindGroupDescriptor ovDesc{};
+        ovDesc.layout = ov->bindGroupLayout;
+        ovDesc.entryCount = bindGroupEntries.size();
+        ovDesc.entries = bindGroupEntries.data();
+        ov->bindGroup = tr->device.CreateBindGroup(&ovDesc);
+        ov->activePath = pathKey;
+    }
+
+    return true;
+}
+
+inline void clear_overlay_image() {
+    cleanup_overlay_renderer();
+}
+
 // Helper to create shader module from WGSL
 inline wgpu::ShaderModule createShaderModule(wgpu::Device& device, const char* code) {
     wgpu::ShaderSourceWGSL wgslDesc{};
@@ -1246,6 +1548,7 @@ inline void cleanup_text_renderer() {
     if (!tr) return;
     
     cleanup_particle_renderer();
+    cleanup_overlay_renderer();
     cleanup_background_renderer();
     
     delete tr;
@@ -1781,6 +2084,15 @@ inline void draw_frame() {
         pass.Draw(6);
     }
 
+    // Render animation overlay over background.
+    auto* ov = fiction::get_overlay_renderer();
+    if (ov && ov->initialized && ov->pipeline && ov->bindGroup && !ov->activePath.empty()) {
+        pass.SetPipeline(ov->pipeline);
+        pass.SetBindGroup(0, ov->bindGroup);
+        pass.SetVertexBuffer(0, ov->vertexBuffer, 0, 6 * sizeof(fiction::TextVertex));
+        pass.Draw(6);
+    }
+
     // Render animated speaker particles between background and text.
     auto* pr = fiction::get_particle_renderer();
     if (pr && pr->initialized && pr->pipeline && pr->vertexCount > 0) {
@@ -1856,6 +2168,10 @@ inline const char* get_file_line(int index) {
 inline int64_t get_file_mod_time(const char* path) {
     // In WASM, files don't change at runtime, so always return 0
     return 0;
+}
+
+inline int64_t get_monotonic_time_ms() {
+    return static_cast<int64_t>(emscripten_get_now());
 }
 
 inline int normalize_voice_prefixed_file(const char* locale_dir, const char* line_id, const char* extension) {

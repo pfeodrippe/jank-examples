@@ -146,7 +146,14 @@ int get_hovered_choice();
 int get_clicked_choice();
 
 // Background loader
-bool load_background_image_simple(const char* id, const std::string& path);
+bool load_background_image_simple(const char* filepath, const std::string& shaderDir);
+bool load_overlay_image_simple(const char* filepath,
+                               const std::string& shaderDir,
+                               float x,
+                               float y,
+                               float width,
+                               float height);
+void clear_overlay_image();
 
 } // namespace fiction
 
@@ -180,6 +187,7 @@ int get_event_mouse_button(int index);
 int read_file_lines(const char* path);
 const char* get_file_line(int index);
 int64_t get_file_mod_time(const char* path);
+int64_t get_monotonic_time_ms();
 int normalize_voice_prefixed_file(const char* locale_dir, const char* line_id, const char* extension);
 int normalize_voice_prefixed_files(const char* locale_dir);
 

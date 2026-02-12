@@ -74,3 +74,62 @@ Rule 11 - **Check long-running commands every 60 seconds**
 - Use `block: false` or `timeout: 60000` and check periodically
 - Check status, if still running wait another 60s, repeat until done
 - This allows user to see progress and interrupt if needed
+
+## iPad RoughAnimator Access (pymobiledevice3)
+
+Use these commands to inspect and pull `com.weirdhat.roughanimator` files from iPad (USB or Wi-Fi).
+
+### Prerequisites
+
+```bash
+# iPad must be unlocked and trusted by this Mac.
+# For Wi-Fi only, enable Finder option: "Show this iPad when on Wi-Fi" once via USB.
+pymobiledevice3 usbmux list
+```
+
+If multiple devices appear, set UDID first:
+
+```bash
+export IOS_UDID="<from pymobiledevice3 usbmux list>"
+```
+
+### List RoughAnimator projects
+
+```bash
+export RA_BUNDLE=com.weirdhat.roughanimator
+pymobiledevice3 apps afc --documents --udid "$IOS_UDID" "$RA_BUNDLE" <<'EOF'
+ls
+exit
+EOF
+```
+
+If `IOS_UDID` is not set, remove `--udid "$IOS_UDID"`.
+
+### Inspect a project and verify frame timestamps
+
+```bash
+pymobiledevice3 apps afc --documents --udid "$IOS_UDID" "$RA_BUNDLE" <<'EOF'
+cd "voiture.ra"
+cat data.txt
+stat 0003/0000.png
+exit
+EOF
+```
+
+### Pull the full project locally
+
+```bash
+mkdir -p /Users/pfeodrippe/dev/something/roughanimator_from_ipad
+pymobiledevice3 apps afc --documents --udid "$IOS_UDID" "$RA_BUNDLE" <<'EOF'
+pull "voiture.ra" "/Users/pfeodrippe/dev/something/roughanimator_from_ipad"
+exit
+EOF
+```
+
+### Pull a single file quickly
+
+```bash
+pymobiledevice3 apps pull --udid "$IOS_UDID" "$RA_BUNDLE" \
+  "voiture.ra/data.txt" \
+  "/tmp/voiture_data.txt"
+```

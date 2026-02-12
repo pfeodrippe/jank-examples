@@ -47,6 +47,8 @@ int get_clicked_choice() { return -1; }
 
 // Background loader
 bool load_background_image_simple(const char*, const std::string&) { return false; }
+bool load_overlay_image_simple(const char*, const std::string&, float, float, float, float) { return false; }
+void clear_overlay_image() {}
 
 } // namespace fiction
 
@@ -79,6 +81,7 @@ int get_event_mouse_button(int) { return 0; }
 int read_file_lines(const char*) { return 0; }
 const char* get_file_line(int) { return ""; }
 int64_t get_file_mod_time(const char*) { return 0; }
+int64_t get_monotonic_time_ms() { return 0; }
 int normalize_voice_prefixed_file(const char*, const char*, const char*) { return 0; }
 int normalize_voice_prefixed_files(const char*) { return 0; }
 

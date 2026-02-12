@@ -198,6 +198,23 @@
   [image-path shader-dir]
   (fiction/load_background_image_simple image-path shader-dir))
 
+(defn init-overlay!
+  "Load/update overlay image in screen pixel coordinates.
+   Useful for lightweight animated regions over a static background."
+  [image-path shader-dir x y width height]
+  (fiction/load_overlay_image_simple
+   image-path
+   shader-dir
+   (cpp/float. x)
+   (cpp/float. y)
+   (cpp/float. width)
+   (cpp/float. height)))
+
+(defn clear-overlay!
+  "Remove the current overlay image layer."
+  []
+  (fiction/clear_overlay_image))
+
 (defn cleanup!
   "Clean up text renderer resources."
   []

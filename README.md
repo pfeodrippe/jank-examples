@@ -202,8 +202,9 @@ make fiction-anim-watch
 This watcher:
 - pulls `com.weirdhat.roughanimator` project `voiture.ra`
 - composites timeline layers
-- overlays the animation on the left side of `resources/fiction/bg-1.png`
-- writes `resources/fiction/anim/voiture/frame-*.png` + `manifest.txt`
+- keeps `resources/fiction/bg-1.png` static in runtime
+- writes small cropped RGBA overlay frames to `resources/fiction/anim/voiture/frame-*.png`
+- writes `manifest.txt` with overlay placement ratios + fps
 
 Notes:
 - Desktop: hot-reloads when `manifest.txt` changes.

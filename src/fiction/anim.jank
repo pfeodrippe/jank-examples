@@ -17,23 +17,42 @@
 (def ^:private manifest-path "resources/fiction/anim/voiture/manifest.txt")
 
 (def ^:private default-fps 8.0)
-(def ^:private assumed-render-fps 60.0)
 
 (defonce ^:private *frame-paths (atom []))
 (defonce ^:private *frame-idx (atom 0))
-(defonce ^:private *tick (atom 0))
-(defonce ^:private *frame-step (atom 8))
+(defonce ^:private *frame-accum-sec (atom 0.0))
+(defonce ^:private *last-update-ms (atom 0))
+(defonce ^:private *playback-fps (atom default-fps))
 (defonce ^:private *manifest-mod-time (atom 0))
+(defonce ^:private *loader-mode (atom :none))
+(defonce ^:private *overlay-ratios (atom {}))
 
 (defn- load-bg-frame!
   [path]
   (text-render/init-background! path "vulkan_fiction"))
 
-(defn- frame-step-from-fps
-  [fps]
-  (let [safe-fps (max 0.1 fps)
-        step (int (/ assumed-render-fps safe-fps))]
-    (max 1 step)))
+(defn- load-overlay-frame!
+  [path {:keys [x-ratio y-ratio w-ratio h-ratio]}]
+  (let [screen-w (+ 0.0 (engine/get_screen_width))
+        screen-h (+ 0.0 (engine/get_screen_height))]
+    (text-render/init-overlay!
+     path
+     "vulkan_fiction"
+     (* screen-w x-ratio)
+     (* screen-h y-ratio)
+     (* screen-w w-ratio)
+     (* screen-h h-ratio))))
+
+(defn- preload-overlay-frames!
+  [frame-paths overlay-ratios]
+  (let [loaded (reduce (fn [count path]
+                         (if (load-overlay-frame! path overlay-ratios)
+                           (inc count)
+                           count))
+                       0
+                       frame-paths)]
+    (println "[anim] preloaded overlay frames:" loaded "/" (count frame-paths))
+    loaded))
 
 (defn- read-manifest-lines
   []
@@ -45,63 +64,120 @@
         (recur (inc i)
                (conj out (str (engine/get_file_line (cpp/int. i)))))))))
 
+(defn- parse-number
+  [s default]
+  (let [parsed (read-string (str/trim s))]
+    (if (number? parsed)
+      (+ 0.0 parsed)
+      default)))
+
 (defn- parse-manifest
   [lines]
   (loop [remaining lines
          fps default-fps
-         frames []]
+         frames []
+         overlay {}]
     (if (empty? remaining)
-      {:fps fps :frames frames}
+      {:fps fps
+       :frames frames
+       :overlay (when (and (contains? overlay :x-ratio)
+                           (contains? overlay :y-ratio)
+                           (contains? overlay :w-ratio)
+                           (contains? overlay :h-ratio))
+                  overlay)}
       (let [line (str/trim (first remaining))]
         (cond
           (or (empty? line) (str/starts-with? line "#"))
-          (recur (rest remaining) fps frames)
+          (recur (rest remaining) fps frames overlay)
 
           (str/starts-with? line "fps=")
           (let [raw (str/trim (subs line 4))
-                parsed (read-string raw)
-                value (if (number? parsed) parsed default-fps)]
-            (recur (rest remaining) value frames))
+                value (parse-number raw default-fps)]
+            (recur (rest remaining) value frames overlay))
+
+          (str/starts-with? line "overlay_x_ratio=")
+          (recur (rest remaining)
+                 fps
+                 frames
+                 (assoc overlay :x-ratio (parse-number (subs line 16) 0.0)))
+
+          (str/starts-with? line "overlay_y_ratio=")
+          (recur (rest remaining)
+                 fps
+                 frames
+                 (assoc overlay :y-ratio (parse-number (subs line 16) 0.0)))
+
+          (str/starts-with? line "overlay_w_ratio=")
+          (recur (rest remaining)
+                 fps
+                 frames
+                 (assoc overlay :w-ratio (parse-number (subs line 16) 0.0)))
+
+          (str/starts-with? line "overlay_h_ratio=")
+          (recur (rest remaining)
+                 fps
+                 frames
+                 (assoc overlay :h-ratio (parse-number (subs line 16) 0.0)))
 
           :else
-          (recur (rest remaining) fps (conj frames line)))))))
+          (recur (rest remaining) fps (conj frames line) overlay))))))
 
 (defn- set-frame-sequence!
-  [fps frame-paths]
+  [fps frame-paths overlay-ratios]
   (if (empty? frame-paths)
     false
-    (if (load-bg-frame! (first frame-paths))
-      (do
-        (reset! *frame-paths frame-paths)
-        (reset! *frame-idx 0)
-        (reset! *tick 0)
-        (reset! *frame-step (frame-step-from-fps fps))
-        true)
-      false)))
+    (let [first-frame (first frame-paths)
+          _ (when overlay-ratios
+              ;; Frame paths are stable (frame-0000.png...), so clear any
+              ;; existing GPU frame cache before preloading updated files.
+              (text-render/clear-overlay!)
+              (preload-overlay-frames! frame-paths overlay-ratios))
+          loaded (if overlay-ratios
+                   (load-overlay-frame! first-frame overlay-ratios)
+                   (load-bg-frame! first-frame))]
+      (if loaded
+        (do
+          (when-not overlay-ratios
+            (text-render/clear-overlay!))
+          (reset! *frame-paths frame-paths)
+          (reset! *frame-idx 0)
+          (reset! *frame-accum-sec 0.0)
+          (reset! *last-update-ms (engine/get_monotonic_time_ms))
+          (reset! *playback-fps (max 0.1 fps))
+          (reset! *overlay-ratios (or overlay-ratios {}))
+          (reset! *loader-mode (if overlay-ratios :overlay :background))
+          true)
+        false))))
 
 (defn- try-load-manifest!
   []
   (let [lines (read-manifest-lines)]
     (if (empty? lines)
       false
-      (let [{:keys [fps frames]} (parse-manifest lines)]
-        (if (set-frame-sequence! fps frames)
+      (let [{:keys [fps frames overlay]} (parse-manifest lines)]
+        (if (set-frame-sequence! fps frames overlay)
           (do
-            (println "[anim] using manifest frames:" (count frames) "fps=" fps)
+            (println "[anim] using manifest frames:" (count frames) "fps=" fps "mode=" @*loader-mode)
+            (when (nil? overlay)
+              (println "[anim] legacy full-background frames detected; republish with fiction-anim-watch for fast overlay mode"))
             true)
           false)))))
 
 (defn- reload!
   []
+  (when-not (load-bg-frame! static-bg-path)
+    (println "WARN: Background image failed to load; continuing without it"))
   (if (try-load-manifest!)
     true
     (do
+      (text-render/clear-overlay!)
       (reset! *frame-paths [])
       (reset! *frame-idx 0)
-      (reset! *tick 0)
-      (reset! *frame-step (frame-step-from-fps default-fps))
-      (when-not (load-bg-frame! static-bg-path)
-        (println "WARN: Background image failed to load; continuing without it"))
+      (reset! *frame-accum-sec 0.0)
+      (reset! *last-update-ms 0)
+      (reset! *playback-fps default-fps)
+      (reset! *loader-mode :none)
+      (reset! *overlay-ratios {})
       false)))
 
 (defn init!
@@ -122,6 +198,16 @@
       (println "[anim] manifest changed, reloading...")
       (reload!))))
 
+(defn- step-next-frame!
+  [frames frame-count]
+  (let [next-idx (mod (inc @*frame-idx) frame-count)
+        next-path (nth frames next-idx)]
+    (if (if (= @*loader-mode :overlay)
+          (load-overlay-frame! next-path @*overlay-ratios)
+          (load-bg-frame! next-path))
+      (reset! *frame-idx next-idx)
+      (println "WARN: Animated frame failed to load:" next-path))))
+
 (defn update!
   "Advance left-side animation and hot-reload frame list when needed."
   []
@@ -129,11 +215,17 @@
   (let [frames @*frame-paths
         frame-count (count frames)]
     (when (> frame-count 1)
-      (let [tick (swap! *tick inc)]
-        (when (>= tick @*frame-step)
-          (reset! *tick 0)
-          (let [next-idx (mod (inc @*frame-idx) frame-count)
-                next-path (nth frames next-idx)]
-            (if (load-bg-frame! next-path)
-              (reset! *frame-idx next-idx)
-              (println "WARN: Animated background frame failed to load:" next-path))))))))
+      (let [now-ms (engine/get_monotonic_time_ms)
+            last-ms @*last-update-ms]
+        (if (<= last-ms 0)
+          (reset! *last-update-ms now-ms)
+          (let [delta-ms (max 0 (min 250 (- now-ms last-ms)))
+                delta-sec (/ (+ 0.0 delta-ms) 1000.0)
+                frame-sec (/ 1.0 (max 0.1 @*playback-fps))
+                accum (+ @*frame-accum-sec delta-sec)
+                steps (min frame-count (int (/ accum frame-sec)))
+                remainder (- accum (* frame-sec steps))]
+            (reset! *last-update-ms now-ms)
+            (reset! *frame-accum-sec (max 0.0 remainder))
+            (dotimes [_ steps]
+              (step-next-frame! frames frame-count))))))))

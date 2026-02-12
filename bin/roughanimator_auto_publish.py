@@ -5,15 +5,15 @@ Pipeline:
 1) Optional sync from iPad (USB or Wi-Fi) using pymobiledevice3 House Arrest.
 2) Parse RoughAnimator project timeline from voiture.ra.
 3) Composite layer frames.
-4) Overlay animation into fiction background left side.
-5) Write resources/fiction/anim/voiture/manifest.txt for fiction.anim.
+4) Build left-panel RGBA frames.
+5) Auto-crop to the union alpha bbox (small transparent sprites).
+6) Write resources/fiction/anim/voiture/manifest.txt for fiction.anim.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -51,6 +51,20 @@ def run(
         cwd=str(cwd) if cwd else None,
         input=stdin_text,
         text=True,
+        capture_output=True,
+        check=False,
+    )
+    return proc
+
+
+def run_bytes(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
         capture_output=True,
         check=False,
     )
@@ -210,8 +224,7 @@ def compose_layer_stack(
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "ffmpeg layer compose failed")
 
 
-def compose_left_on_background(
-    base_bg: Path,
+def compose_left_panel_frame(
     left_frame: Path,
     out_file: Path,
     *,
@@ -225,22 +238,112 @@ def compose_left_on_background(
             "-loglevel",
             "error",
             "-i",
-            str(base_bg),
-            "-i",
             str(left_frame),
-            "-filter_complex",
+            "-vf",
             (
-                f"[1:v]scale={left_width}:{bg_height}:force_original_aspect_ratio=increase,"
-                f"crop={left_width}:{bg_height}[anim];"
-                "[0:v][anim]overlay=0:0"
+                f"scale={left_width}:{bg_height}:force_original_aspect_ratio=increase,"
+                f"crop={left_width}:{bg_height}:0:0"
             ),
             "-frames:v",
             "1",
+            "-compression_level",
+            "9",
+            "-pred",
+            "mixed",
+            "-pix_fmt",
+            "rgba",
             str(out_file),
         ]
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "ffmpeg bg compose failed")
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "ffmpeg panel compose failed")
+
+
+def detect_alpha_bbox(image_path: Path, *, alpha_threshold: int = 8) -> tuple[int, int, int, int] | None:
+    width, height = ffprobe_dimensions(image_path)
+    proc = run_bytes(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(image_path),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-frames:v",
+            "1",
+            "-",
+        ]
+    )
+    if proc.returncode != 0:
+        stderr_text = proc.stderr.decode("utf-8", errors="replace").strip()
+        stdout_text = proc.stdout.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(stderr_text or stdout_text or "ffmpeg raw rgba extract failed")
+
+    data = proc.stdout
+    expected = width * height * 4
+    if len(data) < expected:
+        raise RuntimeError(f"raw rgba frame too short for {image_path}: got={len(data)} expected={expected}")
+
+    min_x = width
+    min_y = height
+    max_x = -1
+    max_y = -1
+
+    for y in range(height):
+        row_offset = y * width * 4
+        for x in range(width):
+            alpha = data[row_offset + x * 4 + 3]
+            if alpha > alpha_threshold:
+                if x < min_x:
+                    min_x = x
+                if y < min_y:
+                    min_y = y
+                if x > max_x:
+                    max_x = x
+                if y > max_y:
+                    max_y = y
+
+    if max_x < min_x or max_y < min_y:
+        return None
+
+    return (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+
+
+def crop_overlay_frame(
+    src_file: Path,
+    out_file: Path,
+    *,
+    crop_x: int,
+    crop_y: int,
+    crop_w: int,
+    crop_h: int,
+) -> None:
+    proc = run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            str(src_file),
+            "-vf",
+            f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}",
+            "-frames:v",
+            "1",
+            "-compression_level",
+            "9",
+            "-pred",
+            "mixed",
+            "-pix_fmt",
+            "rgba",
+            str(out_file),
+        ]
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "ffmpeg overlay crop failed")
 
 
 def publish_animation(
@@ -275,8 +378,10 @@ def publish_animation(
 
     tmp_flat = tmp_out / "_flat"
     tmp_flat.mkdir(parents=True, exist_ok=True)
+    tmp_panel = tmp_out / "_panel"
+    tmp_panel.mkdir(parents=True, exist_ok=True)
 
-    frame_paths: list[Path] = []
+    panel_frame_paths: list[Path] = []
     for frame_idx in range(frame_count):
         active_layers: list[Path] = []
         for layer in layers:
@@ -293,22 +398,77 @@ def publish_animation(
         flat_frame = tmp_flat / f"frame-{frame_idx:04d}.png"
         compose_layer_stack(active_layers, flat_frame, canvas_w, canvas_h)
 
-        out_frame = tmp_out / f"frame-{frame_idx:04d}.png"
-        compose_left_on_background(
-            base_bg=base_bg,
+        panel_frame = tmp_panel / f"frame-{frame_idx:04d}.png"
+        compose_left_panel_frame(
             left_frame=flat_frame,
-            out_file=out_frame,
+            out_file=panel_frame,
             left_width=left_width,
             bg_height=bg_h,
         )
-        frame_paths.append(out_frame)
+        panel_frame_paths.append(panel_frame)
 
-    if not frame_paths:
+    if not panel_frame_paths:
         raise RuntimeError("no output frames produced")
+
+    source_bbox_union: tuple[int, int, int, int] | None = None
+    seen_cels: set[Path] = set()
+    for layer in layers:
+        for entry in layer.entries:
+            candidate = layer.directory / f"{entry.start:04d}.png"
+            if not candidate.exists() or candidate in seen_cels:
+                continue
+            seen_cels.add(candidate)
+            bbox = detect_alpha_bbox(candidate)
+            if bbox is None:
+                continue
+            if source_bbox_union is None:
+                source_bbox_union = bbox
+            else:
+                x0 = min(source_bbox_union[0], bbox[0])
+                y0 = min(source_bbox_union[1], bbox[1])
+                x1 = max(source_bbox_union[0] + source_bbox_union[2], bbox[0] + bbox[2])
+                y1 = max(source_bbox_union[1] + source_bbox_union[3], bbox[1] + bbox[3])
+                source_bbox_union = (x0, y0, x1 - x0, y1 - y0)
+
+    if source_bbox_union is None:
+        source_bbox_union = (0, 0, canvas_w, canvas_h)
+
+    src_x, src_y, src_w, src_h = source_bbox_union
+    scale = max(left_width / canvas_w, bg_h / canvas_h)
+
+    mapped_x0 = max(0, int(src_x * scale))
+    mapped_y0 = max(0, int(src_y * scale))
+    mapped_x1 = min(left_width, int((src_x + src_w) * scale + 0.9999))
+    mapped_y1 = min(bg_h, int((src_y + src_h) * scale + 0.9999))
+
+    if mapped_x1 <= mapped_x0 or mapped_y1 <= mapped_y0:
+        crop_x, crop_y, crop_w, crop_h = (0, 0, left_width, bg_h)
+    else:
+        crop_x = mapped_x0
+        crop_y = mapped_y0
+        crop_w = mapped_x1 - mapped_x0
+        crop_h = mapped_y1 - mapped_y0
+
+    frame_paths: list[Path] = []
+    for panel_frame in panel_frame_paths:
+        out_frame = tmp_out / panel_frame.name
+        crop_overlay_frame(
+            panel_frame,
+            out_frame,
+            crop_x=crop_x,
+            crop_y=crop_y,
+            crop_w=crop_w,
+            crop_h=crop_h,
+        )
+        frame_paths.append(out_frame)
 
     manifest_lines = [
         "# auto-generated by roughanimator_auto_publish.py",
         f"fps={fps}",
+        f"overlay_x_ratio={crop_x / bg_w:.8f}",
+        f"overlay_y_ratio={crop_y / bg_h:.8f}",
+        f"overlay_w_ratio={crop_w / bg_w:.8f}",
+        f"overlay_h_ratio={crop_h / bg_h:.8f}",
     ]
     for path in frame_paths:
         rel = path.relative_to(tmp_out)
@@ -321,6 +481,7 @@ def publish_animation(
 
     (tmp_out / "manifest.txt").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
     shutil.rmtree(tmp_flat, ignore_errors=True)
+    shutil.rmtree(tmp_panel, ignore_errors=True)
 
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -374,6 +535,22 @@ def sync_from_device(
         pulled = candidate_a
     elif (candidate_b / "data.txt").exists():
         pulled = candidate_b
+    else:
+        project_base = project_name.removesuffix(".ra")
+        matches = sorted(
+            p.parent
+            for p in tmp_pull.rglob("data.txt")
+            if p.parent.is_dir()
+        )
+        preferred = [
+            d
+            for d in matches
+            if d.name == project_name or d.name == project_base or project_base in d.name
+        ]
+        if preferred:
+            pulled = preferred[0]
+        elif matches:
+            pulled = matches[0]
     if pulled is None:
         raise RuntimeError(f"could not find pulled project tree under {tmp_pull}")
 
@@ -468,6 +645,7 @@ def main() -> int:
 
     last_sig = (-1, -1)
     next_sync_at = 0.0
+    had_once_error = False
 
     while True:
         if args.sync_device and time.time() >= next_sync_at:
@@ -482,6 +660,8 @@ def main() -> int:
                 project_dir = pulled_root
             except Exception as exc:  # noqa: BLE001
                 log("sync_error", reason=str(exc))
+                if args.once:
+                    had_once_error = True
             next_sync_at = time.time() + max(1.0, args.sync_interval)
 
         sig = project_signature(project_dir)
@@ -504,11 +684,15 @@ def main() -> int:
                 )
             except Exception as exc:  # noqa: BLE001
                 log("publish_error", project=str(project_dir), reason=str(exc))
+                if args.once:
+                    had_once_error = True
 
         if args.once:
             break
         time.sleep(max(0.2, args.scan_interval))
 
+    if args.once and had_once_error:
+        return 1
     return 0
 
 

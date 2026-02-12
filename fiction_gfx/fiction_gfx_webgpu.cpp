@@ -20,6 +20,9 @@ namespace fiction {
     
     // BackgroundRenderer global
     BackgroundRenderer* g_bg_renderer = nullptr;
+
+    // OverlayRenderer global
+    OverlayRenderer* g_overlay_renderer = nullptr;
     
     // ParticleRenderer global
     ParticleRenderer* g_particle_renderer = nullptr;

@@ -751,9 +751,21 @@ inline const char* get_file_line(int index) {
 inline int64_t get_file_mod_time(const char* path) {
     struct stat st;
     if (stat(path, &st) == 0) {
-        return static_cast<int64_t>(st.st_mtime);
+        const int64_t sec = static_cast<int64_t>(st.st_mtime);
+        int64_t nsec = 0;
+#if defined(__APPLE__)
+        nsec = static_cast<int64_t>(st.st_mtimespec.tv_nsec);
+#elif defined(__linux__)
+        nsec = static_cast<int64_t>(st.st_mtim.tv_nsec);
+#endif
+        return sec * 1000000000LL + nsec;
     }
     return 0;
+}
+
+inline int64_t get_monotonic_time_ms() {
+    auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 }
 
 // Normalize Bitwig-style exports like:
