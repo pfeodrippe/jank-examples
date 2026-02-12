@@ -202,23 +202,36 @@
 (defn init!
   "Initialize voice-over playback engine."
   []
-  ;; Ignore already-revealed startup history to avoid autoplay-policy failures
-  ;; on first frame and to start VO from interactive progression.
-  (reset! *last-history-count (count (state/get-history)))
-  (reset! *missing-warned #{})
-  (reset! *pending [])
-  (reset! *current-sound false)
-  (clear-current-watch!)
-  (if (audio/init!)
-    (do
-      (audio/set-volume! 1.0)
-      (reset! *enabled true)
-      (println "Voiceover enabled.")
-      true)
-    (do
-      (reset! *enabled false)
-      (println "WARN: Voiceover disabled (audio init failed).")
-      false)))
+  (let [history (state/get-history)
+        history-count (count history)]
+    ;; Mark all current history as seen to avoid re-triggering on future updates.
+    (reset! *last-history-count history-count)
+    (reset! *missing-warned #{})
+    (reset! *pending [])
+    (reset! *current-sound false)
+    (clear-current-watch!)
+    (if (audio/init!)
+      (do
+        (audio/set-volume! 1.0)
+        (reset! *enabled true)
+        (println "Voiceover enabled.")
+        ;; Queue the last speakable entry from initial history for playback.
+        ;; This ensures the first dialogue plays after user interaction unlocks audio.
+        (when (> history-count 0)
+          (let [speakable (loop [i (dec history-count)]
+                           (if (< i 0)
+                             nil
+                             (let [entry (nth history i)]
+                               (if (speakable-entry? entry)
+                                 entry
+                                 (recur (dec i))))))]
+            (when speakable
+              (reset! *pending [speakable]))))
+        true)
+      (do
+        (reset! *enabled false)
+        (println "WARN: Voiceover disabled (audio init failed).")
+        false))))
 
 (defn shutdown!
   "Shutdown voice-over playback engine."

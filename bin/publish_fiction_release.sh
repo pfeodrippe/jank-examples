@@ -67,15 +67,15 @@ detect_repo_from_origin() {
     return 1
   fi
 
+  # Strip .git suffix first, then extract owner/repo
   parsed="$(printf '%s\n' "$remote_url" | sed -E \
-    -e 's#^git@github.com:([^/]+/[^/]+)(\.git)?$#\1#' \
-    -e 't done' \
-    -e 's#^https?://github.com/([^/]+/[^/]+)(\.git)?$#\1#' \
-    -e 't done' \
-    -e 's#^ssh://git@github.com/([^/]+/[^/]+)(\.git)?$#\1#' \
-    -e ':done')"
+    -e 's/\.git$//' \
+    -e 's#^git@github.com:##' \
+    -e 's#^https?://github.com/##' \
+    -e 's#^ssh://git@github.com/##')"
 
-  if [[ -z "$parsed" || "$parsed" == "$remote_url" ]]; then
+  # Validate it looks like owner/repo
+  if [[ -z "$parsed" || "$parsed" == "$remote_url" || ! "$parsed" =~ ^[^/]+/[^/]+$ ]]; then
     return 1
   fi
 

@@ -142,13 +142,21 @@ fi
 
 # Always regenerate staged voice MP3 files from WAV inputs on every build.
 # This avoids stale/cached audio carrying across releases.
+# NOTE: Only delete MP3 files that have a corresponding WAV (will be regenerated).
+# Original MP3-only files (no WAV source) are preserved.
 if ! command -v ffmpeg >/dev/null 2>&1; then
     echo "ERROR: ffmpeg not found; cannot regenerate voice MP3 files for WASM." >&2
     exit 1
 fi
 
+# Delete only MP3 files that will be regenerated from WAV sources
 if [ -d "$EMBED_FICTION_DIR/voice" ]; then
-    find "$EMBED_FICTION_DIR/voice" -type f -iname '*.mp3' -delete
+    while IFS= read -r staged_wav; do
+        mp3_path="${staged_wav%.wav}.mp3"
+        mp3_path_upper="${staged_wav%.WAV}.mp3"
+        [ -f "$mp3_path" ] && rm -f "$mp3_path"
+        [ -f "$mp3_path_upper" ] && rm -f "$mp3_path_upper"
+    done < <(find "$EMBED_FICTION_DIR/voice" -type f -iname '*.wav')
 fi
 
 # Diagnose near-silent source WAV files for story ids.

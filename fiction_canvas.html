@@ -12,36 +12,124 @@
             justify-content: center;
             align-items: center;
             height: 100vh;
-            font-family: sans-serif;
+            font-family: 'Georgia', serif;
         }
-        #canvas {
+        #container {
+            position: relative;
             width: 1280px;
             height: 720px;
-            outline: none; /* Remove focus outline */
+        }
+        #canvas {
+            width: 100%;
+            height: 100%;
+            outline: none;
+            display: none;
         }
         #canvas:focus {
             box-shadow: 0 0 0 2px rgba(100, 150, 255, 0.5);
+        }
+        #loading-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #0d0d0f 0%, #1a1a1f 50%, #0d0d0f 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #c4b69c;
+        }
+        #loading-title {
+            font-size: 48px;
+            font-weight: normal;
+            letter-spacing: 8px;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+            text-shadow: 0 0 20px rgba(180, 160, 140, 0.3);
+        }
+        #loading-subtitle {
+            font-size: 16px;
+            font-style: italic;
+            color: #888;
+            margin-bottom: 60px;
+            letter-spacing: 2px;
+        }
+        #loading-status {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 30px;
+            min-height: 20px;
+        }
+        #start-button {
+            display: none;
+            padding: 18px 60px;
+            font-size: 18px;
+            font-family: 'Georgia', serif;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            background: transparent;
+            border: 1px solid #c4b69c;
+            color: #c4b69c;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        #start-button:hover {
+            background: rgba(180, 160, 140, 0.1);
+            box-shadow: 0 0 30px rgba(180, 160, 140, 0.2);
+            transform: scale(1.02);
+        }
+        #start-button:active {
+            transform: scale(0.98);
+        }
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 2px solid #333;
+            border-top-color: #c4b69c;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 30px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
         #status {
             color: #888;
             text-align: center;
             margin-top: 10px;
+            display: none;
         }
     </style>
 </head>
 <body>
-    <div>
+    <div id="container">
+        <div id="loading-screen">
+            <div id="loading-title">La Voiture</div>
+            <div id="loading-subtitle">Une fiction interactive</div>
+            <div class="loading-spinner" id="spinner"></div>
+            <div id="loading-status">Chargement...</div>
+            <button id="start-button">Commencer</button>
+        </div>
         <canvas id="canvas" width="1280" height="720" tabindex="0"></canvas>
-        <div id="status">Loading...</div>
+        <div id="status"></div>
     </div>
     <script type="module">
         const canvas = document.getElementById('canvas');
         const status = document.getElementById('status');
+        const loadingScreen = document.getElementById('loading-screen');
+        const loadingStatus = document.getElementById('loading-status');
+        const startButton = document.getElementById('start-button');
+        const spinner = document.getElementById('spinner');
+        
         const params = new URLSearchParams(window.location.search);
         const forcedBuildId = params.get('v');
         const configuredBuildId = (window.FICTION_BUILD_ID || '').trim();
         const cacheBust = forcedBuildId || configuredBuildId || String(Date.now());
         const fictionModulePath = `./fiction.js?v=${encodeURIComponent(cacheBust)}`;
+
+        let fictionFactory = null;
 
         // WebAudio unlock: browsers often suspend audio contexts created before
         // user interaction. Resume all known contexts on first input events.
@@ -72,25 +160,17 @@
                 }
             }
         }
-        
-        // Focus canvas on click so it receives keyboard events
-        canvas.addEventListener('click', () => {
-            canvas.focus();
-            void resumeKnownAudioContexts();
-        });
-        window.addEventListener('pointerdown', () => {
-            void resumeKnownAudioContexts();
-        }, { passive: true });
-        window.addEventListener('keydown', () => {
-            void resumeKnownAudioContexts();
-        }, { passive: true });
-        window.addEventListener('touchstart', () => {
-            void resumeKnownAudioContexts();
-        }, { passive: true });
-        // Auto-focus on page load
-        canvas.focus();
-        
-        status.textContent = 'Loading WASM runtime...';
+
+        function showStartButton() {
+            spinner.style.display = 'none';
+            loadingStatus.textContent = 'Prêt';
+            startButton.style.display = 'block';
+        }
+
+        function showError(message) {
+            spinner.style.display = 'none';
+            loadingStatus.textContent = 'Erreur: ' + message;
+        }
 
         function updateStatusFromRuntimeLine(line) {
             if (line.includes('[fiction-wasm] Requesting WebGPU adapter')) {
@@ -108,11 +188,22 @@
                 status.textContent = 'WebGPU init failed. Check console logs.';
             }
         }
-        
-        import(fictionModulePath).then(({ default: fiction }) => {
-            fiction({
+
+        async function startGame() {
+            // Unlock audio on user interaction
+            await resumeKnownAudioContexts();
+            
+            // Hide loading screen, show canvas
+            loadingScreen.style.display = 'none';
+            canvas.style.display = 'block';
+            status.style.display = 'block';
+            canvas.focus();
+            
+            // Now start the game
+            status.textContent = 'Démarrage...';
+            
+            fictionFactory({
                 canvas: canvas,
-                // Help emscripten find generated assets and force cache busting.
                 locateFile: function(path) {
                     return `./${path}?v=${encodeURIComponent(cacheBust)}`;
                 },
@@ -123,29 +214,47 @@
                 printErr: function(text) {
                     console.error(text);
                     updateStatusFromRuntimeLine(text);
-                },
-                onRuntimeInitialized: function() {
-                    status.textContent = 'Runtime initialized, starting game loop...';
                 }
             }).then(module => {
-                // The fiction main loop usually never returns.
-                status.textContent = 'Runtime exited';
-
-                // Debug: list files in virtual filesystem (if FS is exported)
+                status.textContent = '';
+                
                 if (module.FS && module.FS.readdir) {
                     console.log('[debug] FS root:', module.FS.readdir('/'));
                     if (module.FS.analyzePath('/stories').exists) {
                         console.log('[debug] /stories:', module.FS.readdir('/stories'));
                     }
-                } else {
-                    console.log('[debug] FS not exported, skipping filesystem debug');
                 }
             }).catch(err => {
-                status.textContent = 'Error: ' + err.message;
+                status.textContent = 'Erreur: ' + err.message;
                 console.error(err);
             });
+        }
+
+        startButton.addEventListener('click', startGame);
+        
+        // Focus canvas on click so it receives keyboard events
+        canvas.addEventListener('click', () => {
+            canvas.focus();
+            void resumeKnownAudioContexts();
+        });
+        window.addEventListener('pointerdown', () => {
+            void resumeKnownAudioContexts();
+        }, { passive: true });
+        window.addEventListener('keydown', () => {
+            void resumeKnownAudioContexts();
+        }, { passive: true });
+        window.addEventListener('touchstart', () => {
+            void resumeKnownAudioContexts();
+        }, { passive: true });
+
+        // Preload the fiction module (but don't start the game yet)
+        loadingStatus.textContent = 'Chargement...';
+        
+        import(fictionModulePath).then(({ default: fiction }) => {
+            fictionFactory = fiction;
+            showStartButton();
         }).catch(err => {
-            status.textContent = 'Error: ' + err.message;
+            showError(err.message);
             console.error(err);
         });
     </script>

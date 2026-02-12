@@ -26,3 +26,4 @@ Vous sentez un souffle chaud derrière vous.
 		:: Lire le l’autocollant.
 		    [id:sticker_maman] « Maman… »
 	:: Frapper à la porte.
+       #∆V [id:visage_decu] Il n'y a que ton visage deçu.

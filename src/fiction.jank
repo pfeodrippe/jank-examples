@@ -99,6 +99,7 @@
 (def ^:private SCANCODE_9 38)
 (def ^:private SCANCODE_UP 82)
 (def ^:private SCANCODE_DOWN 81)
+(def ^:private SCANCODE_R 21)
 
 (defn process-key-event!
   "Process a key down event."
@@ -119,6 +120,13 @@
     ;; Down arrow - scroll down
     (= scancode SCANCODE_DOWN)
     (text-render/scroll! 30.0)
+
+    ;; R - restart story
+    (= scancode SCANCODE_R)
+    (do
+      (println "Restarting story...")
+      (load-story!)
+      (text-render/scroll-to-bottom!))
 
     :else nil))
 
@@ -193,6 +201,7 @@
   (println "  1-9      = Select choice")
   (println "  Mouse    = Hover/click choice")
   (println "  Up/Down  = Scroll dialogue")
+  (println "  R        = Restart story")
   (println "  ESC      = Quit")
   (println "")
 
