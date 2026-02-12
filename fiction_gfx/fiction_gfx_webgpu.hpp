@@ -972,9 +972,6 @@ inline bool load_background_image_simple(const char* filepath, const std::string
         return false;
     }
 
-    // Replace any previous background.
-    cleanup_background_renderer();
-
     // Resolve paths robustly for Emscripten FS.
     std::vector<std::string> candidates;
     if (filepath && filepath[0] != '\0') {
@@ -1007,6 +1004,33 @@ inline bool load_background_image_simple(const char* filepath, const std::string
                   << (filepath ? filepath : "(null)") << std::endl;
         return false;
     }
+
+    // Fast path: keep existing pipeline/bindings and only update texture bytes.
+    auto* existing = get_bg_renderer();
+    if (existing && existing->initialized &&
+        existing->imgWidth == w && existing->imgHeight == h && existing->texture) {
+        wgpu::TexelCopyTextureInfo destination{};
+        destination.texture = existing->texture;
+        destination.mipLevel = 0;
+        destination.origin = {0, 0, 0};
+
+        wgpu::TexelCopyBufferLayout layout{};
+        layout.offset = 0;
+        layout.bytesPerRow = static_cast<uint32_t>(w * 4);
+        layout.rowsPerImage = static_cast<uint32_t>(h);
+
+        wgpu::Extent3D writeSize{};
+        writeSize.width = static_cast<uint32_t>(w);
+        writeSize.height = static_cast<uint32_t>(h);
+        writeSize.depthOrArrayLayers = 1;
+
+        tr->queue.WriteTexture(&destination, pixels, static_cast<size_t>(w * h * 4), &layout, &writeSize);
+        stbi_image_free(pixels);
+        return true;
+    }
+
+    // First load or dimension change: recreate background resources.
+    cleanup_background_renderer();
 
     auto* bg = new BackgroundRenderer();
     get_bg_renderer() = bg;

@@ -303,6 +303,7 @@ inline VkPipeline create_pipeline(VkDevice device,
 inline void watch_shader(const std::string& name, bool alphaBlend,
                           VkPipeline* pipeline, VkPipelineLayout* pipelineLayout,
                           const char* vertEntry = "main", const char* fragEntry = "main");
+inline void cleanup_bg_renderer();
 
 inline bool load_background_image(const char* filepath,
                                    VkDevice device,
@@ -320,14 +321,141 @@ inline bool load_background_image(const char* filepath,
         std::cerr << "[fiction] Failed to load background: " << filepath << std::endl;
         return false;
     }
-    
+
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+
+    auto upload_pixels_to_image = [&](VkImage image, VkImageLayout oldLayout) -> bool {
+        VkDeviceSize imageSize = static_cast<VkDeviceSize>(w) * static_cast<VkDeviceSize>(h) * 4;
+
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+
+        VkBufferCreateInfo bufInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufInfo.size = imageSize;
+        bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer) != VK_SUCCESS) {
+            return false;
+        }
+
+        VkMemoryRequirements stagingReq;
+        vkGetBufferMemoryRequirements(device, stagingBuffer, &stagingReq);
+
+        uint32_t stagingMemType = 0;
+        bool foundStagingType = false;
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((stagingReq.memoryTypeBits & (1 << i)) &&
+                (memProps.memoryTypes[i].propertyFlags &
+                 (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                stagingMemType = i;
+                foundStagingType = true;
+                break;
+            }
+        }
+        if (!foundStagingType) {
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            return false;
+        }
+
+        VkMemoryAllocateInfo stagingAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        stagingAllocInfo.allocationSize = stagingReq.size;
+        stagingAllocInfo.memoryTypeIndex = stagingMemType;
+        if (vkAllocateMemory(device, &stagingAllocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+            vkDestroyBuffer(device, stagingBuffer, nullptr);
+            return false;
+        }
+        vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+
+        void* data = nullptr;
+        vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
+        memcpy(data, pixels, static_cast<size_t>(imageSize));
+        vkUnmapMemory(device, stagingMemory);
+
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cmdInfo.commandPool = commandPool;
+        cmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdInfo.commandBufferCount = 1;
+        vkAllocateCommandBuffers(device, &cmdInfo, &cmd);
+
+        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &beginInfo);
+
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        } else {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+        vkCmdCopyBufferToImage(cmd, stagingBuffer, image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmd;
+        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(graphicsQueue);
+
+        vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingMemory, nullptr);
+        return true;
+    };
+
+    // Fast path: update pixels in-place when dimensions match.
+    auto* existingBg = get_bg_renderer();
+    if (existingBg && existingBg->initialized &&
+        existingBg->imgWidth == w && existingBg->imgHeight == h) {
+        bool ok = upload_pixels_to_image(existingBg->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        stbi_image_free(pixels);
+        return ok;
+    }
+
+    // Size changed or first load: recreate background resources once.
+    if (existingBg) {
+        cleanup_bg_renderer();
+    }
+
     std::cout << "[fiction] Background loaded: " << w << "x" << h << " (" << channels << " ch)" << std::endl;
-    
+
     auto* bg = new BackgroundRenderer();
     get_bg_renderer() = bg;
     bg->imgWidth = w;
     bg->imgHeight = h;
-    
+
     // Create Vulkan image (RGBA8)
     VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -345,10 +473,8 @@ inline bool load_background_image(const char* filepath,
     
     VkMemoryRequirements memReq;
     vkGetImageMemoryRequirements(device, bg->image, &memReq);
-    
+
     // Find device-local memory
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
     uint32_t memTypeIdx = 0;
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
         if ((memReq.memoryTypeBits & (1 << i)) &&
@@ -390,103 +516,13 @@ inline bool load_background_image(const char* filepath,
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     vkCreateSampler(device, &samplerInfo, nullptr, &bg->sampler);
-    
-    // Upload pixel data via staging buffer
-    VkDeviceSize imageSize = w * h * 4;
-    
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
-    
-    VkBufferCreateInfo bufInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bufInfo.size = imageSize;
-    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer);
-    
-    VkMemoryRequirements stagingReq;
-    vkGetBufferMemoryRequirements(device, stagingBuffer, &stagingReq);
-    
-    uint32_t stagingMemType = 0;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-        if ((stagingReq.memoryTypeBits & (1 << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
-            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            stagingMemType = i;
-            break;
-        }
-    }
-    
-    VkMemoryAllocateInfo stagingAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    stagingAllocInfo.allocationSize = stagingReq.size;
-    stagingAllocInfo.memoryTypeIndex = stagingMemType;
-    vkAllocateMemory(device, &stagingAllocInfo, nullptr, &stagingMemory);
-    vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
-    
-    void* data;
-    vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
-    memcpy(data, pixels, imageSize);
-    vkUnmapMemory(device, stagingMemory);
-    
+
+    bool uploadOk = upload_pixels_to_image(bg->image, VK_IMAGE_LAYOUT_UNDEFINED);
     stbi_image_free(pixels);
-    
-    // Transfer image layout and copy
-    VkCommandBuffer cmd;
-    VkCommandBufferAllocateInfo cmdInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cmdInfo.commandPool = commandPool;
-    cmdInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmdInfo.commandBufferCount = 1;
-    vkAllocateCommandBuffers(device, &cmdInfo, &cmd);
-    
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
-    
-    // Transition to TRANSFER_DST
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = bg->image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
-    
-    VkBufferImageCopy region{};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.layerCount = 1;
-    region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
-    
-    vkCmdCopyBufferToImage(cmd, stagingBuffer, bg->image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    
-    // Transition to SHADER_READ_ONLY
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
-    
-    vkEndCommandBuffer(cmd);
-    
-    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
-    vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graphicsQueue);
-    
-    vkFreeCommandBuffers(device, commandPool, 1, &cmd);
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
+    if (!uploadOk) {
+        cleanup_bg_renderer();
+        return false;
+    }
     
     // Create descriptor set layout
     VkDescriptorSetLayoutBinding samplerBinding{};

@@ -225,7 +225,7 @@ RELEASE=1 ./bin/emscripten-bundle -v \
     --em-flag "-sASYNCIFY" \
     --em-flag "-sFORCE_FILESYSTEM=1" \
     --em-flag "-sALLOW_MEMORY_GROWTH=1" \
-    --em-flag "-sINITIAL_MEMORY=67108864" \
+    --em-flag "-sINITIAL_MEMORY=268435456" \
     --em-flag "--embed-file $SOMETHING_DIR/fonts@/fonts" \
     --em-flag "--embed-file $SOMETHING_DIR/stories@/stories" \
     --em-flag "--embed-file $EMBED_FICTION_DIR@/resources/fiction" \

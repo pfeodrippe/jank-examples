@@ -56,6 +56,9 @@
   - [x] wasm
   - [x] audio
   - [x] publish wasm
+  - [ ] anims
+    - [ ] use anim
+    - [ ] sync anim automatically from roughanimator
   - [ ] voiceover
     - [ ] record in bitwig 2 lines
       - [ ] save track when saving the project

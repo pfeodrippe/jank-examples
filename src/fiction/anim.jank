@@ -1,0 +1,139 @@
+(ns fiction.anim
+  "Left-side background animation for fiction.
+
+   Desktop:
+   - Loads frame list from resources/fiction/anim/voiture/manifest.txt
+   - Hot-reloads manifest when it changes on disk.
+
+   WASM:
+   - Uses whatever files were embedded at build time.
+   - No runtime hot-reload (immutable embedded FS)."
+  (:require
+   [clojure.string :as str]
+   [fiction.render :as text-render]
+   ["fiction_gfx/fiction_gfx.hpp" :as engine :scope "fiction_engine"]))
+
+(def ^:private static-bg-path "resources/fiction/bg-1.png")
+(def ^:private manifest-path "resources/fiction/anim/voiture/manifest.txt")
+
+(def ^:private default-fps 8.0)
+(def ^:private assumed-render-fps 60.0)
+
+(defonce ^:private *frame-paths (atom []))
+(defonce ^:private *frame-idx (atom 0))
+(defonce ^:private *tick (atom 0))
+(defonce ^:private *frame-step (atom 8))
+(defonce ^:private *manifest-mod-time (atom 0))
+
+(defn- load-bg-frame!
+  [path]
+  (text-render/init-background! path "vulkan_fiction"))
+
+(defn- frame-step-from-fps
+  [fps]
+  (let [safe-fps (max 0.1 fps)
+        step (int (/ assumed-render-fps safe-fps))]
+    (max 1 step)))
+
+(defn- read-manifest-lines
+  []
+  (let [line-count (engine/read_file_lines manifest-path)]
+    (loop [i 0
+           out []]
+      (if (>= i line-count)
+        out
+        (recur (inc i)
+               (conj out (str (engine/get_file_line (cpp/int. i)))))))))
+
+(defn- parse-manifest
+  [lines]
+  (loop [remaining lines
+         fps default-fps
+         frames []]
+    (if (empty? remaining)
+      {:fps fps :frames frames}
+      (let [line (str/trim (first remaining))]
+        (cond
+          (or (empty? line) (str/starts-with? line "#"))
+          (recur (rest remaining) fps frames)
+
+          (str/starts-with? line "fps=")
+          (let [raw (str/trim (subs line 4))
+                parsed (read-string raw)
+                value (if (number? parsed) parsed default-fps)]
+            (recur (rest remaining) value frames))
+
+          :else
+          (recur (rest remaining) fps (conj frames line)))))))
+
+(defn- set-frame-sequence!
+  [fps frame-paths]
+  (if (empty? frame-paths)
+    false
+    (if (load-bg-frame! (first frame-paths))
+      (do
+        (reset! *frame-paths frame-paths)
+        (reset! *frame-idx 0)
+        (reset! *tick 0)
+        (reset! *frame-step (frame-step-from-fps fps))
+        true)
+      false)))
+
+(defn- try-load-manifest!
+  []
+  (let [lines (read-manifest-lines)]
+    (if (empty? lines)
+      false
+      (let [{:keys [fps frames]} (parse-manifest lines)]
+        (if (set-frame-sequence! fps frames)
+          (do
+            (println "[anim] using manifest frames:" (count frames) "fps=" fps)
+            true)
+          false)))))
+
+(defn- reload!
+  []
+  (if (try-load-manifest!)
+    true
+    (do
+      (reset! *frame-paths [])
+      (reset! *frame-idx 0)
+      (reset! *tick 0)
+      (reset! *frame-step (frame-step-from-fps default-fps))
+      (when-not (load-bg-frame! static-bg-path)
+        (println "WARN: Background image failed to load; continuing without it"))
+      false)))
+
+(defn init!
+  "Initialize animation frame source."
+  []
+  (let [mod-time (engine/get_file_mod_time manifest-path)]
+    (reset! *manifest-mod-time mod-time))
+  (reload!))
+
+(defn- maybe-reload-manifest!
+  []
+  ;; WASM backend reports 0 for mod time (immutable embedded FS), so this
+  ;; naturally becomes a no-op there.
+  (let [mod-time (engine/get_file_mod_time manifest-path)]
+    (when (and (not= mod-time 0)
+               (not= mod-time @*manifest-mod-time))
+      (reset! *manifest-mod-time mod-time)
+      (println "[anim] manifest changed, reloading...")
+      (reload!))))
+
+(defn update!
+  "Advance left-side animation and hot-reload frame list when needed."
+  []
+  (maybe-reload-manifest!)
+  (let [frames @*frame-paths
+        frame-count (count frames)]
+    (when (> frame-count 1)
+      (let [tick (swap! *tick inc)]
+        (when (>= tick @*frame-step)
+          (reset! *tick 0)
+          (let [next-idx (mod (inc @*frame-idx) frame-count)
+                next-path (nth frames next-idx)]
+            (if (load-bg-frame! next-path)
+              (reset! *frame-idx next-idx)
+              (println "WARN: Animated background frame failed to load:" next-path))))))))

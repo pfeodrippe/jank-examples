@@ -177,3 +177,34 @@ Useful variants:
 /Users/pfeodrippe/dev/something/bin/publish_fiction_release.sh v0.1.1 --no-wait
 /Users/pfeodrippe/dev/something/bin/publish_fiction_release.sh v0.1.1 --repo pfeodrippe/jank-examples
 ```
+
+### 7) RoughAnimator left-panel animation (`voiture.ra`)
+
+Desktop fiction now supports a dedicated animation namespace (`fiction.anim`) that
+loads frame paths from:
+
+```text
+resources/fiction/anim/voiture/manifest.txt
+```
+
+Generate frames one-shot from local pulled project files:
+
+```bash
+make fiction-anim-publish
+```
+
+Continuously sync/publish from iPad RoughAnimator (USB or Wi-Fi):
+
+```bash
+make fiction-anim-watch
+```
+
+This watcher:
+- pulls `com.weirdhat.roughanimator` project `voiture.ra`
+- composites timeline layers
+- overlays the animation on the left side of `resources/fiction/bg-1.png`
+- writes `resources/fiction/anim/voiture/frame-*.png` + `manifest.txt`
+
+Notes:
+- Desktop: hot-reloads when `manifest.txt` changes.
+- WASM: no runtime hot reload; built artifacts include whatever resources exist at build time.
