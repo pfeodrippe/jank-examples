@@ -30,9 +30,10 @@ trap cleanup_tmp_dirs EXIT
 usage() {
   cat <<'EOF'
 Usage:
-  bin/publish_fiction_release.sh <tag> [options]
+  bin/publish_fiction_release.sh [tag] [options]
 
 Examples:
+  bin/publish_fiction_release.sh          # Auto-detects latest version and increments patch
   bin/publish_fiction_release.sh v0.1.1
   bin/publish_fiction_release.sh v0.1.1 --skip-build
   bin/publish_fiction_release.sh v0.1.1 --repo owner/repo --build-dir /path/to/build-wasm
@@ -81,6 +82,35 @@ detect_repo_from_origin() {
 
   printf '%s\n' "$parsed"
   return 0
+}
+
+# Get the latest semver tag and increment the patch version
+# Returns something like "v0.1.2" based on the highest v* tag
+get_next_version() {
+  local repo="${1:-}"
+  local latest_tag
+
+  if [[ -n "$repo" ]]; then
+    latest_tag="$(gh release list --repo "$repo" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+  else
+    latest_tag="$(git -C "$REPO_ROOT" tag -l 'v*' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+  fi
+
+  if [[ -z "$latest_tag" ]]; then
+    echo "v0.1.0"
+    return 0
+  fi
+
+  # Parse semver: vMAJOR.MINOR.PATCH
+  local major minor patch
+  major="$(echo "$latest_tag" | sed -E 's/^v([0-9]+)\.[0-9]+\.[0-9]+$/\1/')"
+  minor="$(echo "$latest_tag" | sed -E 's/^v[0-9]+\.([0-9]+)\.[0-9]+$/\1/')"
+  patch="$(echo "$latest_tag" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+)$/\1/')"
+
+  # Increment patch
+  patch=$((patch + 1))
+
+  echo "v${major}.${minor}.${patch}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -148,11 +178,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$TAG" ]]; then
-  usage
-  exit 1
-fi
-
 if ! command -v gh >/dev/null 2>&1; then
   echo "gh CLI is required but not found in PATH." >&2
   exit 1
@@ -164,6 +189,13 @@ if [[ -z "$REPO" ]]; then
   else
     REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
   fi
+fi
+
+# Auto-detect version if not provided
+if [[ -z "$TAG" ]]; then
+  echo "==> No tag provided, auto-detecting latest version..."
+  TAG="$(get_next_version "$REPO")"
+  echo "==> Will create release: $TAG"
 fi
 
 if [[ -z "$TITLE" ]]; then
