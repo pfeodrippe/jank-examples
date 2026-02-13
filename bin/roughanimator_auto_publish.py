@@ -13,14 +13,21 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+
+PUBLISH_STATE_VERSION = 1
+PUBLISH_STATE_FILE = ".publish_state.json"
 
 
 @dataclass(frozen=True)
@@ -36,7 +43,11 @@ class Layer:
 
 
 def log(event: str, **payload: object) -> None:
-    entry = {"event": event, **payload}
+    entry = {
+        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "event": event,
+        **payload,
+    }
     print(json.dumps(entry, ensure_ascii=True))
 
 
@@ -74,6 +85,88 @@ def run_bytes(
 def require_tool(name: str) -> None:
     if shutil.which(name) is None:
         raise RuntimeError(f"required tool not found in PATH: {name}")
+
+
+def file_signature(path: Path) -> str:
+    st = path.stat()
+    return f"{path.as_posix()}:{st.st_size}:{st.st_mtime_ns}"
+
+
+def default_publish_state() -> dict[str, object]:
+    return {
+        "version": PUBLISH_STATE_VERSION,
+        "global_sig": "",
+        "crop": [],
+        "frames": {},
+        "input_files": {},
+        "cel_bbox_cache": {},
+    }
+
+
+def load_publish_state(state_path: Path) -> dict[str, object]:
+    if not state_path.exists():
+        return default_publish_state()
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return default_publish_state()
+    if not isinstance(raw, dict):
+        return default_publish_state()
+    if raw.get("version") != PUBLISH_STATE_VERSION:
+        return default_publish_state()
+    return {
+        "version": PUBLISH_STATE_VERSION,
+        "global_sig": raw.get("global_sig", ""),
+        "crop": raw.get("crop", []),
+        "frames": raw.get("frames", {}),
+        "input_files": raw.get("input_files", {}),
+        "cel_bbox_cache": raw.get("cel_bbox_cache", {}),
+    }
+
+
+def save_publish_state(state_path: Path, state: dict[str, object]) -> None:
+    state_path.write_text(json.dumps(state, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+
+
+def trim_list(items: list[str], limit: int = 20) -> list[str]:
+    if len(items) <= limit:
+        return items
+    extra = len(items) - limit
+    return [*items[:limit], f"... (+{extra} more)"]
+
+
+def rmtree_retry(path: Path, *, attempts: int = 5, delay_sec: float = 0.05) -> None:
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt >= attempts - 1:
+                raise
+            time.sleep(delay_sec * (attempt + 1))
+
+
+@contextmanager
+def single_instance_lock(lock_path: Path):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_path.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        fh.close()
+        raise RuntimeError(f"another publisher instance is already running ({lock_path})") from exc
+    fh.write(str(os.getpid()))
+    fh.flush()
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
 
 
 def parse_project_meta(project_dir: Path) -> tuple[int, int, float]:
@@ -353,7 +446,7 @@ def publish_animation(
     base_bg: Path,
     left_ratio: float,
     repo_root: Path,
-) -> tuple[int, float]:
+) -> tuple[int, float, int, list[str], list[str]]:
     if not project_dir.exists():
         raise RuntimeError(f"project dir not found: {project_dir}")
     if not base_bg.exists():
@@ -368,20 +461,23 @@ def publish_animation(
     if frame_count <= 0:
         raise RuntimeError("timeline frame count is zero")
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_path = output_dir / PUBLISH_STATE_FILE
+    prev_state = load_publish_state(state_path)
+    prev_frames_raw = prev_state.get("frames", {})
+    prev_frames: dict[str, str] = prev_frames_raw if isinstance(prev_frames_raw, dict) else {}
+    prev_inputs_raw = prev_state.get("input_files", {})
+    prev_inputs: dict[str, str] = prev_inputs_raw if isinstance(prev_inputs_raw, dict) else {}
+    prev_crop = prev_state.get("crop", [])
+    prev_bbox_raw = prev_state.get("cel_bbox_cache", {})
+    prev_bbox_cache: dict[str, object] = prev_bbox_raw if isinstance(prev_bbox_raw, dict) else {}
+
     bg_w, bg_h = ffprobe_dimensions(base_bg)
     left_width = max(1, int(bg_w * left_ratio))
+    current_frames: dict[str, list[Path]] = {}
+    current_frame_sigs: dict[str, str] = {}
+    frame_names: list[str] = []
 
-    tmp_out = output_dir.parent / f"{output_dir.name}.tmp"
-    if tmp_out.exists():
-        shutil.rmtree(tmp_out)
-    tmp_out.mkdir(parents=True, exist_ok=True)
-
-    tmp_flat = tmp_out / "_flat"
-    tmp_flat.mkdir(parents=True, exist_ok=True)
-    tmp_panel = tmp_out / "_panel"
-    tmp_panel.mkdir(parents=True, exist_ok=True)
-
-    panel_frame_paths: list[Path] = []
     for frame_idx in range(frame_count):
         active_layers: list[Path] = []
         for layer in layers:
@@ -395,30 +491,66 @@ def publish_animation(
         if not active_layers:
             continue
 
-        flat_frame = tmp_flat / f"frame-{frame_idx:04d}.png"
-        compose_layer_stack(active_layers, flat_frame, canvas_w, canvas_h)
+        frame_name = f"frame-{frame_idx:04d}.png"
+        frame_names.append(frame_name)
+        current_frames[frame_name] = active_layers
+        current_frame_sigs[frame_name] = "|".join(file_signature(path) for path in active_layers)
 
-        panel_frame = tmp_panel / f"frame-{frame_idx:04d}.png"
-        compose_left_panel_frame(
-            left_frame=flat_frame,
-            out_file=panel_frame,
-            left_width=left_width,
-            bg_height=bg_h,
-        )
-        panel_frame_paths.append(panel_frame)
-
-    if not panel_frame_paths:
+    if not frame_names:
         raise RuntimeError("no output frames produced")
+
+    current_inputs: dict[str, str] = {}
+
+    def track_input(path: Path) -> None:
+        rel = path.relative_to(project_dir).as_posix()
+        st = path.stat()
+        current_inputs[rel] = f"{st.st_size}:{st.st_mtime_ns}"
+
+    track_input(project_dir / "data.txt")
+    camera_txt = project_dir / "camera.txt"
+    if camera_txt.exists():
+        track_input(camera_txt)
+    for layer in layers:
+        layer_data = layer.directory / "layerData.txt"
+        if layer_data.exists():
+            track_input(layer_data)
+    for paths in current_frames.values():
+        for src in paths:
+            track_input(src)
+
+    changed_input_files = sorted(
+        [rel for rel, sig in current_inputs.items() if prev_inputs.get(rel) != sig]
+        + [f"(removed) {rel}" for rel in prev_inputs.keys() if rel not in current_inputs]
+    )
 
     source_bbox_union: tuple[int, int, int, int] | None = None
     seen_cels: set[Path] = set()
+    bbox_cache: dict[str, object] = {}
     for layer in layers:
         for entry in layer.entries:
             candidate = layer.directory / f"{entry.start:04d}.png"
             if not candidate.exists() or candidate in seen_cels:
                 continue
             seen_cels.add(candidate)
-            bbox = detect_alpha_bbox(candidate)
+            cache_key = file_signature(candidate)
+            cached_bbox = prev_bbox_cache.get(cache_key, "__MISSING__")
+            if cached_bbox == "__MISSING__":
+                bbox = detect_alpha_bbox(candidate)
+                if bbox is None:
+                    bbox_cache[cache_key] = None
+                else:
+                    bbox_cache[cache_key] = [bbox[0], bbox[1], bbox[2], bbox[3]]
+            elif isinstance(cached_bbox, list) and len(cached_bbox) == 4:
+                bbox = (
+                    int(cached_bbox[0]),
+                    int(cached_bbox[1]),
+                    int(cached_bbox[2]),
+                    int(cached_bbox[3]),
+                )
+                bbox_cache[cache_key] = [bbox[0], bbox[1], bbox[2], bbox[3]]
+            else:
+                bbox = None
+                bbox_cache[cache_key] = None
             if bbox is None:
                 continue
             if source_bbox_union is None:
@@ -449,45 +581,94 @@ def publish_animation(
         crop_w = mapped_x1 - mapped_x0
         crop_h = mapped_y1 - mapped_y0
 
-    frame_paths: list[Path] = []
-    for panel_frame in panel_frame_paths:
-        out_frame = tmp_out / panel_frame.name
-        crop_overlay_frame(
-            panel_frame,
-            out_frame,
-            crop_x=crop_x,
-            crop_y=crop_y,
-            crop_w=crop_w,
-            crop_h=crop_h,
-        )
-        frame_paths.append(out_frame)
+    crop = [crop_x, crop_y, crop_w, crop_h]
+    global_sig = (
+        f"canvas={canvas_w}x{canvas_h}|bg={bg_w}x{bg_h}|left_width={left_width}|"
+        f"left_ratio={left_ratio:.6f}|fps={fps:.6f}|frames={len(frame_names)}"
+    )
 
-    manifest_lines = [
-        "# auto-generated by roughanimator_auto_publish.py",
-        f"fps={fps}",
-        f"overlay_x_ratio={crop_x / bg_w:.8f}",
-        f"overlay_y_ratio={crop_y / bg_h:.8f}",
-        f"overlay_w_ratio={crop_w / bg_w:.8f}",
-        f"overlay_h_ratio={crop_h / bg_h:.8f}",
-    ]
-    for path in frame_paths:
-        rel = path.relative_to(tmp_out)
-        published_rel = output_dir / rel
-        try:
-            manifest_path = published_rel.relative_to(repo_root)
-            manifest_lines.append(manifest_path.as_posix())
-        except ValueError:
-            manifest_lines.append(str(published_rel))
+    force_full = (
+        prev_state.get("global_sig", "") != global_sig
+        or prev_crop != crop
+        or not isinstance(prev_frames_raw, dict)
+    )
 
-    (tmp_out / "manifest.txt").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
-    shutil.rmtree(tmp_flat, ignore_errors=True)
-    shutil.rmtree(tmp_panel, ignore_errors=True)
+    removed_frames = [name for name in prev_frames if name not in current_frame_sigs]
+    for name in removed_frames:
+        stale = output_dir / name
+        if stale.exists():
+            stale.unlink()
+    for stale in output_dir.glob("frame-*.png"):
+        if stale.name not in current_frame_sigs:
+            stale.unlink()
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    shutil.move(str(tmp_out), str(output_dir))
+    changed_frames: list[str] = []
+    for name in frame_names:
+        out_path = output_dir / name
+        if (
+            force_full
+            or prev_frames.get(name) != current_frame_sigs[name]
+            or not out_path.exists()
+        ):
+            changed_frames.append(name)
 
-    return len(frame_paths), fps
+    work_dir = output_dir / f".publish_tmp.{os.getpid()}.{time.time_ns()}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    rebuilt_frames = 0
+    try:
+        for frame_name in changed_frames:
+            out_frame = output_dir / frame_name
+            flat_frame = work_dir / f"{frame_name}.flat.png"
+            panel_frame = work_dir / f"{frame_name}.panel.png"
+            compose_layer_stack(current_frames[frame_name], flat_frame, canvas_w, canvas_h)
+            compose_left_panel_frame(
+                left_frame=flat_frame,
+                out_file=panel_frame,
+                left_width=left_width,
+                bg_height=bg_h,
+            )
+            crop_overlay_frame(
+                panel_frame,
+                out_frame,
+                crop_x=crop_x,
+                crop_y=crop_y,
+                crop_w=crop_w,
+                crop_h=crop_h,
+            )
+            rebuilt_frames += 1
+
+        manifest_lines = [
+            "# auto-generated by roughanimator_auto_publish.py",
+            f"fps={fps}",
+            f"overlay_x_ratio={crop_x / bg_w:.8f}",
+            f"overlay_y_ratio={crop_y / bg_h:.8f}",
+            f"overlay_w_ratio={crop_w / bg_w:.8f}",
+            f"overlay_h_ratio={crop_h / bg_h:.8f}",
+        ]
+        for frame_name in frame_names:
+            published_rel = output_dir / frame_name
+            try:
+                manifest_path = published_rel.relative_to(repo_root)
+                manifest_lines.append(manifest_path.as_posix())
+            except ValueError:
+                manifest_lines.append(str(published_rel))
+
+        (output_dir / "manifest.txt").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+
+        next_state = {
+            "version": PUBLISH_STATE_VERSION,
+            "global_sig": global_sig,
+            "crop": crop,
+            "frames": current_frame_sigs,
+            "input_files": current_inputs,
+            "cel_bbox_cache": bbox_cache,
+        }
+        save_publish_state(state_path, next_state)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    return len(frame_names), fps, rebuilt_frames, changed_input_files, changed_frames
 
 
 def resolve_project_dir(root: Path, project_name: str) -> Path:
@@ -513,9 +694,8 @@ def sync_from_device(
     require_tool("pymobiledevice3")
     sync_root.mkdir(parents=True, exist_ok=True)
 
-    tmp_pull = sync_root / ".pull_tmp"
-    if tmp_pull.exists():
-        shutil.rmtree(tmp_pull)
+    run_id = f"{os.getpid()}.{time.time_ns()}"
+    tmp_pull = sync_root / f".pull_tmp.{run_id}"
     tmp_pull.mkdir(parents=True, exist_ok=True)
 
     cmd = ["pymobiledevice3", "apps", "afc", "--documents"]
@@ -555,10 +735,32 @@ def sync_from_device(
         raise RuntimeError(f"could not find pulled project tree under {tmp_pull}")
 
     final_project_root = sync_root / project_name
-    if final_project_root.exists():
-        shutil.rmtree(final_project_root)
-    shutil.copytree(pulled, final_project_root)
-    shutil.rmtree(tmp_pull, ignore_errors=True)
+    staged_project_root = sync_root / f".{project_name}.incoming.{run_id}"
+    backup_project_root = sync_root / f".{project_name}.backup.{run_id}"
+
+    try:
+        if staged_project_root.exists():
+            rmtree_retry(staged_project_root)
+        shutil.copytree(pulled, staged_project_root)
+
+        if final_project_root.exists():
+            if backup_project_root.exists():
+                rmtree_retry(backup_project_root)
+            os.rename(final_project_root, backup_project_root)
+            try:
+                os.rename(staged_project_root, final_project_root)
+            except Exception:
+                if backup_project_root.exists() and not final_project_root.exists():
+                    os.rename(backup_project_root, final_project_root)
+                raise
+            rmtree_retry(backup_project_root)
+        else:
+            os.rename(staged_project_root, final_project_root)
+    finally:
+        shutil.rmtree(staged_project_root, ignore_errors=True)
+        shutil.rmtree(backup_project_root, ignore_errors=True)
+        shutil.rmtree(tmp_pull, ignore_errors=True)
+
     return final_project_root
 
 
@@ -647,49 +849,60 @@ def main() -> int:
     next_sync_at = 0.0
     had_once_error = False
 
-    while True:
-        if args.sync_device and time.time() >= next_sync_at:
-            try:
-                pulled_root = sync_from_device(
-                    bundle_id=args.bundle_id,
-                    project_name=args.project_name,
-                    sync_root=sync_root,
-                    udid=args.udid,
-                )
-                log("sync_ok", project=str(pulled_root))
-                project_dir = pulled_root
-            except Exception as exc:  # noqa: BLE001
-                log("sync_error", reason=str(exc))
-                if args.once:
-                    had_once_error = True
-            next_sync_at = time.time() + max(1.0, args.sync_interval)
+    lock_path = sync_root / ".publisher.lock"
+    try:
+        with single_instance_lock(lock_path):
+            while True:
+                if args.sync_device and time.time() >= next_sync_at:
+                    try:
+                        pulled_root = sync_from_device(
+                            bundle_id=args.bundle_id,
+                            project_name=args.project_name,
+                            sync_root=sync_root,
+                            udid=args.udid,
+                        )
+                        # log("sync_ok", project=str(pulled_root))
+                        project_dir = pulled_root
+                    except Exception as exc:  # noqa: BLE001
+                        # log("sync_error", reason=str(exc))
+                        if args.once:
+                            had_once_error = True
+                    next_sync_at = time.time() + max(1.0, args.sync_interval)
 
-        sig = project_signature(project_dir)
-        if sig != last_sig:
-            try:
-                frame_count, fps = publish_animation(
-                    project_dir=project_dir,
-                    output_dir=output_dir,
-                    base_bg=base_bg,
-                    left_ratio=args.left_ratio,
-                    repo_root=repo_root,
-                )
-                last_sig = sig
-                log(
-                    "publish_ok",
-                    project=str(project_dir),
-                    output_dir=str(output_dir),
-                    frame_count=frame_count,
-                    fps=fps,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log("publish_error", project=str(project_dir), reason=str(exc))
-                if args.once:
-                    had_once_error = True
+                sig = project_signature(project_dir)
+                if sig != last_sig:
+                    try:
+                        frame_count, fps, rebuilt_frames, changed_input_files, changed_frames = publish_animation(
+                            project_dir=project_dir,
+                            output_dir=output_dir,
+                            base_bg=base_bg,
+                            left_ratio=args.left_ratio,
+                            repo_root=repo_root,
+                        )
+                        last_sig = sig
+                        log(
+                            "publish_ok",
+                            project=str(project_dir),
+                            output_dir=str(output_dir),
+                            frame_count=frame_count,
+                            rebuilt_frames=rebuilt_frames,
+                            changed_input_count=len(changed_input_files),
+                            changed_frame_count=len(changed_frames),
+                            changed_input_files=trim_list(changed_input_files),
+                            changed_frames=trim_list(changed_frames),
+                            fps=fps,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log("publish_error", project=str(project_dir), reason=str(exc))
+                        if args.once:
+                            had_once_error = True
 
-        if args.once:
-            break
-        time.sleep(max(0.2, args.scan_interval))
+                if args.once:
+                    break
+                time.sleep(max(0.2, args.scan_interval))
+    except RuntimeError as exc:
+        log("watcher_busy", reason=str(exc))
+        return 0
 
     if args.once and had_once_error:
         return 1

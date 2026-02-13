@@ -58,7 +58,7 @@ CXXFLAGS = -fPIC -O2 -std=c++17
 .PHONY: clean clean-cache sdf integrated integrated_wasm imgui jolt test tests help \
         build-jolt build-imgui build-flecs build-flecs-wasm build-raylib build-deps \
         build-sdf-deps build-shaders build-imgui-vulkan build-vybe-wasm build-miniaudio-wasm \
-        fiction fiction-wasm fiction-anim-publish fiction-anim-watch \
+        fiction fiction-wasm fiction-anim-publish fiction-anim-watch fiction-anim-log \
         build-fiction-shaders build-fiction-gfx-wasm build-fiction-gfx-native \
         clean-fiction-wasm-generated
 
@@ -78,6 +78,7 @@ help:
 	@echo "  make fiction          - Run Fiction narrative game (Vulkan desktop)"
 	@echo "  make fiction-anim-publish - Build left animation frames from RoughAnimator (one-shot)"
 	@echo "  make fiction-anim-watch   - Sync/publish RoughAnimator voiture.ra continuously"
+	@echo "  make fiction-anim-log     - Tail animation watcher log"
 	@echo "  make fiction-wasm     - Build Fiction for WASM (WebGPU browser)"
 	@echo "  make imgui            - Run ImGui demo"
 	@echo "  make jolt             - Run Jolt physics demo"
@@ -335,7 +336,8 @@ build-fiction-shaders: $(FICTION_SHADERS_SPV)
 # - stops watcher on exit
 fiction: build-fiction-shaders
 	@set -e; \
-	python3 ./bin/roughanimator_auto_publish.py --sync-device > /tmp/fiction-anim-watch.log 2>&1 & \
+	rm -f /tmp/fiction-anim-watch.log; \
+	sh -c 'python3 -u ./bin/roughanimator_auto_publish.py --sync-device --sync-interval 1 --scan-interval 0.2 2>&1 | tee -a /tmp/fiction-anim-watch.log' & \
 	WATCH_PID=$$!; \
 	echo "[fiction] animation watcher started (pid=$$WATCH_PID, log=/tmp/fiction-anim-watch.log)"; \
 	trap 'kill $$WATCH_PID 2>/dev/null || true' EXIT INT TERM; \
@@ -349,7 +351,10 @@ fiction-anim-publish:
 
 # Continuously sync voiture.ra from iPad (USB/Wi-Fi) and republish frames.
 fiction-anim-watch:
-	python3 ./bin/roughanimator_auto_publish.py --sync-device
+	python3 -u ./bin/roughanimator_auto_publish.py --sync-device --sync-interval 1 --scan-interval 0.2 2>&1 | tee -a /tmp/fiction-anim-watch.log
+
+fiction-anim-log:
+	tail -f /tmp/fiction-anim-watch.log
 
 # ============================================================================
 # Fiction WASM (WebGPU browser build)

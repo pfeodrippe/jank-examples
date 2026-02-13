@@ -56,14 +56,18 @@
   - [x] wasm
   - [x] audio
   - [x] publish wasm
-  - [ ] anims
-    - [ ] use anim
-    - [ ] sync anim automatically from roughanimator
-  - [ ] voiceover
-    - [ ] record in bitwig 2 lines
-      - [ ] save track when saving the project
-    - [ ] check hot reload
-  - [ ] anims
+  - [x] anims
+    - [x] use anim
+    - [x] sync anim automatically from roughanimator
+  - [x] voiceover
+    - [x] record in bitwig 2 lines
+      - [x] save track when saving the project
+    - [x] check hot reload
+  - [ ] first day
+    - [ ] more dialogue
+    - [ ] music
+      - il faut qu'on soit assis
+      - l'amer qu
   - [ ] visuals
     - [ ] text bg should move with it (e.g. scrolling) (?)
 - [ ] ipad simple animation app
